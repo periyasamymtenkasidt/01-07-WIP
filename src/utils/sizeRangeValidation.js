@@ -69,6 +69,53 @@ export const validateSizeRangeInput = (val) => {
 };
 
 /**
+ * Strip everything except digits from a Size Range input value. Used by the
+ * proposal master / proposal form inputs, which accept whole numbers only.
+ */
+export const digitsOnly = (val) => String(val ?? "").replace(/\D/g, "");
+
+/**
+ * Collapse a legacy size range ("800-1100") or open band ("2400+") to a single
+ * whole-number string — the midpoint of the numbers it contains — so older
+ * persisted / seeded data matches the digits-only Size Range rule. Mirrors
+ * parseBaseArea so the representative area is unchanged. Already-single numbers
+ * pass through; empty stays empty.
+ */
+export const toSingleSize = (val) => {
+  const nums = (cleanSizeRange(val).match(/\d+/g) || [])
+    .map(Number)
+    .filter((n) => n > 0);
+  if (!nums.length) return "";
+  return String(Math.round(nums.reduce((a, b) => a + b, 0) / nums.length));
+};
+
+/**
+ * keydown guard for the Size Range inputs: blocks any printable key that isn't a
+ * digit. Editing / navigation keys (Backspace, Delete, arrows, Tab, Enter,
+ * Home, End) and shortcut combos (Ctrl/Cmd + key) stay allowed. Pairs with a
+ * digitsOnly() sanitize in onChange so paste/drop are cleaned too.
+ */
+export const handleSizeRangeKeyDown = (e) => {
+  const allowed = [
+    "Backspace",
+    "Delete",
+    "Tab",
+    "Enter",
+    "Escape",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "ArrowDown",
+    "Home",
+    "End",
+  ];
+  if (e.ctrlKey || e.metaKey || e.altKey || allowed.includes(e.key)) return;
+  if (e.key.length === 1 && !/[0-9]/.test(e.key)) {
+    e.preventDefault();
+  }
+};
+
+/**
  * Format a size range with the static "Sq Ft" unit for UI display and PDFs.
  * If input is null/empty, returns "—".
  */

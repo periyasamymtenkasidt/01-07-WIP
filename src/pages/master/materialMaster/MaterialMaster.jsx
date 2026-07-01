@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Layers,
   Plus,
@@ -13,19 +13,12 @@ import {
   IndianRupee,
   AlertTriangle,
   Info,
-  RotateCcw,
   CheckCircle2,
 } from "lucide-react";
-import {
-  listMaterials,
-  saveMaterials,
-  resetMaterials,
-} from "../../../data/materialLibrary";
+import { listMaterials, saveMaterials } from "../../../data/materialLibrary";
 import { listLibrary } from "../../../data/itemLibrary";
-import { listVendors } from "../../../data/vendorStorage";
 import { formatAmount } from "../../../utils/formatAmount";
 import InputField from "../../../components/InputField";
-import SearchableSelect from "../../../components/SearchableSelect";
 
 const MATERIAL_UNITS = [
   { code: "bag", label: "Bag (Cement)" },
@@ -41,7 +34,6 @@ const MATERIAL_UNITS = [
 
 const MaterialMaster = () => {
   const [materials, setMaterials] = useState(() => listMaterials());
-  const [hasChanges, setHasChanges] = useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState(null); // holds material being edited/created
   const [toast, setToast] = useState(null);
@@ -51,6 +43,17 @@ const MaterialMaster = () => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 2400);
   };
+
+  // Auto-save: persist the catalog to storage on every change. Skips the very
+  // first render so the initial load isn't re-written needlessly.
+  const isFirstRender = useRef(true);
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    saveMaterials(materials);
+  }, [materials]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -66,24 +69,6 @@ const MaterialMaster = () => {
       );
     });
   }, [materials, query]);
-
-  const vendors = useMemo(() => listVendors(), []);
-  const vendorOptions = useMemo(
-    () => vendors.map((v) => ({ value: v.id, label: v.name })),
-    [vendors],
-  );
-
-  // If the material being edited references a vendor that's since been
-  // deleted from Vendor Master, inject its saved name as a synthetic option
-  // so the dropdown shows "Acme Supplies" instead of the raw orphaned id.
-  const editingVendorId = editing?.vendorId;
-  const editingVendorOptions =
-    editingVendorId && !vendors.some((v) => v.id === editingVendorId)
-      ? [
-          { value: editingVendorId, label: editing.vendorName || "Unknown vendor (deleted)" },
-          ...vendorOptions,
-        ]
-      : vendorOptions;
 
   // Derived (not stored) — counts how many Item Master recipes reference
   // each material, by scanning every grade's components. Avoids a stored
@@ -170,7 +155,7 @@ const MaterialMaster = () => {
             : m,
         ),
       );
-      showToast("Material updated (unsaved changes)", "success");
+      showToast("Material updated", "success");
     } else {
       // Create
       const newMat = {
@@ -180,9 +165,8 @@ const MaterialMaster = () => {
         updatedAt: new Date().toISOString(),
       };
       setMaterials((prev) => [newMat, ...prev]);
-      showToast("Material added (unsaved changes)", "success");
+      showToast("Material added", "success");
     }
-    setHasChanges(true);
     setEditing(null);
   };
 
@@ -195,60 +179,77 @@ const MaterialMaster = () => {
       danger: true,
       onConfirm: () => {
         setMaterials((prev) => prev.filter((m) => m.id !== item.id));
-        setHasChanges(true);
-        showToast("Material deleted (unsaved changes)", "info");
+        showToast("Material deleted", "info");
       },
     });
-  };
-
-  const handleReset = () => {
-    setConfirmDialog({
-      title: "Reset Materials to Defaults?",
-      message:
-        "This will clear all custom materials and restore the default civil materials list.",
-      confirmLabel: "Reset Catalog",
-      danger: true,
-      onConfirm: () => {
-        setMaterials(resetMaterials());
-        setHasChanges(false);
-        showToast("Materials master reset to defaults", "success");
-      },
-    });
-  };
-
-  const persistChanges = () => {
-    saveMaterials(materials);
-    setHasChanges(false);
-    showToast("Material Master saved successfully", "success");
   };
 
   return (
     <div className="bg-overallbg font-sans h-full overflow-y-auto">
-      {/* Header */}
-      <div className="px-6 py-5 border-b border-bordergray/70 bg-overallbg/80 backdrop-blur-xl sticky top-0 z-10">
-        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
-          <div className="flex items-center gap-3">
-            <div className="h-11 w-11 rounded-xl bg-linear-to-br from-select-blue to-primary text-white flex items-center justify-center shadow-lg shadow-select-blue/20">
-              <Layers size={18} />
-            </div>
-            <div>
-              <h1 className="text-[20px] font-bold text-textcolor leading-tight">
-                Material Master
-              </h1>
-              <p className="text-[12px] text-text-muted mt-0.5">
-                Catalog of raw construction materials, bulk pricing, and HSNC
-                codes.
-              </p>
-            </div>
+      {/* Single sticky toolbar — stats (left) + search & actions (right). No
+          page title/description: the active Master tab already names this page. */}
+      <div className="px-6 py-3 border-b border-bordergray/70 bg-overallbg/80 backdrop-blur-xl sticky top-0 z-10">
+        <div className="flex items-center gap-x-4 gap-y-2 flex-wrap">
+          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11.5px]">
+            <StatChip
+              icon={<Layers size={12} className="text-blue-500" />}
+              value={stats.total}
+              label="materials"
+            />
+            <span className="h-3 w-px bg-bordergray" />
+            <StatChip
+              icon={<IndianRupee size={12} className="text-orange-500" />}
+              value={formatAmount(stats.avgPrice)}
+              label="avg price"
+            />
+            <span className="h-3 w-px bg-bordergray" />
+            <StatChip
+              icon={<Package size={12} className="text-purple-500" />}
+              value={stats.cement}
+              label="cement"
+            />
+            <span className="h-3 w-px bg-bordergray" />
+            <StatChip
+              icon={<TrendingUp size={12} className="text-emerald-500" />}
+              value={stats.steel}
+              label="steel & wire"
+            />
+            {query && (
+              <>
+                <span className="h-3 w-px bg-bordergray" />
+                <span className="font-semibold text-select-blue tabular-nums">
+                  {filtered.length} match{filtered.length === 1 ? "" : "es"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  className="text-[11px] font-semibold text-select-blue hover:underline"
+                >
+                  Clear
+                </button>
+              </>
+            )}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleReset}
-              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor transition-all cursor-pointer"
+          <div className="flex items-center gap-2 ml-auto flex-wrap">
+            <div className="relative">
+              <Search
+                size={12}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle"
+              />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search by name or HSN code"
+                className="bg-white border border-bordergray rounded-lg pl-7 pr-3 py-1.5 text-[11.5px] placeholder:text-text-subtle focus:outline-none focus:border-select-blue/40 w-[200px] lg:w-[240px]"
+              />
+            </div>
+            <span
+              title="Changes are saved automatically"
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold text-text-muted bg-bg-soft border border-bordergray"
             >
-              <RotateCcw size={12} /> Reset Catalog
-            </button>
+              <CheckCircle2 size={13} /> Auto-saved
+            </span>
             <button
               type="button"
               onClick={() =>
@@ -261,71 +262,15 @@ const MaterialMaster = () => {
                   gstPercent: 18,
                 })
               }
-              className="flex items-center gap-1.5 px-4 py-2 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md hover:scale-[1.02] transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md hover:scale-[1.02] transition-all cursor-pointer"
             >
               <Plus size={13} /> New Material
             </button>
-            {hasChanges && (
-              <button
-                type="button"
-                onClick={persistChanges}
-                className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[12px] font-semibold shadow-md transition-all cursor-pointer animate-pulse"
-              >
-                <CheckCircle2 size={13} strokeWidth={3} /> Save Changes
-              </button>
-            )}
           </div>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <BentoStat
-            icon={<Layers size={13} />}
-            label="Total Materials"
-            value={stats.total}
-            tint="blue"
-          />
-          <BentoStat
-            icon={<IndianRupee size={13} />}
-            label="Avg Unit Price"
-            value={formatAmount(stats.avgPrice)}
-            tint="orange"
-          />
-          <BentoStat
-            icon={<Package size={13} />}
-            label="Cement Variants"
-            value={stats.cement}
-            tint="purple"
-          />
-          <BentoStat
-            icon={<TrendingUp size={13} />}
-            label="Steel & Wire Specs"
-            value={stats.steel}
-            tint="emerald"
-          />
         </div>
       </div>
 
       <div className="px-6 py-5">
-        {/* Filter bar */}
-        <div className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] p-3 mb-4 flex items-center justify-between gap-3">
-          <p className="text-[12px] font-bold text-textcolor">
-            Raw Material Specifications
-          </p>
-          <div className="relative">
-            <Search
-              size={12}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle"
-            />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by name or HSN code"
-              className="bg-bg-soft border border-transparent rounded-lg pl-7 pr-3 py-1.5 text-[11.5px] placeholder:text-text-subtle focus:outline-none focus:bg-white focus:border-select-blue/30 w-[280px]"
-            />
-          </div>
-        </div>
 
         {/* Grid List */}
         {filtered.length === 0 ? (
@@ -494,14 +439,6 @@ const MaterialMaster = () => {
 
               <div className="grid grid-cols-2 gap-4">
                 <InputField
-                  label="Brand / Manufacturer"
-                  value={editing.brand || ""}
-                  onChange={(e) =>
-                    setEditing((prev) => ({ ...prev, brand: e.target.value }))
-                  }
-                  placeholder="e.g. UltraTech, Tata"
-                />
-                <InputField
                   type="select"
                   label="Category"
                   value={editing.category || "General"}
@@ -511,9 +448,6 @@ const MaterialMaster = () => {
                   options={["General", "Civil", "Carpentry", "Electrical", "Plumbing", "Painting", "Flooring"]}
                   placeholder="Select Category"
                 />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
                 <InputField
                   label="Material SKU / Code"
                   value={editing.sku || ""}
@@ -522,30 +456,6 @@ const MaterialMaster = () => {
                   }
                   placeholder="e.g. MAT-CEM-01"
                 />
-                <div className="flex flex-col">
-                  <label className="mb-1 text-[11px] font-semibold text-darkgray">
-                    Preferred Vendor
-                  </label>
-                  <SearchableSelect
-                    value={editing.vendorId || ""}
-                    onChange={(val) => {
-                      const v = vendors.find((vv) => vv.id === val);
-                      setEditing((prev) => ({
-                        ...prev,
-                        vendorId: val,
-                        vendorName: v?.name || "",
-                      }));
-                    }}
-                    options={editingVendorOptions}
-                    placeholder="Select vendor"
-                    className="bg-light-gray border border-bordergray text-[11px] text-darkgray rounded-md px-3 py-2 w-full focus:outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-300 placeholder-gray-400"
-                  />
-                  {!editing.vendorId && editing.vendor && (
-                    <p className="text-[10px] text-text-subtle mt-1">
-                      Previously: {editing.vendor} — pick a vendor above to link it.
-                    </p>
-                  )}
-                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -674,29 +584,15 @@ const MaterialMaster = () => {
   );
 };
 
-const BentoStat = ({ icon, label, value, tint }) => {
-  const tints = {
-    blue: "from-blue-50 to-white text-blue-600 border-blue-100",
-    purple: "from-purple-50 to-white text-purple-600 border-purple-100",
-    orange: "from-orange-50 to-white text-orange-600 border-orange-100",
-    emerald: "from-emerald-50 to-white text-emerald-600 border-emerald-100",
-  };
-  return (
-    <div
-      className={`relative bg-linear-to-br ${tints[tint]} border rounded-xl p-3 overflow-hidden`}
-    >
-      <div className="flex items-center justify-between mb-1">
-        <span className="opacity-80">{icon}</span>
-        <span className="text-[9.5px] font-bold uppercase tracking-wider opacity-70">
-          {label}
-        </span>
-      </div>
-      <p className="text-[16px] font-bold text-textcolor tabular-nums leading-tight">
-        {value}
-      </p>
-    </div>
-  );
-};
+// Compact inline stat — value + muted label with a leading icon. Replaces the
+// large bento cards so the header stays a single tight bar.
+const StatChip = ({ icon, value, label }) => (
+  <span className="inline-flex items-center gap-1.5">
+    {icon}
+    <span className="font-bold text-textcolor tabular-nums">{value}</span>
+    <span className="text-text-muted">{label}</span>
+  </span>
+);
 
 const ConfirmDialog = ({
   title,

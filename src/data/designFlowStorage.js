@@ -18,46 +18,16 @@ import {
   getProposalBaselineForSite,
 } from "./surveyMeasureStorage";
 import { listLibrary } from "./itemLibrary";
-import { saveBoq, getBoq, createBoq, listBoqs, genShortId } from "./boqStorage";
-import { tokens } from "../api/client";
-import * as designFlowApi from "../api/designFlow";
 import {
-  freezeSurvey as apiFreezeSurvey,
-  unfreezeSurvey as apiUnfreezeSurvey,
-} from "../api/sites";
-
-// ── Backend write-through (best-effort) ──────────────────────────────────────
-//
-// This module is the survey→design fat-object cache; every mutation keeps its
-// optimistic local write and ADDITIONALLY mirrors to the API. A failed/absent
-// backend must never break the local write, so every push is fire-and-forget
-// and swallows its error. No-op when logged out.
-const pushApi = (fn) => {
-  if (!tokens.access()) return;
-  try {
-    Promise.resolve(fn()).catch((e) =>
-      console.warn("designFlow API write-through failed:", e),
-    );
-  } catch (e) {
-    console.warn("designFlow API write-through failed:", e);
-  }
-};
-
-// Resolve a cached stage's backend id (attached during hydrateDesignFlow). When
-// absent — flow created offline, or hydrate hasn't run / didn't match — callers
-// SKIP the API call and stay local-only.
-const backendStageId = (flow, stageKey) => {
-  const s = getStage(flow, stageKey);
-  return s?.backendId ?? s?.id ?? null;
-};
-
-// The design-flow / freeze endpoints key off the site's backend Mongo id, NOT
-// the business siteID (ST-…). Resolve it from the cached site; null → the site
-// isn't backend-synced yet, so skip the API call and stay local-only.
-const backendSiteId = (siteID) => {
-  const s = getSite(siteID);
-  return s?.id ?? s?._id ?? null;
-};
+  saveBoq,
+  getBoq,
+  createBoq,
+  listBoqs,
+  genShortId,
+  seedRateAnalysisFromMaterials,
+} from "./boqStorage";
+import { getDesignFlow as getDesignFlowApi } from "../api/designFlow";
+import { tokens } from "../api/client";
 
 const designFlowKey = (siteID) => `designFlow_${siteID}`;
 const designFlowArchiveKey = (siteID) => `designFlowArchive_${siteID}`;
@@ -106,10 +76,13 @@ export const INTERIORS_PIPELINE = [
     deliverableTypes: ["2D Drawing", "Section", "Document"],
   },
   {
-    key: "BOQ",
-    label: "BOQ & Costing",
-    question: "Approve the price",
-    deliverableTypes: [],
+    key: "FINAL_QUOTATION",
+    label: "Final Quotation",
+    question: "Approve the final quotation",
+    deliverableTypes: ["Quotation", "Document"],
+    // Rendered with the shared Proposal Form (QuoteModal) instead of file
+    // uploads — sending the quotation submits the stage for client approval.
+    isQuotation: true,
   },
 ];
 
@@ -166,16 +139,11 @@ export const getPipeline = (track) =>
 // Back-compat alias for interiors-only callers (e.g. the survey freeze preview).
 export const DESIGN_STAGES = INTERIORS_PIPELINE;
 
-// Contractual free revision rounds per stage; extra rounds get flagged billable.
-const DEFAULT_ROUNDS_INCLUDED = 2;
-
-// ── Internal design review (PDF §1–2) ────────────────────────────────────────
-//
-// Before a stage goes to the client, it clears an internal sign-off chain. The
-// firm has no real auth yet, so the acting role is *chosen* at the moment of
-// sign-off (logged, not authenticated) — same limitation as the schedule log.
-// Principal Architect is the final internal authority (PDF: "Who is authorized
-// to approve designs? Principal Architect").
+// ── Internal design review ──────────────────────────────────────────────────
+// The ordered internal sign-off chain (requirements PDF §1). Sign-off happens
+// step by step: only the Principal Architect (final step) can authorise a stage
+// for the client. The sequence is enforced here; identity binding comes with a
+// backend + auth (see CLAUDE.md / BACKEND_SPEC §7.4).
 export const INTERNAL_ROLES = [
   "Intern",
   "Junior Architect",
@@ -183,27 +151,31 @@ export const INTERNAL_ROLES = [
   "Principal Architect",
 ];
 
-// The Design Review Checklist (PDF §2). Reviewed during internal review; the
-// Principal can't finalise until every item is answered.
+// Design Review Checklist (requirements PDF §2). Each row is answered yes/no
+// during internal review; the Principal cannot finalise until every row is
+// answered and every design comment is closed.
 export const DESIGN_REVIEW_CHECKLIST = [
-  "Client requirements have been addressed",
-  "Design aligns with approved concept/theme",
-  "Space planning is functional and efficient",
-  "Circulation and movement paths are clear",
-  "Furniture layout is practical",
-  "Material selections are approved",
-  "Colour palette is consistent",
-  "Lighting design is adequate for the space",
-  "Ceiling design coordinated with lighting & HVAC",
-  "Dimensions have been checked",
-  "Architectural, Structural & MEP drawings coordinated",
-  "Accessibility requirements considered",
-  "Safety requirements considered",
-  "Material specifications are complete",
-  "Drawings follow office standards",
-  "Sheet numbers and titles are correct",
-  "Renders match drawings and specifications",
+  "Client requirements captured and addressed",
+  "Space planning is efficient and functional",
+  "Circulation and movement flow are clear",
+  "Furniture layout is appropriate and to scale",
+  "Materials and finishes are specified",
+  "Colour scheme is coordinated",
+  "Lighting design is adequate and coordinated",
+  "Ceiling / HVAC coordination is resolved",
+  "Dimensions are complete and consistent",
+  "Architectural / Structural / MEP coordination is complete",
+  "Accessibility requirements are met",
+  "Safety requirements are met",
+  "Specifications are complete and correct",
+  "Office / drafting standards are followed",
+  "Sheet numbering and titles are correct",
+  "Renders match the drawings",
+  "Design is within the approved budget",
 ];
+
+// Contractual free revision rounds per stage; extra rounds get flagged billable.
+const DEFAULT_ROUNDS_INCLUDED = 2;
 
 const stamp = () => {
   const d = new Date();
@@ -213,129 +185,98 @@ const stamp = () => {
   )}:${p(d.getMinutes())}`;
 };
 
-export const getDesignFlow = (siteID) => readJson(designFlowKey(siteID), null);
+const createBoqAuditEntry = ({
+  boq,
+  action,
+  label,
+  actor,
+  details = "",
+  at = new Date().toISOString(),
+}) => ({
+  id: genShortId(),
+  action,
+  label,
+  actor: actor || "System",
+  details,
+  at,
+  status: boq?.status || "draft",
+  revision: boq?.revision || 1,
+});
+
+// Backfill pipeline stages added after a flow was created (e.g. Final
+// Quotation) so existing design flows gain them without a manual migration.
+// A newly inserted stage unlocks (DRAFTING) once every earlier stage is
+// approved, else stays LOCKED. Flows that already produced a BOQ are
+// grandfathered (the new stage is marked APPROVED) so finished projects
+// aren't retro-blocked. Order always follows the pipeline.
+const backfillStages = (flow) => {
+  if (!flow?.track) return flow;
+  const pipeline = getPipeline(flow.track);
+  const existing = new Map((flow.stages || []).map((s) => [s.key, s]));
+  let prevApproved = true;
+  const stages = pipeline.map((pd) => {
+    const cur = existing.get(pd.key);
+    if (cur) {
+      prevApproved = prevApproved && cur.reviewState === "APPROVED";
+      return cur;
+    }
+    const grandfathered = !!flow.boqId;
+    const reviewState = grandfathered
+      ? "APPROVED"
+      : prevApproved
+        ? "DRAFTING"
+        : "LOCKED";
+    const st = {
+      key: pd.key,
+      reviewState,
+      round: 1,
+      roundsIncluded: DEFAULT_ROUNDS_INCLUDED,
+      deliverables: [],
+      approvals: [],
+      submittedAt: null,
+      approvedAt: reviewState === "APPROVED" ? stamp() : null,
+    };
+    prevApproved = prevApproved && reviewState === "APPROVED";
+    return st;
+  });
+  const unchanged =
+    stages.length === (flow.stages || []).length &&
+    stages.every((s, i) => flow.stages[i]?.key === s.key);
+  return unchanged ? flow : { ...flow, stages };
+};
+
+export const getDesignFlow = (siteID) => {
+  const flow = readJson(designFlowKey(siteID), null);
+  if (!flow) return null;
+  const filled = backfillStages(flow);
+  if (filled !== flow) writeJson(designFlowKey(siteID), filled);
+  return filled;
+};
 
 export const isDesignStarted = (siteID) => !!getDesignFlow(siteID);
 
-// ── Backend hydration ────────────────────────────────────────────────────────
-//
-// Pull the server's design flow into the local fat-object cache and, crucially,
-// attach each server stage's `id` onto the matching local stage as `backendId`
-// so subsequent mutations can address /design-stages/:id/*.
-//
-// SAFE-BY-DEFAULT: the server stage shape is UNVERIFIED. GET design-flow returns
-// `{ flow, stages[] }` (stages ordered, each with its own id), but the exact
-// field names inside each stage (reviewState? deliverables? internal{}?) are not
-// confirmed against a live API. So we DO NOT trust the server to fully rebuild
-// the fat object — instead we keep the existing local flow as the source of
-// truth for shape, and only:
-//   1. merge the server `flow` scalars in shallowly (non-destructively), and
-//   2. map each server stage's id onto the local stage by KEY, else by ORDER.
-// If we have no local flow yet, we best-effort build a minimal one from the
-// server stages, but never throw. If the response is missing/empty/throws, the
-// existing local flow is left completely untouched.
+// Backend hydration: pull the server copy of a site's design flow into the
+// local cache, then fire the change event so the pipeline refreshes. No-op when
+// logged out; on any error or empty response it leaves the local flow untouched
+// so a missing/slow backend never wipes a working local pipeline. The server
+// returns { flow, stages[] } — fold the stages into the flow to match the shape
+// the synchronous getters read.
 export async function hydrateDesignFlow(siteID) {
-  if (!tokens.access() || !siteID) return getDesignFlow(siteID);
-
-  const mongoId = backendSiteId(siteID);
-  if (!mongoId) return getDesignFlow(siteID); // not backend-synced yet
-
-  let resp;
+  if (!siteID || !tokens.access()) return;
+  let data;
   try {
-    resp = await designFlowApi.getDesignFlow(mongoId);
+    data = await getDesignFlowApi(siteID);
   } catch (e) {
-    console.warn("hydrateDesignFlow: fetch failed, keeping local flow", e);
-    return getDesignFlow(siteID);
+    console.warn("hydrateDesignFlow: failed to fetch design flow", e);
+    return;
   }
-
-  // Tolerate either { flow, stages } or a bare object; bail (keep local) on
-  // anything we can't read as a stage list.
-  const serverFlow = resp?.flow && typeof resp.flow === "object" ? resp.flow : null;
-  const serverStages = Array.isArray(resp?.stages)
-    ? resp.stages
-    : Array.isArray(resp?.flow?.stages)
-      ? resp.flow.stages
-      : null;
-  if (!serverStages || serverStages.length === 0) {
-    // Nothing usable came back — never overwrite a working local flow.
-    return getDesignFlow(siteID);
-  }
-
-  const local = getDesignFlow(siteID);
-
-  // Helper: pull a stage KEY out of a server stage record under whichever field
-  // the backend happens to use (key/stageKey/code). UNVERIFIED.
-  const serverKeyOf = (s) => s?.key ?? s?.stageKey ?? s?.code ?? null;
-  // Helper: pull the server stage id (id/stageId/_id). UNVERIFIED.
-  const serverIdOf = (s) => s?.id ?? s?.stageId ?? s?._id ?? null;
-
-  try {
-    if (local && Array.isArray(local.stages)) {
-      // Preferred path: we already have the correct local shape. Just attach
-      // backend ids onto the existing stages — by key, falling back to order.
-      const byKey = new Map();
-      serverStages.forEach((s) => {
-        const k = serverKeyOf(s);
-        if (k != null) byKey.set(String(k), s);
-      });
-
-      local.stages = local.stages.map((stage, i) => {
-        const match =
-          (stage.key != null && byKey.get(String(stage.key))) ||
-          serverStages[i] || // order fallback (pipelines are created in order)
-          null;
-        const bid = match ? serverIdOf(match) : null;
-        return bid != null ? { ...stage, backendId: bid } : stage;
-      });
-
-      // Merge server flow scalars non-destructively: keep local keys, fill only
-      // ones the local object is missing, and never clobber `stages`.
-      if (serverFlow) {
-        const { stages: _ignore, ...rest } = serverFlow;
-        for (const [k, v] of Object.entries(rest)) {
-          if (local[k] === undefined) local[k] = v;
-        }
-      }
-
-      writeJson(designFlowKey(siteID), local);
-      window.dispatchEvent(new Event("designFlowChanged"));
-      return local;
-    }
-
-    // No local flow yet. Build a minimal fat object from the server so the
-    // pipeline can render — best-effort, defensive about every field. We map a
-    // server stage key to its local pipeline label/order where possible.
-    const track = serverFlow?.track || "Interiors";
-    const built = {
-      ...(serverFlow || {}),
-      track,
-      stages: serverStages.map((s, i) => {
-        const key = serverKeyOf(s) ?? `STAGE_${i + 1}`;
-        return {
-          key,
-          backendId: serverIdOf(s),
-          reviewState: s?.reviewState ?? (i === 0 ? "DRAFTING" : "LOCKED"),
-          round: Number(s?.round) || 1,
-          roundsIncluded: Number(s?.roundsIncluded) || DEFAULT_ROUNDS_INCLUDED,
-          deliverables: Array.isArray(s?.deliverables) ? s.deliverables : [],
-          approvals: Array.isArray(s?.approvals) ? s.approvals : [],
-          submittedAt: s?.submittedAt ?? null,
-          approvedAt: s?.approvedAt ?? null,
-          ...(s?.internal ? { internal: s.internal } : {}),
-          ...(Array.isArray(s?.comments) ? { comments: s.comments } : {}),
-          ...(s?.boq ? { boq: s.boq } : {}),
-        };
-      }),
-      history: Array.isArray(serverFlow?.history) ? serverFlow.history : [],
-    };
-    writeJson(designFlowKey(siteID), built);
-    window.dispatchEvent(new Event("designFlowChanged"));
-    return built;
-  } catch (e) {
-    // Any mapping surprise → fall back to whatever local state we had.
-    console.warn("hydrateDesignFlow: mapping failed, keeping local flow", e);
-    return getDesignFlow(siteID);
-  }
+  if (!data) return;
+  const flow = data.flow
+    ? { ...data.flow, stages: data.stages || data.flow.stages || [] }
+    : data;
+  if (!flow || !Array.isArray(flow.stages)) return;
+  writeJson(designFlowKey(siteID), flow);
+  window.dispatchEvent(new Event("designFlowChanged"));
 }
 
 // Freeze the survey and open the design pipeline. `areas` is areasForSite(site)
@@ -429,37 +370,6 @@ export const startDesign = (site, { areas, surveyState, basis } = {}) => {
   // Flip the site into the Design stage so every list/badge reflects it.
   saveSite({ siteID: site.siteID, status: "Design" });
   window.dispatchEvent(new Event("designFlowChanged"));
-
-  // Best-effort backend mirror: the server requires a FROZEN survey before a
-  // flow can open, so freeze first, then start the flow, then hydrate to attach
-  // the server stage ids onto the local stages. All keyed off the site's Mongo
-  // id. Any failure (incl. 409 "already frozen") is ignored — the pure-local
-  // flow above is unaffected. (Bodies are UNVERIFIED against the live API.)
-  pushApi(async () => {
-    const mongoId = backendSiteId(site.siteID);
-    if (!mongoId) return; // site not backend-synced — stay local-only
-    const pb = siteBasis.proposalBaseline || {};
-    const freezeBody = {
-      presetKey: pb.presetKey,
-      propertyType: pb.propertyType,
-      quote: pb.quoteId || null,
-      items: siteBasis.areas || [],
-      baseline: {
-        subtotal: pb.subtotal,
-        gst: pb.gst,
-        grandTotal: pb.grandTotal,
-      },
-    };
-    try {
-      await apiFreezeSurvey(mongoId, freezeBody);
-    } catch (e) {
-      // 409 = already frozen; any other failure is non-fatal here.
-      console.warn("startDesign: freeze-survey skipped/failed", e);
-    }
-    await designFlowApi.startDesign(mongoId, { track });
-    await hydrateDesignFlow(site.siteID);
-  });
-
   return flow;
 };
 
@@ -489,12 +399,6 @@ export const unfreezeSurvey = (siteID) => {
 
   window.dispatchEvent(new Event("designFlowChanged"));
   window.dispatchEvent(new Event("siteDataChanged"));
-
-  // Best-effort backend mirror: archive the server flow and reopen the survey.
-  pushApi(async () => {
-    const mongoId = backendSiteId(siteID);
-    if (mongoId) await apiUnfreezeSurvey(mongoId);
-  });
   return null;
 };
 
@@ -530,11 +434,7 @@ export const setStageDeliverables = (siteID, stageKey, deliverables) => {
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
   stage.deliverables = deliverables;
-  const result = writeFlow(siteID, flow);
-  const stageId = backendStageId(flow, stageKey);
-  if (stageId != null)
-    pushApi(() => designFlowApi.setStageDeliverables(stageId, deliverables));
-  return result;
+  return writeFlow(siteID, flow);
 };
 
 // Firm sends the stage to the client for sign-off.
@@ -605,178 +505,138 @@ export const requestRevision = (siteID, stageKey, { by = "Client", comment = "" 
   return writeFlow(siteID, flow);
 };
 
-// ── Internal review gate — Intern → … → Principal, before the client ─────────
+// ── Internal design review — the DRAFTING → INTERNAL_REVIEW → client loop ────
 //
-// Replaces the old "straight to client" submit. The firm submits a drafted
-// stage for internal review; each role signs off in turn; the Principal's final
-// approval is what actually sends it to the client. Any reviewer can return it
-// to the design team, which restarts the chain.
+// Firm side runs an ordered sign-off (Intern → … → Principal) plus a review
+// checklist and a design-comments register before a stage ever reaches the
+// client. Only the Principal (final step) can authorise, and only once the
+// checklist is complete and every comment is closed.
 
-const blankChecklist = () =>
-  DESIGN_REVIEW_CHECKLIST.map(() => ({ value: null, comment: "" }));
-
-// Lazily attach the internal-review scaffold so flows created before this
-// feature still work the moment they're reviewed.
+// Ensure the stage carries an internal-review record with a checklist slot per
+// item (preserving any answers already given).
 const ensureInternal = (stage) => {
-  if (!stage.internal) {
-    stage.internal = { step: 0, signoffs: [], checklist: blankChecklist() };
-  }
-  if (!Array.isArray(stage.internal.checklist)) {
-    stage.internal.checklist = blankChecklist();
-  }
-  if (!Array.isArray(stage.internal.signoffs)) stage.internal.signoffs = [];
-  if (typeof stage.internal.step !== "number") stage.internal.step = 0;
-  if (!Array.isArray(stage.comments)) stage.comments = [];
-  return stage.internal;
+  const internal = stage.internal || { step: 0, signoffs: [], checklist: [] };
+  internal.step = internal.step || 0;
+  internal.signoffs = internal.signoffs || [];
+  internal.checklist = DESIGN_REVIEW_CHECKLIST.map(
+    (_, i) => internal.checklist?.[i] || { value: null, comment: "" },
+  );
+  stage.internal = internal;
+  return internal;
 };
 
-// Every checklist item answered (Yes/No chosen).
+// Every checklist row answered (yes/no).
 export const checklistComplete = (stage) => {
-  const cl = stage?.internal?.checklist;
-  if (!Array.isArray(cl)) return false;
-  return DESIGN_REVIEW_CHECKLIST.every((_, i) => cl[i] && cl[i].value);
+  const checklist = stage?.internal?.checklist || [];
+  return (
+    DESIGN_REVIEW_CHECKLIST.length > 0 &&
+    DESIGN_REVIEW_CHECKLIST.every((_, i) => {
+      const v = checklist[i]?.value;
+      return v === "yes" || v === "no";
+    })
+  );
 };
 
-// Open (un-closed) design comments still outstanding on a stage.
+// Design comments still needing resolution (anything not Closed).
 export const openCommentsCount = (stage) =>
   (stage?.comments || []).filter((c) => c.status !== "Closed").length;
 
-// PDF final sign-off: all comments closed + checklist done before authorisation.
+// The Principal can only authorise when the checklist is done and no comment
+// is left open.
 export const canFinalizeInternal = (stage) =>
   checklistComplete(stage) && openCommentsCount(stage) === 0;
 
-// Firm submits a drafted stage into the internal review chain (R = round).
+// Firm submits a drafted stage into internal review (never straight to client).
 export const submitForInternalReview = (siteID, stageKey) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
   ensureInternal(stage);
-  stage.internal.step = 0;
-  stage.internalKickback = null;
   stage.reviewState = "INTERNAL_REVIEW";
-  stage.submittedForReviewAt = stamp();
+  stage.submittedAt = stamp();
   flow.history.unshift({
     at: stamp(),
     action: `${labelForStage(stageKey)} submitted for internal review (R${stage.round})`,
   });
-  const result = writeFlow(siteID, flow);
-  const stageId = backendStageId(flow, stageKey);
-  if (stageId != null)
-    pushApi(() => designFlowApi.submitInternalReview(stageId));
-  return result;
+  return writeFlow(siteID, flow);
 };
 
-// A reviewer signs off. The non-final roles just advance the chain; the
-// Principal's sign-off (the last role) is what submits the stage to the client.
-export const internalApprove = (
-  siteID,
-  stageKey,
-  { role = INTERNAL_ROLES[0], comment = "" } = {},
-) => {
+// Tick / annotate a single checklist row.
+export const setChecklistItem = (siteID, stageKey, index, patch) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
-  ensureInternal(stage);
-  const isFinal = stage.internal.step >= INTERNAL_ROLES.length - 1;
-  // The final authorisation is gated on the checklist + comment register.
-  if (isFinal && !canFinalizeInternal(stage)) return flow;
+  const internal = ensureInternal(stage);
+  const current = internal.checklist[index] || { value: null, comment: "" };
+  internal.checklist[index] = { ...current, ...patch };
+  return writeFlow(siteID, flow);
+};
 
-  stage.internal.signoffs.unshift({
-    role,
+// One reviewer signs off. Non-final steps advance the chain; the final step
+// (Principal) authorises and hands the stage to the client — but only when the
+// checklist is complete and every comment is closed.
+export const internalApprove = (siteID, stageKey, { role, comment = "" } = {}) => {
+  const flow = getDesignFlow(siteID);
+  const stage = getStage(flow, stageKey);
+  if (!stage) return flow;
+  const internal = ensureInternal(stage);
+  const step = internal.step || 0;
+  const isFinal = step >= INTERNAL_ROLES.length - 1;
+  if (isFinal && !canFinalizeInternal(stage)) return flow;
+  const actingRole = role || INTERNAL_ROLES[step];
+  internal.signoffs.unshift({
+    role: actingRole,
     decision: "APPROVED",
     comment,
     round: stage.round,
     at: stamp(),
   });
-
   if (isFinal) {
     stage.reviewState = "AWAITING_CLIENT";
     stage.submittedAt = stamp();
     flow.history.unshift({
       at: stamp(),
-      action: `Internal approval complete (${role}) → ${labelForStage(stageKey)} submitted to client`,
+      action: `${labelForStage(stageKey)} internally authorised by ${actingRole} → sent to client`,
     });
   } else {
-    stage.internal.step += 1;
+    internal.step = step + 1;
     flow.history.unshift({
       at: stamp(),
-      action: `${role} approved ${labelForStage(stageKey)} (internal)`,
+      action: `${labelForStage(stageKey)} approved by ${actingRole} (internal review)`,
     });
   }
-  const result = writeFlow(siteID, flow);
-  const stageId = backendStageId(flow, stageKey);
-  if (stageId != null)
-    pushApi(() => designFlowApi.internalApprove(stageId, { role, comment }));
-  return result;
+  return writeFlow(siteID, flow);
 };
 
-// A reviewer returns the stage to the design team — restarts the chain.
-export const internalRequestChanges = (
-  siteID,
-  stageKey,
-  { role = INTERNAL_ROLES[0], comment = "" } = {},
-) => {
+// Any reviewer can kick the stage back to the team — resets the chain to step 0
+// so a full re-review is required on resubmit.
+export const internalRequestChanges = (siteID, stageKey, { role, comment = "" } = {}) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
-  ensureInternal(stage);
-  stage.internal.signoffs.unshift({
-    role,
+  const internal = ensureInternal(stage);
+  const step = internal.step || 0;
+  const actingRole = role || INTERNAL_ROLES[step];
+  internal.signoffs.unshift({
+    role: actingRole,
     decision: "CHANGES",
     comment,
     round: stage.round,
     at: stamp(),
   });
-  stage.internal.step = 0;
+  internal.step = 0;
+  internal.kickback = { role: actingRole, comment, at: stamp() };
   stage.reviewState = "DRAFTING";
-  stage.internalKickback = { role, comment, at: stamp() };
   flow.history.unshift({
     at: stamp(),
-    action: `${role} returned ${labelForStage(stageKey)} to design team (internal)${
-      comment ? ` — “${comment}”` : ""
-    }`,
+    action: `${labelForStage(stageKey)} returned to team by ${actingRole} (internal review)`,
   });
-  const result = writeFlow(siteID, flow);
-  const stageId = backendStageId(flow, stageKey);
-  if (stageId != null)
-    pushApi(() => designFlowApi.internalReturn(stageId, { role, comment }));
-  return result;
+  return writeFlow(siteID, flow);
 };
 
-// Tick / comment a single Design Review Checklist row.
-export const setChecklistItem = (siteID, stageKey, index, patch) => {
-  const flow = getDesignFlow(siteID);
-  const stage = getStage(flow, stageKey);
-  if (!stage) return flow;
-  ensureInternal(stage);
-  const merged = {
-    ...stage.internal.checklist[index],
-    ...patch,
-  };
-  stage.internal.checklist[index] = merged;
-  const result = writeFlow(siteID, flow);
-  const stageId = backendStageId(flow, stageKey);
-  if (stageId != null)
-    // Send the full merged row (value + comment) so a partial patch (e.g.
-    // value-only) still leaves the server row consistent with local.
-    pushApi(() =>
-      designFlowApi.setChecklistItem(stageId, index, {
-        value: merged.value ?? null,
-        comment: merged.comment ?? "",
-      }),
-    );
-  return result;
-};
-
-// ── Design Comment register (PDF §2: DC-001 …) ───────────────────────────────
-// Numbered sequentially across the whole flow so DC-### is unique per project.
-const nextCommentNo = (flow) => {
-  const count = (flow.stages || []).reduce(
-    (n, s) => n + (s.comments?.length || 0),
-    0,
-  );
-  return `DC-${String(count + 1).padStart(3, "0")}`;
-};
+// ── Design comments register (DC-###) ────────────────────────────────────────
+const nextCommentNo = (comments) =>
+  `DC-${String((comments?.length || 0) + 1).padStart(3, "0")}`;
 
 export const addDesignComment = (
   siteID,
@@ -785,58 +645,23 @@ export const addDesignComment = (
 ) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
-  if (!stage) return flow;
-  ensureInternal(stage);
-  const localId = `dc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
-  stage.comments.unshift({
-    id: localId,
-    no: nextCommentNo(flow),
-    drawingRef,
-    comment,
-    raisedBy,
-    status: "Open", // Open | In Progress | Closed
+  if (!stage || !comment.trim()) return flow;
+  stage.comments = stage.comments || [];
+  stage.comments.push({
+    id: genShortId(),
+    no: nextCommentNo(stage.comments),
+    drawingRef: drawingRef.trim(),
+    comment: comment.trim(),
+    raisedBy: raisedBy || "",
+    status: "Open",
+    resolution: "",
     at: stamp(),
   });
-  flow.history.unshift({
-    at: stamp(),
-    action: `Design comment raised on ${labelForStage(stageKey)}${
-      raisedBy ? ` by ${raisedBy}` : ""
-    }`,
-  });
-  const result = writeFlow(siteID, flow);
-
-  // Best-effort: register the comment server-side and, when it returns a
-  // server id, stamp it onto the cached comment as `backendId` so a later
-  // status update (Close/reopen) can address /design-comments/:id. Server
-  // response shape is UNVERIFIED — we read id/_id/commentId tolerantly and
-  // skip the back-link if none is present.
-  const stageId = backendStageId(flow, stageKey);
-  if (stageId != null)
-    pushApi(async () => {
-      const created = await designFlowApi.addStageComment(stageId, {
-        drawingRef,
-        comment,
-        raisedBy,
-      });
-      const serverId =
-        created?.id ?? created?._id ?? created?.commentId ?? created?.comment?.id;
-      if (serverId != null) {
-        // Re-read the latest flow so we don't clobber concurrent edits.
-        const fresh = getDesignFlow(siteID);
-        const st = getStage(fresh, stageKey);
-        const c = (st?.comments || []).find((x) => x.id === localId);
-        if (c) {
-          c.backendId = serverId;
-          writeFlow(siteID, fresh);
-        }
-      }
-    });
-
-  return result;
+  return writeFlow(siteID, flow);
 };
 
-// Closing a comment requires a resolution note (PDF audit trail) — captured
-// here and timestamped. Reopening clears it.
+// Move a comment through Open → In Progress → Closed (or reopen). Closing
+// requires a non-empty resolution; any other status clears it.
 export const setDesignCommentStatus = (
   siteID,
   stageKey,
@@ -847,43 +672,24 @@ export const setDesignCommentStatus = (
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
-  const c = (stage.comments || []).find((x) => x.id === commentId);
-  if (c) {
-    c.status = status;
-    if (status === "Closed") {
-      c.resolution = resolution;
-      c.closedAt = stamp();
-      flow.history.unshift({
-        at: stamp(),
-        action: `${c.no} closed on ${labelForStage(stageKey)} — “${resolution}”`,
-      });
-    } else {
-      c.resolution = "";
-      c.closedAt = null;
-    }
+  const comment = (stage.comments || []).find((c) => c.id === commentId);
+  if (!comment) return flow;
+  if (status === "Closed") {
+    if (!resolution.trim()) return flow; // resolution required to close
+    comment.status = "Closed";
+    comment.resolution = resolution.trim();
+  } else {
+    comment.status = status;
+    comment.resolution = "";
   }
-  const result = writeFlow(siteID, flow);
-
-  // Best-effort: mirror the status change. The register endpoint is keyed by
-  // the COMMENT's server id, captured as `backendId` when the comment was
-  // created (a local-only `dc_*` comment has none → skip). resolution is sent
-  // so a Close carries its mandatory note.
-  const commentBackendId = c?.backendId ?? null;
-  if (commentBackendId != null)
-    pushApi(() =>
-      designFlowApi.updateDesignComment(commentBackendId, {
-        status,
-        resolution: status === "Closed" ? resolution : "",
-      }),
-    );
-  return result;
+  return writeFlow(siteID, flow);
 };
 
 export const removeDesignComment = (siteID, stageKey, commentId) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
-  stage.comments = (stage.comments || []).filter((x) => x.id !== commentId);
+  stage.comments = (stage.comments || []).filter((c) => c.id !== commentId);
   return writeFlow(siteID, flow);
 };
 
@@ -964,6 +770,10 @@ export const buildBoq = (flow) => {
                 unit: selectedMaterial.unit || el.unit,
               }]
           : el.materials || [],
+        // Full proposal materials (per-unit qty, rate, wastage, GST) kept
+        // alongside the display `materials` so the BOQ rate analysis can map
+        // real quantities from the proposal, not just material names.
+        proposalMaterials: el.materials || [],
         isCustom: !!el.isCustom,
       };
     });
@@ -1048,6 +858,37 @@ export const generateStageBoq = (siteID) => {
     // A regenerated survey bill always returns to commercial review. Preserve
     // the record ID, but never leave revised quantities marked as approved.
     if (targetBoq.status && targetBoq.status !== "draft") {
+      const now = new Date().toISOString();
+      const previousRevision = Number(targetBoq.revision) || 1;
+      const previousStatus = targetBoq.status;
+      targetBoq.revisedFrom = {
+        status: previousStatus,
+        revision: previousRevision,
+        at: now,
+        approval: targetBoq.approval || null,
+        procurement: targetBoq.procurement || null,
+      };
+      targetBoq.revisionHistory = [
+        ...(targetBoq.revisionHistory || []),
+        {
+          revision: previousRevision,
+          status: previousStatus,
+          at: now,
+          sections: JSON.parse(JSON.stringify(targetBoq.sections || [])),
+          approval: targetBoq.approval || null,
+        },
+      ];
+      targetBoq.auditTrail = [
+        ...(targetBoq.auditTrail || []),
+        createBoqAuditEntry({
+          boq: targetBoq,
+          action: "survey_regenerated_revision",
+          label: "Survey Regenerated Revision",
+          actor: "Design Flow",
+          details: `Revision ${previousRevision + 1} opened from ${previousStatus} after survey regeneration.`,
+          at: now,
+        }),
+      ];
       targetBoq.revision = (Number(targetBoq.revision) || 1) + 1;
     }
     targetBoq.status = "draft";
@@ -1114,6 +955,14 @@ export const generateStageBoq = (siteID) => {
             nos: Number(d.nos) || 1,
           },
           materials: row.materials || [],
+          // Auto-map the proposal's materials + per-unit quantities into the
+          // rate build-up. Forced on (re)generation so it reflects the proposal.
+          rateAnalysis: seedRateAnalysisFromMaterials(
+            existingItem?.rateAnalysis,
+            row.proposalMaterials || row.materials || [],
+            row.unit,
+            { force: true },
+          ),
           quotedQty: row.quotedQty,
           quotedRate: row.quotedRate,
           quotedAmount: row.quotedAmount,
@@ -1165,15 +1014,169 @@ export const generateStageBoq = (siteID) => {
       "BOQ was calculated, but it could not be saved to the main BOQ editor.";
   }
 
-  const result = writeFlow(siteID, flow);
+  return writeFlow(siteID, flow);
+};
 
-  // The local boqStorage sync above is the Phase-3 (no-API) fallback and stays.
-  // ADDITIONALLY ask the server to auto-build the bill on its own BOQ stage,
-  // best-effort. Keyed by the BOQ stage's backend id; skip if not hydrated.
-  const boqStageId = backendStageId(flow, "BOQ");
-  if (boqStageId != null)
-    pushApi(() => designFlowApi.generateStageBoq(boqStageId));
-  return result;
+// ── Standalone BOQ generation from survey ────────────────────────────────────
+//
+// Generates (or regenerates) a main BOQ from the frozen site survey without
+// requiring the BOQ pipeline stage. Used by:
+//   • DesignPipeline → "Create BOQ" card after DRAWINGS approved
+//   • BOQList → "From Survey" new-BOQ entry point
+//
+// Returns the saved BOQ's id on success, null on failure.
+export const generateBoqFromSurvey = (siteID) => {
+  const flow = getDesignFlow(siteID);
+  if (!flow?.siteBasis) return null;
+
+  const boq = buildBoq(flow);
+  if (!boq) return null;
+
+  try {
+    const site = getSite(siteID);
+    const clientID = site?.clientID || "";
+    const clientName = site?.clientName || "";
+    const boqId = `BOQ-${siteID}`;
+    const existingBoqSummary = listBoqs().find((b) => b.id === boqId);
+    let targetBoq = existingBoqSummary ? getBoq(existingBoqSummary.id) : null;
+
+    if (!targetBoq) {
+      targetBoq = createBoq({
+        title: `BOQ — ${clientName}`,
+        parentType: "client",
+        parentId: clientID,
+        client: { name: clientName, id: clientID },
+        project: { siteID, name: site?.fullAddress || "" },
+      });
+      targetBoq.id = boqId;
+    }
+
+    // If previously issued/approved, open a new revision rather than overwriting.
+    if (targetBoq.status && targetBoq.status !== "draft") {
+      const now = new Date().toISOString();
+      const prevRev = Number(targetBoq.revision) || 1;
+      targetBoq.revisedFrom = {
+        status: targetBoq.status,
+        revision: prevRev,
+        at: now,
+        approval: targetBoq.approval || null,
+        procurement: targetBoq.procurement || null,
+      };
+      targetBoq.revisionHistory = [
+        ...(targetBoq.revisionHistory || []),
+        {
+          revision: prevRev,
+          status: targetBoq.status,
+          at: now,
+          sections: JSON.parse(JSON.stringify(targetBoq.sections || [])),
+          approval: targetBoq.approval || null,
+        },
+      ];
+      targetBoq.auditTrail = [
+        ...(targetBoq.auditTrail || []),
+        createBoqAuditEntry({
+          boq: targetBoq,
+          action: "survey_regenerated_revision",
+          label: "Survey Regenerated",
+          actor: "Design Flow",
+          details: `Revision ${prevRev + 1} opened from ${targetBoq.status} after survey regeneration.`,
+          at: now,
+        }),
+      ];
+      targetBoq.revision = prevRev + 1;
+    }
+
+    targetBoq.status = "draft";
+    targetBoq.siteID = siteID;
+    targetBoq.proposalBaseline = { ...(flow.siteBasis?.proposalBaseline || {}) };
+    targetBoq.quotedTotal = boq.quotedTotal;
+    targetBoq.surveyFrozenAt = flow.siteBasis?.frozenAt || null;
+    targetBoq.surveyVariance = boq.variance;
+
+    // Build sections + items from survey areas, merging any existing manual work.
+    const surveyAreaNames = new Set(boq.areas.map((a) => a.area));
+    const generatedSections = boq.areas.map((area) => {
+      const existingSection = (targetBoq.sections || []).find((s) => s.name === area.area);
+      const matchedIds = new Set();
+      const items = area.rows.map((row) => {
+        const existing = (existingSection?.items || []).find(
+          (it) =>
+            (row.scopeItemId && it.scopeItemId === row.scopeItemId) ||
+            it.description === row.name,
+        );
+        if (existing) matchedIds.add(existing.id);
+        const d = getElementMeasurement(
+          flow.siteBasis?.measurements,
+          area.area,
+          row,
+        );
+        const hasDims = [d.length, d.breadth ?? d.width, d.height].some(
+          (v) => Number(v) > 0,
+        );
+        return {
+          ...existing,
+          id: existing?.id || genShortId(),
+          scopeItemId: row.scopeItemId || existing?.scopeItemId || null,
+          masterId: row.masterId || existing?.masterId || null,
+          description: row.name,
+          spec: row.selectedMaterial?.specifications || row.selectedMaterial?.spec || existing?.spec || "",
+          hsn: row.selectedMaterial?.hsn || existing?.hsn || "",
+          qty: row.measuredQty,
+          unit: row.unit,
+          rate: row.rate,
+          gstPercent: row.selectedMaterial?.gstPercent ?? existing?.gstPercent ?? 18,
+          discount: existing?.discount || { type: "percent", value: 0 },
+          materials: row.materials || existing?.materials || [],
+          // Auto-map the proposal's materials + per-unit quantities into the
+          // rate build-up. Forced on (re)generation so it reflects the proposal.
+          rateAnalysis: seedRateAnalysisFromMaterials(
+            existing?.rateAnalysis,
+            row.proposalMaterials || row.materials || existing?.materials || [],
+            row.unit,
+            { force: true },
+          ),
+          dimensions: {
+            enabled: hasDims,
+            length: Number(d.length) || 0,
+            breadth: Number(d.breadth ?? d.width) || 0,
+            height: Number(d.height) || 0,
+            nos: Number(d.nos) || 1,
+          },
+          siteSurveySource: true,
+          siteID,
+          quotedQty: row.quotedQty,
+          quotedAmount: row.quotedAmount,
+          measuredQty: row.measuredQty,
+          surveyVariance: row.variance,
+        };
+      });
+      return {
+        id: existingSection?.id || genShortId(),
+        name: area.area,
+        category: area.area,
+        items: [
+          ...items,
+          ...(existingSection?.items || []).filter(
+            (it) => !matchedIds.has(it.id) && !it.siteSurveySource,
+          ),
+        ],
+      };
+    });
+
+    targetBoq.sections = [
+      ...generatedSections,
+      ...(targetBoq.sections || []).filter((s) => !surveyAreaNames.has(s.name)),
+    ];
+
+    const saved = saveBoq(targetBoq);
+    flow.boqId = saved.id;
+    writeJson(designFlowKey(siteID), flow);
+    window.dispatchEvent(new Event("designFlowChanged"));
+    return saved.id;
+  } catch (err) {
+    console.error("generateBoqFromSurvey failed:", err);
+    return null;
+  }
 };
 
 // ── Sample design images (demo) ──────────────────────────────────────────────

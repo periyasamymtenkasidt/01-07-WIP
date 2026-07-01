@@ -39,7 +39,7 @@ export const collectGrades = (library = []) => {
   }));
 };
 
-export const gradeLabel = (key = "premium") =>
+export const gradeLabel = (key = "economy") =>
   GRADES.find((grade) => grade.key === key)?.label || labelFromKey(key);
 
 export const blankComponent = () => ({
@@ -54,6 +54,7 @@ export const blankComponent = () => ({
 export const blankRecipe = () => ({
   components: [],
   labourRate: 0,
+  consumables: 0,
   overheadPct: 10,
   marginPct: 20,
 });
@@ -92,12 +93,23 @@ export const computeRecipe = (recipe, materialsById = {}) => {
     };
   });
   const labour = Math.max(0, Number(r.labourRate) || 0);
-  const base = materialCost + labour;
+  const consumables = Math.max(0, Number(r.consumables) || 0);
+  const base = materialCost + labour + consumables;
   const overhead = (base * Math.max(0, Number(r.overheadPct) || 0)) / 100;
   const margin = ((base + overhead) * Math.max(0, Number(r.marginPct) || 0)) / 100;
   const rate = base + overhead + margin;
   const inputGst = lines.reduce((s, l) => s + l.inputGst, 0);
-  return { lines, materialCost, labour, base, overhead, margin, rate, inputGst };
+  return {
+    lines,
+    materialCost,
+    labour,
+    consumables,
+    base,
+    overhead,
+    margin,
+    rate,
+    inputGst,
+  };
 };
 
 // Computed rate for every grade — for the comparison chips.
@@ -125,18 +137,19 @@ export const recipeToMaterials = (recipe, materialLookup = {}) =>
       rate: line.rate,
       qty: line.qty,
       wastagePct: line.wastagePct,
+      consumptionMode: "per_unit",
       hsn: material?.hsn || "",
       gstPercent: Number(material?.gstPercent) || 0,
     };
   });
 
 const AREA_UNITS = new Set(["sqft", "sqm"]);
-const LENGTH_UNITS = new Set(["rmt", "rft", "mm"]);
+const LENGTH_UNITS = new Set(["mtr", "rmt", "rft", "mm"]);
 const COUNT_UNITS = new Set(["nos", "set", "pair", "lot", "ls"]);
 
 // Typical fit-out wastage by material type — gives a seeded build-up realistic
 // Waste% values instead of a flat 0. Tunable per project afterwards.
-const defaultWastageFor = (name = "") => {
+export const defaultWastageFor = (name = "") => {
   const n = name.toLowerCase();
   if (/(putty|paint|primer|polish|adhesive|cement|mortar)/.test(n)) return 10;
   if (/(glass|mirror)/.test(n)) return 12;

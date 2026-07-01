@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -12,10 +12,10 @@ import {
   Check,
   X,
   Send,
+  MoreVertical,
   Hash,
   Layers,
   Wallet,
-  IndianRupee,
   Percent,
   Calendar,
   StickyNote,
@@ -33,6 +33,13 @@ import {
   Link2,
   Edit3,
   ShieldCheck,
+  PackageCheck,
+  Package,
+  Ruler,
+  Eye,
+  History,
+  List,
+  MapPin,
 } from "lucide-react";
 import {
   createBoq,
@@ -43,34 +50,75 @@ import {
   computeItemAmount,
   computeItemQty,
   computeBoqTotals,
+  computeRateAnalysis,
   resolveGstTreatment,
   validateBoqForSend,
   blankItem,
   blankSection,
+  blankMeasurementRow,
+  blankRateAnalysisRow,
+  blankVendorComparison,
   DIMENSIONAL_UNITS,
+  DEFAULT_BOQ_APPROVAL,
+  BOQ_TYPES,
+  ITEM_TYPES,
+  BILLING_TYPES,
+  SCOPE_TYPES,
+  EXECUTION_BY,
 } from "../../data/boqStorage";
 import { getOrgProfile } from "../../data/orgProfile";
 import { PAYMENT_MILESTONES } from "../../data/MilestoneConfig";
 import { getPresetKeys } from "../../data/QuotePresets";
-import { UNITS, HSN_SUGGESTIONS, GST_OPTIONS } from "../../data/boqUnits";
+import { UNITS, HSN_SUGGESTIONS } from "../../data/boqUnits";
 import { getAllClients, clientToBoqFields } from "../../data/clientStorage";
 import {
   listLibrary,
   libraryToItem,
   incrementUsage,
 } from "../../data/itemLibrary";
-import BOQPreview from "./BOQPreview";
+import { listMaterials } from "../../data/materialLibrary";
+import BOQPreview, {
+  MaterialSheetPreview,
+  MeasurementSheetPreview,
+} from "./BOQPreview";
 import { formatAmount } from "../../utils/formatAmount";
 import ItemFormModal from "../../components/ItemFormModal";
 import CategorySelect from "../../components/CategorySelect";
+import {
+  BulletListEditor,
+  CollapsiblePanel,
+  CommercialValue,
+  ConfirmDialog,
+  Field,
+  Row,
+  SendValidationDialog,
+  SignoffCheck,
+  SignoffField,
+  Toast,
+} from "../../components/boq/BOQEditorPrimitives";
 import { getScheduleConfig } from "../../data/scheduleConfig";
 import { roomColor } from "../../data/categoryColors";
+import {
+  getContractByClient,
+  linkBoqToContract,
+} from "../../data/contractStorage";
+import {
+  computeRecipe,
+  materialsById as mkMatById,
+  recipeToMaterials,
+  defaultWastageFor,
+} from "../../data/rateBuildup";
+import { getDesignFlow, buildBoq } from "../../data/designFlowStorage";
+import { getElementMeasurement } from "../../data/surveyMeasureStorage";
+import { getAllSites } from "../../data/siteStorage";
 
 const inputBase =
   "bg-white border border-bordergray text-[12px] text-textcolor rounded-lg px-3 py-2 w-full focus:outline-none focus:border-select-blue focus:ring-2 focus:ring-select-blue/15 transition-all placeholder:text-text-subtle";
 
 const compactInput =
   "bg-white border border-bordergray text-[11.5px] text-textcolor rounded-md px-2 py-1.5 w-full focus:outline-none focus:border-select-blue focus:ring-1 focus:ring-select-blue/20 placeholder:text-text-subtle";
+
+const unitLabelOf = (code) => UNITS.find((u) => u.code === code)?.label || code || "";
 
 const STATUS_STYLES = {
   draft: {
@@ -89,12 +137,105 @@ const STATUS_STYLES = {
     text: "text-amber-700",
     border: "border-amber-200",
   },
+  issued_for_tender: {
+    bg: "bg-amber-100",
+    text: "text-amber-700",
+    border: "border-amber-200",
+  },
   signed: {
     bg: "bg-purple-100",
     text: "text-purple-700",
     border: "border-purple-200",
   },
+  issued_for_procurement: {
+    bg: "bg-indigo-100",
+    text: "text-indigo-700",
+    border: "border-indigo-200",
+  },
+  procurement: {
+    bg: "bg-indigo-100",
+    text: "text-indigo-700",
+    border: "border-indigo-200",
+  },
 };
+
+// Feature flag — hide the Economy / Premium / Luxury grade selector in the
+// BOQ line-item view. Set to true to bring it back.
+const SHOW_GRADE_SELECTOR = false;
+
+const LOCKED_STATUSES = ["sent", "approved", "issued_for_tender", "signed", "issued_for_procurement", "procurement"];
+const isLockedStatus = (status) => LOCKED_STATUSES.includes(status);
+const SIGNOFF_LOCKED_STATUSES = ["signed", "issued_for_procurement", "procurement"];
+const isSignoffLockedStatus = (status) => SIGNOFF_LOCKED_STATUSES.includes(status);
+
+const DEFAULT_APPROVAL = DEFAULT_BOQ_APPROVAL;
+
+const mergeApproval = (approval = {}) => ({
+  ...DEFAULT_APPROVAL,
+  ...approval,
+  checklist: {
+    ...DEFAULT_APPROVAL.checklist,
+    ...(approval.checklist || {}),
+  },
+});
+
+const createAuditEntry = ({
+  boq,
+  action,
+  label,
+  actor,
+  details = "",
+  at = new Date().toISOString(),
+}) => ({
+  id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+  action,
+  label,
+  actor: actor || "System",
+  details,
+  at,
+  status: boq?.status || "draft",
+  revision: boq?.revision || 1,
+});
+
+const appendAuditTrail = (boq, entry) => [
+  ...(boq?.auditTrail || []),
+  createAuditEntry({ boq, ...entry }),
+];
+
+const createRevisionComparison = (boq, nextRevision) => ({
+  previousRevision: boq?.revision || 1,
+  currentRevision: nextRevision,
+  createdAt: new Date().toISOString(),
+  summary: {
+    sectionsAdded: 0,
+    sectionsRemoved: 0,
+    itemsAdded: 0,
+    itemsRemoved: 0,
+    itemsChanged: 0,
+    quantityDelta: 0,
+    amountDelta: 0,
+  },
+  changes: [],
+  reason: "",
+});
+
+const DEFAULT_PROCUREMENT = {
+  issued: false,
+  issuedAt: "",
+  issuedBy: "",
+  contractId: "",
+};
+
+const countMaterials = (record) =>
+  (record?.sections || []).reduce(
+    (sum, section) =>
+      sum +
+      (section.items || []).reduce(
+        (itemSum, item) => itemSum + (item.materials || []).length,
+        0,
+      ),
+    0,
+  );
 
 const BOQEditor = () => {
   const navigate = useNavigate();
@@ -109,6 +250,7 @@ const BOQEditor = () => {
   // { blocks, warnings } from validateBoqForSend, shown in SendValidationDialog.
   const [sendValidation, setSendValidation] = useState(null);
   const [showSeedPicker, setShowSeedPicker] = useState(false);
+  const [showSurveyPicker, setShowSurveyPicker] = useState(false);
   const [libraryPickerSection, setLibraryPickerSection] = useState(null);
   const [showSectionPicker, setShowSectionPicker] = useState(false);
   // Section id currently adding a line item through the full Item Form modal.
@@ -117,6 +259,11 @@ const BOQEditor = () => {
   const [editingItem, setEditingItem] = useState(null);
   const [itemSearch, setItemSearch] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  const [showMeasurementSheet, setShowMeasurementSheet] = useState(false);
+  const [showMaterialSheet, setShowMaterialSheet] = useState(false);
+  const [viewingSnapshot, setViewingSnapshot] = useState(null);
+  const [groupMode, setGroupMode] = useState("section"); // "section" | "room" | "work"
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   // Items inserted from the library are compact-by-default; user can expand
   // any of them to override rate / HSN / GST. Tracked by item id.
   const [expandedLinked, setExpandedLinked] = useState({});
@@ -167,16 +314,64 @@ const BOQEditor = () => {
   }, [toast]);
 
   // ── Mutations ────────────────────────────────────────────────────────────
-  const update = (changes) => setBoq((prev) => ({ ...prev, ...changes }));
+  const updateInternal = (changes) =>
+    setBoq((prev) => ({
+      ...prev,
+      ...(typeof changes === "function" ? changes(prev) : changes),
+    }));
+
+  const canEditBoq = (record = boq) => !isLockedStatus(record?.status);
+  const canEditSignoff = (record = boq) => !isSignoffLockedStatus(record?.status);
+  const showLockedToast = () =>
+    showToast("Create a revision before editing this issued BOQ.", "info");
+  const showSignoffLockedToast = () =>
+    showToast("Create a revision before changing approved signoff details.", "info");
+
+  const update = (changes) =>
+    setBoq((prev) => (canEditBoq(prev) ? { ...prev, ...changes } : prev));
 
   const updateClient = (changes) =>
-    setBoq((prev) => ({ ...prev, client: { ...prev.client, ...changes } }));
+    setBoq((prev) =>
+      canEditBoq(prev)
+        ? { ...prev, client: { ...prev.client, ...changes } }
+        : prev,
+    );
 
   const updateProject = (changes) =>
-    setBoq((prev) => ({ ...prev, project: { ...prev.project, ...changes } }));
+    setBoq((prev) =>
+      canEditBoq(prev)
+        ? { ...prev, project: { ...prev.project, ...changes } }
+        : prev,
+    );
+
+  const updateApproval = (changes) =>
+    setBoq((prev) => {
+      if (!canEditSignoff(prev)) return prev;
+      const current = mergeApproval(prev.approval);
+      return {
+        ...prev,
+        approval: {
+          ...current,
+          ...(typeof changes === "function" ? changes(current) : changes),
+        },
+      };
+    });
+
+  const updateApprovalChecklist = (key, checked) =>
+    updateApproval((approval) => ({
+      checklist: {
+        ...approval.checklist,
+        [key]: checked,
+      },
+    }));
 
   const addSection = () => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     setBoq((prev) => {
+      if (!canEditBoq(prev)) return prev;
       const sec = blankSection(`Section ${(prev.sections?.length || 0) + 1}`);
       const next = { ...prev, sections: [...(prev.sections || []), sec] };
       setExpanded((p) => ({ ...p, [sec.id]: true }));
@@ -190,22 +385,33 @@ const BOQEditor = () => {
   const updateSection = (sid, changes) => {
     setBoq((prev) => ({
       ...prev,
-      sections: prev.sections.map((s) =>
-        s.id === sid ? { ...s, ...changes } : s,
-      ),
+      sections: canEditBoq(prev)
+        ? prev.sections.map((s) => (s.id === sid ? { ...s, ...changes } : s))
+        : prev.sections,
     }));
   };
 
   const removeSection = (sid) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     setBoq((prev) => ({
       ...prev,
-      sections: prev.sections.filter((s) => s.id !== sid),
+      sections: canEditBoq(prev)
+        ? prev.sections.filter((s) => s.id !== sid)
+        : prev.sections,
     }));
     showToast("Section removed", "info");
   };
 
   const duplicateSection = (sid) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     setBoq((prev) => {
+      if (!canEditBoq(prev)) return prev;
       const idx = prev.sections.findIndex((s) => s.id === sid);
       if (idx < 0) return prev;
       const src = prev.sections[idx];
@@ -242,14 +448,18 @@ const BOQEditor = () => {
       unit: form.unit || "nos",
       rate: Number(form.rate) || 0,
       gstPercent: Number(form.gstPercent) || 18,
+      hierarchy: base.hierarchy || {},
+      details: base.details || {},
       dimensions: {
         enabled: L > 0 || B > 0 || H > 0,
         length: L,
         breadth: B,
         height: H,
-        nos: base.dimensions?.nos || 1,
       },
       materials: form.materials ? form.materials.map((m) => ({ ...m })) : [],
+      measurementRows: base.measurementRows || [],
+      rateAnalysis: base.rateAnalysis || {},
+      vendorComparisons: base.vendorComparisons || [],
     };
   };
 
@@ -274,6 +484,10 @@ const BOQEditor = () => {
 
   // Save handler for "Add Line Item" — appends a new BOQ item to the section.
   const handleItemFormSave = (form) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     const sid = itemFormSection;
     if (!sid) return;
     const newItem = formToBoqItem(form, {
@@ -295,6 +509,10 @@ const BOQEditor = () => {
 
   // Save handler for clicking an existing row — updates the item in place.
   const handleItemEditSave = (form) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     if (!editingItem) return;
     const { sectionId, itemId } = editingItem;
     setBoq((prev) => ({
@@ -318,6 +536,10 @@ const BOQEditor = () => {
   // items in the chosen category. Each item carries `masterId` so it renders
   // compact-by-default (just qty/dims editable, rate/HSN hidden behind Override).
   const addSectionFromCategory = (label, categoryValue, libItems) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     const sec = blankSection(label);
     sec.category = categoryValue;
     sec.items = libItems.map((lib) => ({
@@ -340,6 +562,10 @@ const BOQEditor = () => {
   };
 
   const insertLibraryItems = (sid, libItems) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     const newItems = libItems.map((lib) => ({
       ...blankItem(),
       ...libraryToItem(lib),
@@ -363,51 +589,69 @@ const BOQEditor = () => {
   const updateItem = (sid, iid, changes) => {
     setBoq((prev) => ({
       ...prev,
-      sections: prev.sections.map((s) =>
-        s.id === sid
-          ? {
-              ...s,
-              items: s.items.map((it) =>
-                it.id === iid ? { ...it, ...changes } : it,
-              ),
-            }
-          : s,
-      ),
+      sections: canEditBoq(prev)
+        ? prev.sections.map((s) =>
+            s.id === sid
+              ? {
+                  ...s,
+                  items: s.items.map((it) =>
+                    it.id === iid ? { ...it, ...changes } : it,
+                  ),
+                }
+              : s,
+          )
+        : prev.sections,
     }));
   };
 
   const removeItem = (sid, iid) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     setBoq((prev) => ({
       ...prev,
-      sections: prev.sections.map((s) =>
-        s.id === sid
-          ? { ...s, items: s.items.filter((it) => it.id !== iid) }
-          : s,
-      ),
+      sections: canEditBoq(prev)
+        ? prev.sections.map((s) =>
+            s.id === sid
+              ? { ...s, items: s.items.filter((it) => it.id !== iid) }
+              : s,
+          )
+        : prev.sections,
     }));
   };
 
   const duplicateItem = (sid, iid) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     setBoq((prev) => ({
       ...prev,
-      sections: prev.sections.map((s) => {
-        if (s.id !== sid) return s;
-        const idx = s.items.findIndex((it) => it.id === iid);
-        if (idx < 0) return s;
-        const src = s.items[idx];
-        const clone = {
-          ...JSON.parse(JSON.stringify(src)),
-          id: `${src.id}_c${Date.now().toString(36).slice(-3)}`,
-        };
-        const items = [...s.items];
-        items.splice(idx + 1, 0, clone);
-        return { ...s, items };
-      }),
+      sections: canEditBoq(prev)
+        ? prev.sections.map((s) => {
+            if (s.id !== sid) return s;
+            const idx = s.items.findIndex((it) => it.id === iid);
+            if (idx < 0) return s;
+            const src = s.items[idx];
+            const clone = {
+              ...JSON.parse(JSON.stringify(src)),
+              id: `${src.id}_c${Date.now().toString(36).slice(-3)}`,
+            };
+            const items = [...s.items];
+            items.splice(idx + 1, 0, clone);
+            return { ...s, items };
+          })
+        : prev.sections,
     }));
   };
 
   // ── Actions ──────────────────────────────────────────────────────────────
   const handleSave = () => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     saveBoq(boq);
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 1500);
@@ -418,7 +662,26 @@ const BOQEditor = () => {
     // Stamp the firm's current org profile onto the BOQ so this document's
     // header/GSTIN/bank details never silently change if the profile is
     // edited later — drafts always read the live profile, sent docs don't.
-    update({ status: "sent", orgSnapshot: getOrgProfile() });
+    updateInternal((prev) => {
+      const approval = mergeApproval(prev.approval);
+      const now = new Date().toISOString();
+      return {
+        status: "sent",
+        orgSnapshot: getOrgProfile(),
+        approval: {
+          ...approval,
+          preparedAt: approval.preparedAt || now,
+          sentAt: now,
+        },
+        auditTrail: appendAuditTrail(prev, {
+          action: "sent",
+          label: "Marked Sent",
+          actor: approval.preparedBy || "Prepared by user",
+          details: "BOQ issued to client and locked for controlled revision.",
+          at: now,
+        }),
+      };
+    });
     setSendValidation(null);
     showToast("BOQ marked as sent", "success");
   };
@@ -432,9 +695,207 @@ const BOQEditor = () => {
     finalizeSend();
   };
 
-  const handleApprove = () => {
-    update({ status: "approved" });
+  const finalizeApprove = () => {
+    updateInternal((prev) => {
+      const approval = mergeApproval(prev.approval);
+      const now = new Date().toISOString();
+      return {
+        status: "approved",
+        approval: {
+          ...approval,
+          reviewedAt: approval.reviewedAt || now,
+          approvedAt: now,
+        },
+        auditTrail: appendAuditTrail(prev, {
+          action: "approved",
+          label: "Approved",
+          actor: approval.approvedBy || approval.reviewedBy || "Approver",
+          details: "BOQ approval completed for this revision.",
+          at: now,
+        }),
+      };
+    });
     showToast("BOQ approved", "success");
+  };
+
+  const handleApprove = () => {
+    const approval = mergeApproval(boq.approval);
+    const checklistComplete = Object.values(approval.checklist).every(Boolean);
+    const missingPeople = [
+      !approval.reviewedBy && "reviewer",
+      !approval.approvedBy && "approver",
+    ].filter(Boolean);
+
+    if (!checklistComplete || missingPeople.length > 0) {
+      setConfirmDialog({
+        title: "Approve with incomplete signoff?",
+        message: [
+          missingPeople.length > 0
+            ? `Missing ${missingPeople.join(" and ")} name.`
+            : "",
+          !checklistComplete ? "Review checklist is not fully complete." : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        confirmLabel: "Approve Anyway",
+        onConfirm: finalizeApprove,
+      });
+      return;
+    }
+
+    finalizeApprove();
+  };
+
+  const handleSign = () => {
+    updateInternal((prev) => {
+      const approval = mergeApproval(prev.approval);
+      const now = new Date().toISOString();
+      return {
+        status: "signed",
+        approval: {
+          ...approval,
+          clientAcceptedBy:
+            approval.clientAcceptedBy || prev.client?.name || "Client",
+          clientAcceptedAt: approval.clientAcceptedAt || now,
+        },
+        auditTrail: appendAuditTrail(prev, {
+          action: "signed",
+          label: "Client Signed",
+          actor: approval.clientAcceptedBy || prev.client?.name || "Client",
+          details: "Client acceptance recorded.",
+          at: now,
+        }),
+      };
+    });
+    showToast("BOQ marked as signed", "success");
+  };
+
+  const handleIssueForTender = () => {
+    setConfirmDialog({
+      title: "Issue for tender?",
+      message: `${boq.id} will be locked and marked as issued for vendor tendering.`,
+      confirmLabel: "Issue Tender",
+      onConfirm: () => {
+        updateInternal((prev) => {
+          const approval = mergeApproval(prev.approval);
+          const now = new Date().toISOString();
+          return {
+            status: "issued_for_tender",
+            auditTrail: appendAuditTrail(prev, {
+              action: "issued_for_tender",
+              label: "Issued for Tender",
+              actor: approval.approvedBy || approval.reviewedBy || "Approver",
+              details: "BOQ issued for tendering to vendors.",
+              at: now,
+            }),
+          };
+        });
+        showToast("BOQ issued for tender", "success");
+      },
+    });
+  };
+
+  const handleIssueForProcurement = () => {
+    const materialCount = countMaterials(boq);
+    if (materialCount === 0) {
+      showToast("Add BOQ materials before issuing for procurement.", "info");
+      return;
+    }
+
+    const contract = boq.client?.id ? getContractByClient(boq.client.id) : null;
+    if (!contract?.id) {
+      showToast(
+        "Link this BOQ to a signed client contract before issuing for procurement.",
+        "info",
+      );
+      return;
+    }
+
+    setConfirmDialog({
+      title: "Issue for procurement?",
+      message: `This will lock ${boq.id} as the procurement basis and link it to ${contract.id}.`,
+      confirmLabel: "Issue Procurement",
+      onConfirm: () => {
+        const now = new Date().toISOString();
+        linkBoqToContract(contract.id, boq.id);
+        updateInternal((prev) => {
+          const approval = mergeApproval(prev.approval);
+          const issuedBy =
+            approval.clientAcceptedBy ||
+            approval.approvedBy ||
+            prev.client?.name ||
+            "Authorized user";
+          return {
+            status: "issued_for_procurement",
+            procurement: {
+              ...DEFAULT_PROCUREMENT,
+              ...(prev.procurement || {}),
+              issued: true,
+              issuedAt: now,
+              issuedBy,
+              contractId: contract.id,
+            },
+            auditTrail: appendAuditTrail(prev, {
+              action: "issued_for_procurement",
+              label: "Issued for Procurement",
+              actor: issuedBy,
+              details: `Linked to contract ${contract.id} for RFQ and PO takeoff.`,
+              at: now,
+            }),
+          };
+        });
+        showToast("BOQ issued for procurement", "success");
+      },
+    });
+  };
+
+  const handleCreateRevision = () => {
+    const nextRevision = Number(boq.revision || 1) + 1;
+    setConfirmDialog({
+      title: "Create editable revision?",
+      message: `${boq.id} Rev ${boq.revision || 1} is ${boq.status}. This will unlock a new draft revision while preserving the same BOQ record.`,
+      confirmLabel: "Create Revision",
+      onConfirm: () => {
+        updateInternal({
+          status: "draft",
+          revision: nextRevision,
+          orgSnapshot: null,
+          procurement: DEFAULT_PROCUREMENT,
+          approval: {
+            ...DEFAULT_APPROVAL,
+            preparedBy: mergeApproval(boq.approval).preparedBy,
+            reviewedBy: mergeApproval(boq.approval).reviewedBy,
+            approvedBy: mergeApproval(boq.approval).approvedBy,
+            clientAcceptedBy: mergeApproval(boq.approval).clientAcceptedBy,
+          },
+          revisedFrom: {
+            status: boq.status,
+            revision: boq.revision || 1,
+            at: new Date().toISOString(),
+            approval: mergeApproval(boq.approval),
+            procurement: boq.procurement || DEFAULT_PROCUREMENT,
+          },
+          revisionHistory: [
+            ...(boq.revisionHistory || []),
+            {
+              revision: boq.revision || 1,
+              status: boq.status,
+              at: new Date().toISOString(),
+              sections: JSON.parse(JSON.stringify(boq.sections || [])),
+              approval: mergeApproval(boq.approval),
+            },
+          ],
+          revisionComparison: createRevisionComparison(boq, nextRevision),
+          auditTrail: appendAuditTrail(boq, {
+            action: "revision_created",
+            label: "Revision Created",
+            actor: "System",
+            details: `Revision ${nextRevision} opened from ${boq.status}.`,
+          }),
+        });
+        showToast(`Revision ${nextRevision} created`, "success");
+      },
+    });
   };
 
   const handleDuplicate = () => {
@@ -443,6 +904,150 @@ const BOQEditor = () => {
       navigate(`/boq/${next.id}`);
       showToast(`Duplicated as ${next.id}`, "success");
     }
+  };
+
+  const handleSyncHsnFromMaster = () => {
+    const library = listLibrary();
+    // Build two lookups: by masterId (exact) and by description (fuzzy fallback)
+    const masterById = {};
+    const masterByDesc = {};
+    for (const l of library) {
+      if (l.id) masterById[l.id] = l;
+      if (l.description) masterByDesc[l.description.toLowerCase().trim()] = l;
+    }
+
+    let updated = 0;
+    const newSections = (boq.sections || []).map((s) => ({
+      ...s,
+      items: (s.items || []).map((it) => {
+        const master =
+          (it.masterId ? masterById[it.masterId] : null) ||
+          masterByDesc[(it.description || "").toLowerCase().trim()];
+        const masterHsn = master?.hsn || "";
+        if (masterHsn && it.hsn !== masterHsn) {
+          updated++;
+          return { ...it, hsn: masterHsn };
+        }
+        return it;
+      }),
+    }));
+
+    if (updated > 0) {
+      updateInternal({ sections: newSections });
+    }
+    showToast(
+      updated > 0
+        ? `HSN synced for ${updated} item${updated === 1 ? "" : "s"} from Item Master`
+        : "No items matched Item Master entries with HSN set",
+      updated > 0 ? "success" : "info",
+    );
+  };
+
+  const handleGenerateFromSurvey = () => {
+    const siteID = boq.siteID || boq.project?.siteID;
+    if (!siteID) {
+      setShowSurveyPicker(true);
+      return;
+    }
+    runGenerateFromSurvey(siteID);
+  };
+
+  const runGenerateFromSurvey = (siteID) => {
+    const flow = getDesignFlow(siteID);
+    if (!flow?.siteBasis) {
+      showToast("No frozen survey found for this site.", "info");
+      return;
+    }
+    const surveyBoq = buildBoq(flow);
+    if (!surveyBoq?.areas?.length) {
+      showToast("Survey has no measured items to generate from.", "info");
+      return;
+    }
+    const totalItems = surveyBoq.areas.reduce((s, a) => s + a.rows.length, 0);
+    setConfirmDialog({
+      title: "Generate from Survey",
+      message: `Populate ${surveyBoq.areas.length} section(s) with ${totalItems} item(s) from the frozen site survey. Existing manual sections are preserved.`,
+      confirmLabel: "Generate",
+      onConfirm: () => {
+        const existingSections = boq.sections || [];
+        const surveyAreaNames = new Set(surveyBoq.areas.map((a) => a.area));
+        const generatedSections = surveyBoq.areas.map((area) => {
+          const existingSection = existingSections.find((s) => s.name === area.area);
+          const matchedIds = new Set();
+          const items = area.rows.map((row) => {
+            const existing = (existingSection?.items || []).find(
+              (it) =>
+                (row.scopeItemId && it.scopeItemId === row.scopeItemId) ||
+                it.description === row.name,
+            );
+            if (existing) matchedIds.add(existing.id);
+            const d = getElementMeasurement(
+              flow.siteBasis?.measurements,
+              area.area,
+              row,
+            );
+            const hasDims = [d.length, d.breadth ?? d.width, d.height].some(
+              (v) => Number(v) > 0,
+            );
+            const newItem = blankItem();
+            return {
+              ...newItem,
+              ...existing,
+              id: existing?.id || newItem.id,
+              scopeItemId: row.scopeItemId || existing?.scopeItemId || null,
+              masterId: row.masterId || existing?.masterId || null,
+              description: row.name,
+              spec: row.selectedMaterial?.specifications || row.selectedMaterial?.spec || existing?.spec || "",
+              hsn: row.selectedMaterial?.hsn || existing?.hsn || "",
+              qty: row.measuredQty,
+              unit: row.unit,
+              rate: row.rate,
+              gstPercent: row.selectedMaterial?.gstPercent ?? existing?.gstPercent ?? 18,
+              discount: existing?.discount || { type: "percent", value: 0 },
+              materials: row.materials || existing?.materials || [],
+              dimensions: {
+                enabled: hasDims,
+                length: Number(d.length) || 0,
+                breadth: Number(d.breadth ?? d.width) || 0,
+                height: Number(d.height) || 0,
+                nos: Number(d.nos) || 1,
+              },
+              siteSurveySource: true,
+              siteID,
+              quotedQty: row.quotedQty,
+              quotedAmount: row.quotedAmount,
+              measuredQty: row.measuredQty,
+              surveyVariance: row.variance,
+            };
+          });
+          return {
+            id: existingSection?.id || blankSection().id,
+            name: area.area,
+            category: area.area,
+            items: [
+              ...items,
+              ...(existingSection?.items || []).filter(
+                (it) => !matchedIds.has(it.id) && !it.siteSurveySource,
+              ),
+            ],
+          };
+        });
+        const merged = [
+          ...generatedSections,
+          ...existingSections.filter((s) => !surveyAreaNames.has(s.name)),
+        ];
+        updateInternal({
+          sections: merged,
+          siteID,
+          surveyFrozenAt: flow.siteBasis?.frozenAt || null,
+          quotedTotal: surveyBoq.quotedTotal,
+        });
+        showToast(
+          `Generated ${surveyBoq.areas.length} section(s) with ${totalItems} item(s) from survey`,
+          "success",
+        );
+      },
+    });
   };
 
   const handleDelete = () => {
@@ -459,6 +1064,10 @@ const BOQEditor = () => {
   };
 
   const seedFromPreset = (presetKey) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
     const next = createBoq({
       title: boq.title,
       client: boq.client,
@@ -485,6 +1094,7 @@ const BOQEditor = () => {
         setShowPreview(false);
         setLibraryPickerSection(null);
         setShowSeedPicker(false);
+        setShowHeaderMenu(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -493,6 +1103,27 @@ const BOQEditor = () => {
   }, [boq]);
 
   const totals = useMemo(() => (boq ? computeBoqTotals(boq) : null), [boq]);
+
+  const roomBreakdown = useMemo(() => {
+    if (!boq?.sections?.length) return [];
+    const groups = {};
+    for (const sec of boq.sections) {
+      const key = sec.category || sec.name || "Other";
+      if (!groups[key]) groups[key] = { category: key, sectionIds: [], net: 0, gst: 0, itemCount: 0 };
+      groups[key].sectionIds.push(sec.id);
+      for (const item of sec.items || []) {
+        const r = computeItemAmount(item);
+        groups[key].net += r.net;
+        groups[key].gst += r.gst;
+        groups[key].itemCount += 1;
+      }
+    }
+    return Object.values(groups).sort((a, b) => b.net - a.net);
+  }, [boq?.sections]);
+
+  const scrollToSection = (sectionId) => {
+    document.getElementById(`section-${sectionId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   const gst = useMemo(
     () => (boq ? resolveGstTreatment(boq) : null),
     [boq],
@@ -503,17 +1134,52 @@ const BOQEditor = () => {
     [boq],
   );
 
+  const roomGroups = useMemo(() => {
+    const groups = [];
+    const map = {};
+    for (const sec of boq?.sections || []) {
+      const key = sec.category || sec.name || "Uncategorized";
+      if (!map[key]) {
+        map[key] = { label: key, items: [] };
+        groups.push(map[key]);
+      }
+      for (const item of sec.items || []) {
+        map[key].items.push({ ...item, _from: sec.name });
+      }
+    }
+    return groups;
+  }, [boq]);
+
+  const workGroups = useMemo(() => {
+    const groups = [];
+    const map = {};
+    for (const sec of boq?.sections || []) {
+      for (const item of sec.items || []) {
+        const key = item.description || "Uncategorized";
+        if (!map[key]) {
+          map[key] = { label: key, items: [] };
+          groups.push(map[key]);
+        }
+        map[key].items.push({ ...item, _from: sec.category || sec.name });
+      }
+    }
+    return groups;
+  }, [boq]);
+
   if (!boq) {
     return <div className="p-8 text-text-muted text-sm">Loading BOQ…</div>;
   }
 
   const status = STATUS_STYLES[boq.status] || STATUS_STYLES.draft;
+  const isLocked = isLockedStatus(boq.status);
+  const approval = mergeApproval(boq.approval);
+  const isSignoffLocked = isSignoffLockedStatus(boq.status);
 
   return (
-    <div className="bg-overallbg font-sans h-full overflow-y-auto pb-32">
+    <div className="bg-overallbg font-sans h-full overflow-hidden flex flex-col">
       {/* ── Sticky header ───────────────────────────────────────────────── */}
-      <div className="sticky top-0 z-30 bg-overallbg/80 backdrop-blur-xl border-b border-bordergray/70">
-        <div className="px-6 py-3 flex items-center justify-between flex-wrap gap-3">
+      <div className="sticky top-0 z-30 bg-overallbg/80 backdrop-blur-xl border-b border-bordergray/70 shrink-0">
+        <div className="px-6 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
@@ -534,7 +1200,7 @@ const BOQEditor = () => {
                 <span
                   className={`text-[10px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded-md border ${status.bg} ${status.text} ${status.border}`}
                 >
-                  {boq.status}
+                  {boq.status.replace(/_/g, " ")}
                 </span>
                 <span className="text-[10px] text-text-subtle">
                   Rev {boq.revision}
@@ -544,39 +1210,34 @@ const BOQEditor = () => {
                 type="text"
                 value={boq.title}
                 onChange={(e) => update({ title: e.target.value })}
+                disabled={isLocked}
                 placeholder="Untitled BOQ"
-                className="text-[16px] font-bold text-textcolor bg-transparent border-0 focus:outline-none focus:ring-0 px-0 py-0 mt-0.5 min-w-[200px] hover:bg-white/40 rounded transition-colors"
+                className="text-[16px] font-bold text-textcolor bg-transparent border-0 focus:outline-none focus:ring-0 px-0 py-0 mt-0.5 min-w-[200px] hover:bg-white/40 rounded transition-colors disabled:hover:bg-transparent disabled:cursor-default"
               />
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <button
               type="button"
-              onClick={() => setShowSeedPicker(true)}
-              className="flex items-center gap-1.5 px-2.5 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor transition-all"
-              title="Seed from a Proposal Master preset"
+              onClick={() => setShowMeasurementSheet(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
+              title="View measurement sheet"
             >
-              <Sparkles size={12} /> Seed from Preset
+              <Ruler size={12} /> Measurement Sheet
             </button>
             <button
               type="button"
-              onClick={handleDuplicate}
-              className="flex items-center gap-1.5 px-2.5 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor transition-all"
+              onClick={() => setShowMaterialSheet(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
+              title="View BOQ material sheet"
             >
-              <Copy size={12} /> Duplicate
-            </button>
-            <button
-              type="button"
-              onClick={handleDelete}
-              className="flex items-center gap-1.5 px-2.5 py-2 bg-white border border-red-200 rounded-lg text-[11.5px] font-semibold text-red-500 hover:bg-red-50 transition-all"
-            >
-              <Trash2 size={12} />
+              <Package size={12} /> Material Sheet
             </button>
             <button
               type="button"
               onClick={() => setShowPreview(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft transition-all"
+              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
               title="Preview client-ready document & print / save as PDF"
             >
               <FileText size={12} /> Preview / Print
@@ -599,11 +1260,59 @@ const BOQEditor = () => {
                 <CheckCircle2 size={12} /> Mark Approved
               </button>
             )}
+            {boq.status === "approved" && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleIssueForTender}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-amber-600 transition-all shadow-sm"
+                >
+                  <Send size={12} /> Issue for Tender
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSign}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm"
+                >
+                  <ShieldCheck size={12} /> Mark Signed
+                </button>
+              </>
+            )}
+            {boq.status === "issued_for_tender" && (
+              <button
+                type="button"
+                onClick={handleSign}
+                className="flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm"
+              >
+                <ShieldCheck size={12} /> Mark Signed
+              </button>
+            )}
+            {boq.status === "signed" && (
+              <button
+                type="button"
+                onClick={handleIssueForProcurement}
+                className="flex items-center gap-1.5 px-3 py-2 bg-indigo-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-indigo-600 transition-all shadow-sm"
+              >
+                <PackageCheck size={12} /> Issue Procurement
+              </button>
+            )}
+            {isLocked && (
+              <button
+                type="button"
+                onClick={handleCreateRevision}
+                className="flex items-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-amber-600 transition-all shadow-sm"
+              >
+                <RotateCcw size={12} /> Create Revision
+              </button>
+            )}
             <button
               type="button"
               onClick={handleSave}
+              disabled={isLocked}
               className={`flex items-center gap-1.5 px-3 py-2 cursor-pointer rounded-lg text-[11.5px] font-semibold transition-all shadow-md ${
-                savedFlash
+                isLocked
+                  ? "bg-slate-200 text-slate-500 cursor-not-allowed shadow-none"
+                  : savedFlash
                   ? "bg-emerald-500 text-white"
                   : "bg-linear-to-br from-select-blue to-primary text-white hover:scale-[1.02]"
               }`}
@@ -611,39 +1320,138 @@ const BOQEditor = () => {
               {savedFlash ? <Check size={12} /> : <Save size={12} />}
               {savedFlash ? "Saved" : "Save"}
             </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowHeaderMenu((p) => !p)}
+                className="h-9 w-9 flex items-center justify-center rounded-lg bg-white border border-bordergray text-text-muted hover:bg-bg-soft hover:text-textcolor transition-all"
+                title="More BOQ actions"
+              >
+                <MoreVertical size={15} />
+              </button>
+              {showHeaderMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowHeaderMenu(false)}
+                  />
+                  <div className="absolute right-0 top-full mt-2 w-52 overflow-hidden rounded-xl border border-bordergray bg-white shadow-2xl z-50">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        setShowSeedPicker(true);
+                      }}
+                      disabled={isLocked}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Sparkles size={13} /> Seed from Preset
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        handleDuplicate();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor"
+                    >
+                      <Copy size={13} /> Duplicate BOQ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        handleSyncHsnFromMaster();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor"
+                    >
+                      <Hash size={13} /> Sync HSN from Item Master
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        handleGenerateFromSurvey();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor border-t border-bordergray"
+                    >
+                      <Ruler size={13} /> Generate from Survey
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        handleDelete();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-red-500 hover:bg-red-50"
+                    >
+                      <Trash2 size={13} /> Delete BOQ
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Stats banner */}
-        <div className="px-6 pb-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <BentoStat
-            icon={<Layers size={13} />}
-            label="Sections"
-            value={boq.sections.length}
-            tint="blue"
-          />
-          <BentoStat
-            icon={<Hash size={13} />}
-            label="Line Items"
-            value={itemCount}
-            tint="purple"
-          />
-          <BentoStat
-            icon={<Wallet size={13} />}
-            label="Subtotal"
-            value={formatAmount(totals.afterBoqDiscount)}
-            tint="orange"
-          />
-          <BentoStat
-            icon={<IndianRupee size={13} />}
-            label="Grand Total"
-            value={formatAmount(totals.grandTotal)}
-            tint="emerald"
-          />
+        {isLocked && (
+          <div className="px-6 pb-3">
+            <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+              <div className="flex items-start gap-2">
+                <ShieldCheck size={14} className="mt-0.5 shrink-0" />
+                <p className="text-[11.5px] leading-relaxed">
+                  {boq.status === "signed" ? (
+                    <>
+                      This BOQ is <b>signed</b>. Editing is locked — click{" "}
+                      <b>Issue Procurement</b> in the toolbar to proceed, or{" "}
+                      <b>Create Revision</b> to reopen it for editing.
+                    </>
+                  ) : boq.status === "issued_for_procurement" ? (
+                    <>
+                      This BOQ has been <b>issued for procurement</b>. It is
+                      read-only to protect the controlled version. Create a
+                      revision if changes are needed.
+                    </>
+                  ) : boq.status === "procurement" ? (
+                    <>
+                      This BOQ is under active <b>procurement</b>. It is
+                      read-only to protect the controlled version. Create a
+                      revision if changes are needed.
+                    </>
+                  ) : (
+                    <>
+                      This BOQ is{" "}
+                      <b>
+                        {boq.status === "issued_for_tender"
+                          ? "issued for tender"
+                          : boq.status}
+                      </b>
+                      . It is read-only to protect the controlled version.
+                      Create a revision to make changes.
+                    </>
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="px-6 pb-3">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
+            <span className="rounded-lg border border-bordergray bg-white px-2 py-1">
+              {boq.sections.length} sections
+            </span>
+            <span className="rounded-lg border border-bordergray bg-white px-2 py-1">
+              {itemCount} line items
+            </span>
+            <span className="rounded-lg border border-bordergray bg-white px-2 py-1">
+              Rev {boq.revision}
+            </span>
+          </div>
         </div>
       </div>
 
-      <div className="px-6 py-5">
+      <div className="px-6 py-5 flex-1 min-h-0 overflow-y-auto lg:overflow-hidden flex flex-col scroll-hidden-bar">
         {boq.surveyStale && (
           <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12px] text-amber-800">
             <AlertTriangle size={15} className="mt-0.5 shrink-0" />
@@ -683,9 +1491,9 @@ const BOQEditor = () => {
             />
           </div>
         )}
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
           {/* ── Left: Sections + line items ─────────────────────────────── */}
-          <main className="space-y-5 min-w-0">
+          <main className="space-y-5 min-w-0 lg:overflow-y-auto lg:pr-2 lg:pb-6 scroll-hidden-bar">
             {/* Client & Project meta */}
             <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
               <div className="px-5 py-3 border-b border-bordergray flex items-center justify-between gap-2">
@@ -702,6 +1510,7 @@ const BOQEditor = () => {
                 </div>
                 <ClientPicker
                   current={boq.client}
+                  disabled={isLocked}
                   onPick={(c) => {
                     const mapped = clientToBoqFields(c);
                     update({
@@ -722,8 +1531,9 @@ const BOQEditor = () => {
                     type="text"
                     value={boq.client?.name || ""}
                     onChange={(e) => updateClient({ name: e.target.value })}
+                    disabled={isLocked}
                     placeholder="Mr / Ms…"
-                    className={inputBase}
+                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                   />
                 </Field>
                 <Field icon={<Hash size={11} />} label="GSTIN">
@@ -731,8 +1541,9 @@ const BOQEditor = () => {
                     type="text"
                     value={boq.client?.gstin || ""}
                     onChange={(e) => updateClient({ gstin: e.target.value })}
+                    disabled={isLocked}
                     placeholder="22AAAAA0000A1Z5"
-                    className={inputBase}
+                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                   />
                 </Field>
                 <Field
@@ -744,8 +1555,9 @@ const BOQEditor = () => {
                     type="text"
                     value={boq.client?.state || ""}
                     onChange={(e) => updateClient({ state: e.target.value })}
+                    disabled={isLocked}
                     placeholder="e.g. Tamil Nadu"
-                    className={inputBase}
+                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                   />
                 </Field>
                 <Field
@@ -756,8 +1568,9 @@ const BOQEditor = () => {
                     type="text"
                     value={boq.project?.name || ""}
                     onChange={(e) => updateProject({ name: e.target.value })}
+                    disabled={isLocked}
                     placeholder="e.g. Sharma Residence"
-                    className={inputBase}
+                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                   />
                 </Field>
                 <Field icon={<Calendar size={11} />} label="Validity">
@@ -765,19 +1578,68 @@ const BOQEditor = () => {
                     type="text"
                     value={boq.validity || ""}
                     onChange={(e) => update({ validity: e.target.value })}
+                    disabled={isLocked}
                     placeholder="30 days from issue"
-                    className={inputBase}
+                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                   />
+                </Field>
+                <Field icon={<FileText size={11} />} label="BOQ Type">
+                  <select
+                    value={boq.boqType || "client"}
+                    onChange={(e) => update({ boqType: e.target.value })}
+                    disabled={isLocked}
+                    className={`${inputBase} cursor-pointer disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  >
+                    {BOQ_TYPES.map((type) => (
+                      <option key={type.value} value={type.value}>
+                        {type.label}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
                 <Field icon={<ShieldCheck size={11} />} label="Warranty / Defect Liability">
                   <input
                     type="text"
                     value={boq.warrantyText || ""}
                     onChange={(e) => update({ warrantyText: e.target.value })}
+                    disabled={isLocked}
                     placeholder="e.g. 12 months on hardware, 60 days defect liability"
-                    className={inputBase}
+                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                   />
                 </Field>
+                <div className="sm:col-span-2 lg:col-span-4 rounded-xl border border-bordergray bg-bg-soft/40 p-3">
+                  <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                    <Layers size={11} className="text-select-blue" />
+                    Project hierarchy
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
+                    {[
+                      ["block", "Block"],
+                      ["tower", "Tower"],
+                      ["floor", "Floor"],
+                      ["roomArea", "Room / Area"],
+                      ["workCategory", "Work Category"],
+                      ["subCategory", "Sub-category"],
+                    ].map(([key, label]) => (
+                      <input
+                        key={key}
+                        type="text"
+                        value={boq.hierarchy?.[key] || ""}
+                        onChange={(e) =>
+                          update({
+                            hierarchy: {
+                              ...(boq.hierarchy || {}),
+                              [key]: e.target.value,
+                            },
+                          })
+                        }
+                        disabled={isLocked}
+                        placeholder={label}
+                        className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                      />
+                    ))}
+                  </div>
+                </div>
                 {(boq.client?.phone ||
                   boq.client?.email ||
                   boq.project?.address) && (
@@ -801,9 +1663,11 @@ const BOQEditor = () => {
             <section className="space-y-4">
               {boq.sections.length === 0 && (
                 <EmptySectionsState
-                  onAdd={addSection}
-                  onAddFromTemplate={() => setShowSectionPicker(true)}
-                  onSeed={() => setShowSeedPicker(true)}
+                  onAdd={isLocked ? handleCreateRevision : addSection}
+                  onAddFromTemplate={
+                    isLocked ? handleCreateRevision : () => setShowSectionPicker(true)
+                  }
+                  onSeed={isLocked ? handleCreateRevision : () => setShowSeedPicker(true)}
                 />
               )}
 
@@ -858,10 +1722,247 @@ const BOQEditor = () => {
                       </button>
                     </>
                   )}
+                  <span className="h-4 w-px bg-bordergray shrink-0 mx-1" />
+                  <div className="flex items-center gap-0.5 bg-bg-soft rounded-md p-0.5 shrink-0">
+                    {[
+                      { mode: "section", label: "Section", icon: <Hash size={11} /> },
+                      { mode: "room", label: "Room", icon: <Building2 size={11} /> },
+                      { mode: "work", label: "Work", icon: <Layers size={11} /> },
+                      { mode: "all", label: "All Items", icon: <List size={11} /> },
+                    ].map(({ mode, label, icon }) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setGroupMode(mode)}
+                        title={`Group by ${label}`}
+                        className={`flex items-center gap-1 px-2 py-1 rounded text-[10.5px] font-semibold transition-all ${
+                          groupMode === mode
+                            ? "bg-white text-textcolor shadow-sm"
+                            : "text-text-muted hover:text-textcolor"
+                        }`}
+                      >
+                        {icon}
+                        <span className="hidden sm:inline">{label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {boq.sections.map((section, sIdx) => {
+              {/* All Items flat list — read-only */}
+              {groupMode === "all" && boq.sections.length > 0 && (() => {
+                const allItems = boq.sections.flatMap((sec, sIdx) =>
+                  (sec.items || []).map((item, iIdx) => ({
+                    item,
+                    secLabel: sec.name || `Section ${sIdx + 1}`,
+                    ref: `${sIdx + 1}.${iIdx + 1}`,
+                  }))
+                );
+                const grandNet = allItems.reduce((s, { item }) => {
+                  const a = computeItemAmount(item);
+                  return s + a.net;
+                }, 0);
+                return (
+                  <>
+                    <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200/70 rounded-xl text-[11px] text-amber-800">
+                      <Info size={12} className="shrink-0" />
+                      <span>
+                        All Items view is read-only —{" "}
+                        <button
+                          type="button"
+                          onClick={() => setGroupMode("section")}
+                          className="font-bold underline underline-offset-2"
+                        >
+                          switch to Section view
+                        </button>{" "}
+                        to edit.
+                      </span>
+                    </div>
+                    <div className="bg-white border border-bordergray rounded-xl overflow-hidden">
+                      <table className="w-full text-[12px]">
+                        <thead>
+                          <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                            <th className="px-3 py-2 text-center w-16">#</th>
+                            <th className="px-3 py-2 text-center w-32">Section</th>
+                            <th className="px-3 py-2 text-center">Description</th>
+                            <th className="px-3 py-2 text-center w-20">Qty</th>
+                            <th className="px-3 py-2 text-center w-16">Unit</th>
+                            <th className="px-3 py-2 text-center w-28">Rate (₹)</th>
+                            <th className="px-3 py-2 text-center w-32">Amount (₹)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {allItems.map(({ item, secLabel, ref }, i) => {
+                            const amt = computeItemAmount(item);
+                            const qty = computeItemQty(item);
+                            return (
+                              <tr
+                                key={item.id || i}
+                                className="border-t border-bordergray hover:bg-bg-soft/30"
+                              >
+                                <td className="px-3 py-2 text-center text-[10.5px] font-bold text-text-muted tabular-nums">
+                                  {ref}
+                                </td>
+                                <td className="px-3 py-2 text-center text-[10.5px] text-text-muted">
+                                  {secLabel}
+                                </td>
+                                <td className="px-3 py-2 text-textcolor">
+                                  {item.description || (
+                                    <span className="text-text-subtle italic">No description</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 text-center tabular-nums">
+                                  {qty.toFixed(2).replace(/\.00$/, "")}
+                                </td>
+                                <td className="px-3 py-2 text-center text-text-muted">
+                                  {item.unit || "—"}
+                                </td>
+                                <td className="px-3 py-2 text-center tabular-nums">
+                                  {formatAmount(item.rate || 0)}
+                                </td>
+                                <td className="px-3 py-2 text-center tabular-nums font-semibold">
+                                  {formatAmount(amt.net)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t-2 border-bordergray bg-bg-soft/40">
+                            <td
+                              colSpan={6}
+                              className="px-3 py-2 text-[10.5px] font-bold text-text-muted text-right"
+                            >
+                              Grand Total
+                            </td>
+                            <td className="px-3 py-2 text-center tabular-nums font-bold text-textcolor">
+                              {formatAmount(grandNet)}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </>
+                );
+              })()}
+
+              {/* Room / Work grouped view — read-only */}
+              {(groupMode === "room" || groupMode === "work") && boq.sections.length > 0 && (() => {
+                const groups = groupMode === "room" ? roomGroups : workGroups;
+                return (
+                  <>
+                    <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200/70 rounded-xl text-[11px] text-amber-800">
+                      <Info size={12} className="shrink-0" />
+                      <span>
+                        Grouped view is read-only —{" "}
+                        <button
+                          type="button"
+                          onClick={() => setGroupMode("section")}
+                          className="font-bold underline underline-offset-2"
+                        >
+                          switch to Section view
+                        </button>{" "}
+                        to edit.
+                      </span>
+                    </div>
+                    {groups.map((group, gIdx) => {
+                      const c = roomColor(group.label);
+                      const groupTotal = group.items.reduce(
+                        (s, it) => s + computeItemAmount(it).total,
+                        0,
+                      );
+                      return (
+                        <div
+                          key={`${groupMode}_${gIdx}`}
+                          className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden"
+                        >
+                          <div className="px-4 py-3 border-b border-bordergray flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span
+                                className={`h-7 w-7 flex items-center justify-center rounded-lg ${c.bg}`}
+                              >
+                                <span className={`h-2.5 w-2.5 rounded-full ${c.dot}`} />
+                              </span>
+                              <span className="text-[13px] font-bold text-textcolor truncate">
+                                {group.label || "Uncategorized"}
+                              </span>
+                              <span className="text-[10px] text-text-muted bg-bg-soft px-1.5 py-0.5 rounded border border-bordergray shrink-0">
+                                {group.items.length} item{group.items.length !== 1 ? "s" : ""}
+                              </span>
+                            </div>
+                            <span className="text-[13px] font-bold text-textcolor tabular-nums shrink-0">
+                              {formatAmount(groupTotal)}
+                            </span>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-[12px]">
+                              <thead>
+                                <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                                  <th className="px-3 py-2 text-center w-32">
+                                    {groupMode === "room" ? "Section" : "Room / Area"}
+                                  </th>
+                                  <th className="px-3 py-2 text-center">Description</th>
+                                  <th className="px-3 py-2 text-center w-20">Qty</th>
+                                  <th className="px-3 py-2 text-center w-16">Unit</th>
+                                  <th className="px-3 py-2 text-center w-24">Rate (₹)</th>
+                                  <th className="px-3 py-2 text-center w-28">Amount (₹)</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {group.items.map((item, iIdx) => {
+                                  const amt = computeItemAmount(item);
+                                  const qty = computeItemQty(item);
+                                  return (
+                                    <tr
+                                      key={item.id || iIdx}
+                                      className="border-t border-bordergray hover:bg-bg-soft/30"
+                                    >
+                                      <td className="px-3 py-2 text-center text-[10.5px] text-text-muted">
+                                        {item._from || "—"}
+                                      </td>
+                                      <td className="px-3 py-2 text-textcolor">
+                                        {item.description || (
+                                          <span className="text-text-subtle italic">No description</span>
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2 text-center tabular-nums">
+                                        {qty.toFixed(2).replace(/\.00$/, "")}
+                                      </td>
+                                      <td className="px-3 py-2 text-center text-text-muted">{item.unit}</td>
+                                      <td className="px-3 py-2 text-center tabular-nums">
+                                        {formatAmount(item.rate || 0)}
+                                      </td>
+                                      <td className="px-3 py-2 text-center tabular-nums font-semibold">
+                                        {formatAmount(amt.total)}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                              <tfoot>
+                                <tr className="border-t-2 border-bordergray bg-bg-soft/40">
+                                  <td
+                                    colSpan={5}
+                                    className="px-3 py-2 text-[10.5px] font-bold text-text-muted text-center"
+                                  >
+                                    Subtotal
+                                  </td>
+                                  <td className="px-3 py-2 text-center tabular-nums font-bold text-textcolor">
+                                    {formatAmount(groupTotal)}
+                                  </td>
+                                </tr>
+                              </tfoot>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+
+              {/* Section-wise view */}
+              {groupMode === "section" && boq.sections.map((section, sIdx) => {
                 const c = roomColor(section.category);
                 const isOpen = expanded[section.id] !== false;
                 const sectionTotal = (section.items || []).reduce(
@@ -895,6 +1996,7 @@ const BOQEditor = () => {
                 return (
                   <div
                     key={section.id}
+                    id={`section-${section.id}`}
                     className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden"
                   >
                     {/* Section header */}
@@ -935,14 +2037,16 @@ const BOQEditor = () => {
                           onChange={(e) =>
                             updateSection(section.id, { name: e.target.value })
                           }
+                          disabled={isLocked}
                           placeholder="Section name"
-                          className="text-[13px] font-bold text-textcolor bg-transparent border-0 focus:outline-none focus:bg-white focus:rounded focus:px-2 focus:py-1 px-0 py-1 transition-all min-w-0 flex-1"
+                          className="text-[13px] font-bold text-textcolor bg-transparent border-0 focus:outline-none focus:bg-white focus:rounded focus:px-2 focus:py-1 px-0 py-1 transition-all min-w-0 flex-1 disabled:cursor-default disabled:focus:bg-transparent"
                         />
                         <CategorySelect
                           value={section.category}
                           onChange={(v) =>
                             updateSection(section.id, { category: v })
                           }
+                          disabled={isLocked}
                           placeholder="Room…"
                           className="text-[10.5px] font-semibold bg-white border border-bordergray rounded-md px-1.5 py-1 text-text-muted focus:outline-none focus:border-select-blue cursor-pointer"
                         />
@@ -958,17 +2062,33 @@ const BOQEditor = () => {
                         </div>
                         <button
                           type="button"
-                          onClick={() => duplicateSection(section.id)}
+                          onClick={
+                            isLocked
+                              ? handleCreateRevision
+                              : () => duplicateSection(section.id)
+                          }
                           className="h-7 w-7 flex items-center justify-center rounded-md text-text-muted hover:bg-white hover:text-textcolor"
-                          title="Duplicate section"
+                          title={
+                            isLocked
+                              ? "Create a revision to duplicate this section"
+                              : "Duplicate section"
+                          }
                         >
                           <Copy size={13} />
                         </button>
                         <button
                           type="button"
-                          onClick={() => removeSection(section.id)}
+                          onClick={
+                            isLocked
+                              ? handleCreateRevision
+                              : () => removeSection(section.id)
+                          }
                           className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
-                          title="Delete section"
+                          title={
+                            isLocked
+                              ? "Create a revision to delete this section"
+                              : "Delete section"
+                          }
                         >
                           <Trash2 size={13} />
                         </button>
@@ -980,32 +2100,26 @@ const BOQEditor = () => {
                       <>
                         {visibleItems.length > 0 && (
                           <div className="overflow-x-auto">
-                            <table className="w-full text-[11px]">
+                            <table className="w-full text-[12px]">
                               <thead>
-                                <tr className="bg-bg-soft/60 border-b border-bordergray text-[9.5px] font-bold uppercase tracking-wider text-text-muted">
-                                  <th className="px-2 py-2 text-left w-8">#</th>
-                                  <th className="px-2 py-2 text-left w-[35%] min-w-[220px]">
+                                <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                                  <th className="px-2 py-2 text-center w-8">#</th>
+                                  <th className="px-2 py-2 text-center w-[42%] min-w-[260px]">
                                     Description
                                   </th>
-                                  <th className="px-2 py-2 text-left w-20">
-                                    HSN
-                                  </th>
-                                  <th className="px-2 py-2 text-right w-20">
+                                  <th className="px-2 py-2 text-center w-20">
                                     Qty
                                   </th>
-                                  <th className="px-2 py-2 text-left w-20">
+                                  <th className="px-2 py-2 text-center w-20">
                                     Unit
                                   </th>
-                                  <th className="px-2 py-2 text-right w-24">
+                                  <th className="px-2 py-2 text-center w-24">
                                     Rate (₹)
                                   </th>
-                                  <th className="px-2 py-2 text-right w-16">
-                                    GST %
-                                  </th>
-                                  <th className="px-2 py-2 text-right w-28">
+                                  <th className="px-2 py-2 text-center w-28">
                                     Amount (₹)
                                   </th>
-                                  <th className="px-2 py-2 w-12"></th>
+                                  <th className="px-2 py-2 w-24"></th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -1046,6 +2160,7 @@ const BOQEditor = () => {
                                           [item.id]: !p[item.id],
                                         }))
                                       }
+                                      disabled={isLocked}
                                     />
                                   );
                                 })}
@@ -1066,7 +2181,11 @@ const BOQEditor = () => {
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => setItemFormSection(section.id)}
+                              onClick={
+                                isLocked
+                                  ? handleCreateRevision
+                                  : () => setItemFormSection(section.id)
+                              }
                               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-select-blue hover:bg-white border border-transparent hover:border-bordergray transition-all"
                             >
                               <Plus size={12} /> Add Line Item
@@ -1074,10 +2193,16 @@ const BOQEditor = () => {
                             <button
                               type="button"
                               onClick={() =>
-                                setLibraryPickerSection(section.id)
+                                isLocked
+                                  ? handleCreateRevision()
+                                  : setLibraryPickerSection(section.id)
                               }
                               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-text-muted hover:text-select-blue hover:bg-white border border-bordergray transition-all"
-                              title="Insert from Item Master library"
+                              title={
+                                isLocked
+                                  ? "Create a revision to insert from the library"
+                                  : "Insert from Item Master library"
+                              }
                             >
                               <BookOpen size={11} /> Insert from Library
                             </button>
@@ -1094,29 +2219,68 @@ const BOQEditor = () => {
                 );
               })}
 
-              {boq.sections.length > 0 && (
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowSectionPicker(true)}
-                    className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-2xl bg-white border border-dashed border-select-blue/40 text-[12px] font-semibold text-select-blue hover:bg-active-bg/40 transition-all"
-                  >
-                    <Sparkles size={13} /> Add Section from Library
-                  </button>
-                  <button
-                    type="button"
-                    onClick={addSection}
-                    className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-2xl border border-dashed border-bordergray text-[12px] font-semibold text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/40 transition-all"
-                  >
-                    <Plus size={13} /> Blank Section
-                  </button>
-                </div>
+              {groupMode === "section" && boq.sections.length > 0 && (
+                <div className="grid grid-cols-1 gap-2">
+                    <button
+                      type="button"
+                      onClick={isLocked ? handleCreateRevision : addSection}
+                      className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-2xl border border-dashed border-bordergray text-[12px] font-semibold text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/40 transition-all"
+                    >
+                      <Plus size={13} /> Blank Section
+                    </button>
+                  </div>
               )}
             </section>
           </main>
 
           {/* ── Right: Summary, terms, notes ────────────────────────────── */}
-          <aside className="space-y-5">
+          <aside className="space-y-5 lg:overflow-y-auto lg:pr-1 lg:pb-6 scroll-hidden-bar">
+
+            {/* Room Breakdown */}
+            {roomBreakdown.length > 0 && (
+              <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
+                <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-violet-50 to-white">
+                  <Layers size={13} className="text-violet-600" />
+                  <h3 className="text-[12px] font-bold text-textcolor">Room Breakdown</h3>
+                  <span className="ml-auto text-[10px] text-text-subtle font-medium">{roomBreakdown.length} rooms</span>
+                </div>
+                <div className="p-3 space-y-1">
+                  {roomBreakdown.map((room) => {
+                    const pct = totals.taxable > 0 ? (room.net / totals.taxable) * 100 : 0;
+                    const c = roomColor(room.category);
+                    return (
+                      <button
+                        key={room.category}
+                        type="button"
+                        onClick={() => scrollToSection(room.sectionIds[0])}
+                        className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-bg-soft transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className={`h-2 w-2 shrink-0 rounded-full ${c.dot}`} />
+                            <span className="text-[12px] font-semibold text-textcolor truncate">{room.category}</span>
+                            <span className="text-[10px] text-text-subtle shrink-0">{room.itemCount}</span>
+                          </div>
+                          <span className="text-[12px] font-bold text-textcolor tabular-nums shrink-0">
+                            {formatAmount(room.net)}
+                          </span>
+                        </div>
+                        <div className="h-1 w-full rounded-full bg-bg-soft overflow-hidden">
+                          <div className={`h-full rounded-full transition-all ${c.bar}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {roomBreakdown.length > 1 && (
+                    <div className="mt-2 flex items-center justify-between border-t border-bordergray pt-2.5 px-3">
+                      <span className="text-[10.5px] font-bold text-text-muted uppercase tracking-wide">Total (pre-GST)</span>
+                      <span className="text-[13px] font-bold text-textcolor tabular-nums">{formatAmount(totals.taxable)}</span>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
             {/* Totals */}
             <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
               <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-select-blue/5 to-white">
@@ -1159,6 +2323,7 @@ const BOQEditor = () => {
                           },
                         })
                       }
+                      disabled={isLocked}
                       className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
                     />
                     <select
@@ -1171,6 +2336,7 @@ const BOQEditor = () => {
                           },
                         })
                       }
+                      disabled={isLocked}
                       className="bg-bg-soft border border-bordergray rounded px-1 py-1 text-[10.5px] font-semibold text-text-muted cursor-pointer"
                     >
                       <option value="percent">%</option>
@@ -1191,27 +2357,7 @@ const BOQEditor = () => {
                   value={formatAmount(totals.afterBoqDiscount)}
                 />
 
-                {/* Labour & contingency — % markups on the discounted base */}
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <span className="text-text-muted flex items-center gap-1">
-                    <Percent size={11} /> Labour
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      value={boq.laborPercent || 0}
-                      onChange={(e) =>
-                        update({ laborPercent: Number(e.target.value) || 0 })
-                      }
-                      className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
-                    />
-                    <span className="text-[10.5px] font-semibold text-text-muted">%</span>
-                  </div>
-                </div>
-                {totals.laborAmt > 0 && (
-                  <Row label="Labour value" value={formatAmount(totals.laborAmt)} />
-                )}
-
+                {/* Contingency is BOQ-level; labour is included in Item Master rates. */}
                 <div className="flex items-center justify-between gap-2 pt-1">
                   <span className="text-text-muted flex items-center gap-1">
                     <Percent size={11} /> Contingency
@@ -1223,6 +2369,7 @@ const BOQEditor = () => {
                       onChange={(e) =>
                         update({ contingencyPercent: Number(e.target.value) || 0 })
                       }
+                      disabled={isLocked}
                       className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
                     />
                     <span className="text-[10.5px] font-semibold text-text-muted">%</span>
@@ -1231,12 +2378,110 @@ const BOQEditor = () => {
                 {totals.contingencyAmt > 0 && (
                   <Row label="Contingency value" value={formatAmount(totals.contingencyAmt)} />
                 )}
-                {(totals.laborAmt > 0 || totals.contingencyAmt > 0) && (
+                {totals.contingencyAmt > 0 && (
                   <Row
-                    label="Taxable (incl. labour/contingency)"
+                    label="Taxable (incl. contingency)"
                     value={formatAmount(totals.baseForGst)}
                   />
                 )}
+
+                <div className="border-t border-bordergray pt-2 mt-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                      Commercial controls
+                    </span>
+                    <label className="flex items-center gap-1.5 text-[10px] font-semibold text-text-muted">
+                      <input
+                        type="checkbox"
+                        checked={!!boq.commercial?.taxInclusive}
+                        onChange={(e) =>
+                          update({
+                            commercial: {
+                              ...(boq.commercial || {}),
+                              taxInclusive: e.target.checked,
+                            },
+                          })
+                        }
+                        disabled={isLocked}
+                        className="h-3 w-3 accent-select-blue"
+                      />
+                      Tax inclusive
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      ["retentionPercent", "Retention %", "%"],
+                      ["mobilizationAdvance", "Mobilization", "₹"],
+                      ["freightTransport", "Freight", "₹"],
+                      ["loadingUnloading", "Loading", "₹"],
+                      ["roundOff", "Round-off", "₹"],
+                    ].map(([key, label, suffix]) => (
+                      <label key={key} className="block">
+                        <span className="mb-0.5 block text-[9.5px] font-semibold text-text-subtle">
+                          {label}
+                        </span>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            value={boq.commercial?.[key] || 0}
+                            onChange={(e) =>
+                              update({
+                                commercial: {
+                                  ...(boq.commercial || {}),
+                                  [key]: Number(e.target.value) || 0,
+                                },
+                              })
+                            }
+                            disabled={isLocked}
+                            className={`${compactInput} pr-6 text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                          />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-subtle">
+                            {suffix}
+                          </span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  {(totals.freightTransport > 0 || totals.loadingUnloading > 0) && (
+                    <Row
+                      label="Commercial additions"
+                      value={formatAmount(totals.commercialAdditions)}
+                    />
+                  )}
+                  {totals.roundOff !== 0 && (
+                    <Row
+                      label="Round-off"
+                      value={formatAmount(totals.roundOff)}
+                    />
+                  )}
+                  {totals.retentionAmt > 0 && (
+                    <Row
+                      label={`Retention (${totals.retentionPercent}%)`}
+                      value={formatAmount(totals.retentionAmt)}
+                    />
+                  )}
+                  {totals.mobilizationAdvanceAmt > 0 && (
+                    <Row
+                      label="After mobilization advance"
+                      value={formatAmount(totals.netPayableAfterAdvance)}
+                    />
+                  )}
+                  <textarea
+                    value={boq.commercial?.priceEscalationClause || ""}
+                    onChange={(e) =>
+                      update({
+                        commercial: {
+                          ...(boq.commercial || {}),
+                          priceEscalationClause: e.target.value,
+                        },
+                      })
+                    }
+                    disabled={isLocked}
+                    rows={2}
+                    placeholder="Price escalation clause"
+                    className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                </div>
 
                 <div className="border-t border-bordergray pt-2 space-y-1">
                   {Object.entries(totals.gstByRate || {})
@@ -1294,18 +2539,12 @@ const BOQEditor = () => {
             </section>
 
             {/* Payment milestones */}
-            <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-bordergray flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Calendar size={13} className="text-select-blue" />
-                  <h3 className="text-[12px] font-bold text-textcolor">
-                    Payment Milestones
-                  </h3>
-                  <span className="text-[9.5px] font-bold uppercase tracking-wider text-text-muted bg-bg-soft px-1.5 py-0.5 rounded">
-                    5-stage standard
-                  </span>
-                </div>
-                <div className="flex items-center gap-1">
+            <CollapsiblePanel
+              title="Payment Milestones"
+              icon={<Calendar size={13} className="text-select-blue" />}
+              meta="5-stage standard"
+              actions={
+                <>
                   <button
                     type="button"
                     onClick={() =>
@@ -1317,6 +2556,7 @@ const BOQEditor = () => {
                         })),
                       })
                     }
+                    disabled={isLocked}
                     className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-select-blue"
                     title="Reset to standard 5-stage milestone schedule"
                   >
@@ -1332,12 +2572,14 @@ const BOQEditor = () => {
                         ],
                       })
                     }
+                    disabled={isLocked}
                     className="flex items-center gap-1 text-[11px] font-semibold text-select-blue hover:text-primary"
                   >
                     <Plus size={11} /> Add
                   </button>
-                </div>
-              </div>
+                </>
+              }
+            >
               <div className="p-3 space-y-2">
                 {(boq.paymentTerms || []).map((m, idx) => {
                   const amt =
@@ -1357,6 +2599,7 @@ const BOQEditor = () => {
                             ),
                           })
                         }
+                        disabled={isLocked}
                         placeholder="On signing"
                         className={compactInput}
                       />
@@ -1374,8 +2617,9 @@ const BOQEditor = () => {
                                     }
                                   : p,
                               ),
-                            })
-                          }
+                          })
+                        }
+                          disabled={isLocked}
                           className={`${compactInput} text-right pr-5`}
                         />
                         <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-text-subtle">
@@ -1391,6 +2635,7 @@ const BOQEditor = () => {
                             ),
                           })
                         }
+                        disabled={isLocked}
                         className="h-7 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
                       >
                         <Trash2 size={11} />
@@ -1423,91 +2668,140 @@ const BOQEditor = () => {
                   </div>
                 )}
               </div>
-            </section>
+            </CollapsiblePanel>
 
             {/* Notes */}
-            <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2">
-                <StickyNote size={13} className="text-select-blue" />
-                <h3 className="text-[12px] font-bold text-textcolor">
-                  Notes / Terms
-                </h3>
-              </div>
+            <CollapsiblePanel
+              title="Notes / Terms"
+              icon={<StickyNote size={13} className="text-select-blue" />}
+            >
               <div className="p-3">
                 <textarea
                   value={boq.notes || ""}
                   onChange={(e) => update({ notes: e.target.value })}
+                  disabled={isLocked}
                   rows={5}
                   placeholder="Special terms, exclusions, site conditions, etc."
                   className={`${compactInput} resize-none leading-relaxed`}
                 />
               </div>
-            </section>
+            </CollapsiblePanel>
 
-            {/*  Included */}
-            <BulletListEditor
-              title="Included"
-              icon={<CheckCircle2 size={13} className="text-emerald-600" />}
-              accent="emerald"
-              items={boq.inclusions || []}
-              placeholder="e.g. 3D visualization of all rooms"
-              onChange={(next) => update({ inclusions: next })}
-            />
+            <CollapsiblePanel
+              title="Approval Signoff"
+              icon={<ShieldCheck size={13} className="text-select-blue" />}
+              meta={boq.status === "draft" ? "before issue" : boq.status}
+              defaultOpen={boq.status !== "draft"}
+            >
+              <div className="p-3 space-y-3">
+                {isSignoffLocked && (
+                  <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10.5px] font-semibold text-emerald-700">
+                    Signed approval metadata is locked for this revision.
+                  </p>
+                )}
+                {boq.procurement?.issued && (
+                  <p className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-[10.5px] font-semibold text-indigo-700">
+                    Issued for procurement by{" "}
+                    {boq.procurement.issuedBy || "Authorized user"} on{" "}
+                    {formatSignoffDate(boq.procurement.issuedAt)}
+                    {boq.procurement.contractId
+                      ? ` · Contract ${boq.procurement.contractId}`
+                      : ""}.
+                  </p>
+                )}
+                <div className="grid grid-cols-1 gap-2">
+                  <SignoffField
+                    label="Prepared by"
+                    value={approval.preparedBy}
+                    date={approval.preparedAt}
+                    disabled={isSignoffLocked}
+                    onChange={(value) => updateApproval({ preparedBy: value })}
+                  />
+                  <SignoffField
+                    label="Reviewed by"
+                    value={approval.reviewedBy}
+                    date={approval.reviewedAt}
+                    disabled={isSignoffLocked}
+                    onChange={(value) => updateApproval({ reviewedBy: value })}
+                  />
+                  <SignoffField
+                    label="Approved by"
+                    value={approval.approvedBy}
+                    date={approval.approvedAt}
+                    disabled={isSignoffLocked}
+                    onChange={(value) => updateApproval({ approvedBy: value })}
+                  />
+                  <SignoffField
+                    label="Client acceptance"
+                    value={approval.clientAcceptedBy}
+                    date={approval.clientAcceptedAt}
+                    disabled={isSignoffLocked}
+                    onChange={(value) =>
+                      updateApproval({ clientAcceptedBy: value })
+                    }
+                  />
+                </div>
 
-            {/* Not Included */}
-            <BulletListEditor
-              title="Not Included"
-              icon={<X size={13} className="text-red-500" />}
-              accent="red"
-              items={boq.exclusions || []}
-              placeholder="e.g. Civil work — demolition, plumbing"
-              onChange={(next) => update({ exclusions: next })}
-            />
+                <div className="rounded-xl border border-bordergray bg-bg-soft/40 p-2.5">
+                  <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                    Review checklist
+                  </p>
+                  <div className="grid grid-cols-1 gap-1.5">
+                    <SignoffCheck
+                      label="Measurements checked"
+                      checked={approval.checklist.measurementsChecked}
+                      disabled={isSignoffLocked}
+                      onChange={(checked) =>
+                        updateApprovalChecklist("measurementsChecked", checked)
+                      }
+                    />
+                    <SignoffCheck
+                      label="Rates and quantities checked"
+                      checked={approval.checklist.ratesChecked}
+                      disabled={isSignoffLocked}
+                      onChange={(checked) =>
+                        updateApprovalChecklist("ratesChecked", checked)
+                      }
+                    />
+                    <SignoffCheck
+                      label="GST and tax summary checked"
+                      checked={approval.checklist.taxChecked}
+                      disabled={isSignoffLocked}
+                      onChange={(checked) =>
+                        updateApprovalChecklist("taxChecked", checked)
+                      }
+                    />
+                    <SignoffCheck
+                      label="Terms and exclusions checked"
+                      checked={approval.checklist.termsChecked}
+                      disabled={isSignoffLocked}
+                      onChange={(checked) =>
+                        updateApprovalChecklist("termsChecked", checked)
+                      }
+                    />
+                  </div>
+                </div>
+
+                <textarea
+                  value={approval.remarks}
+                  onChange={(e) => updateApproval({ remarks: e.target.value })}
+                  onFocus={() => {
+                    if (isSignoffLocked) showSignoffLockedToast();
+                  }}
+                  disabled={isSignoffLocked}
+                  rows={3}
+                  placeholder="Internal approval remarks"
+                  className={`${compactInput} resize-none leading-relaxed disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+                <AuditTrailList
+                  items={boq.auditTrail || []}
+                  revisionHistory={boq.revisionHistory || []}
+                  onViewSnapshot={setViewingSnapshot}
+                />
+              </div>
+            </CollapsiblePanel>
+
           </aside>
-        </div>
-      </div>
-
-      {/* ── Sticky totals bar ──────────────────────────────────────────── */}
-      <div className="fixed bottom-0 left-0 right-0 lg:left-[260px] z-20 pointer-events-none">
-        <div className="px-6 pb-4 flex justify-center">
-          <div className="pointer-events-auto bg-white/95 backdrop-blur-xl border border-bordergray shadow-[0_8px_30px_rgba(15,23,42,0.12)] rounded-2xl px-5 py-3 flex items-center gap-5 flex-wrap">
-            <div className="flex items-center gap-2">
-              <span className="h-8 w-8 rounded-lg bg-select-blue/10 text-select-blue flex items-center justify-center">
-                <Wallet size={14} />
-              </span>
-              <div>
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-text-subtle">
-                  {boq.id} · {boq.status}
-                </p>
-                <p className="text-[10.5px] text-text-muted">
-                  {itemCount} items · {boq.sections.length} sections
-                </p>
-              </div>
-            </div>
-            <div className="h-8 w-px bg-bordergray hidden sm:block" />
-            <FooterStat
-              label="Subtotal"
-              value={formatAmount(totals.afterBoqDiscount)}
-            />
-            {totals.totalGst > 0 && (
-              <FooterStat
-                label="GST"
-                value={formatAmount(totals.totalGst)}
-                accent="text-orange-500"
-              />
-            )}
-            <div className="flex items-center gap-2 bg-linear-to-br from-select-blue to-primary text-white px-4 py-2 rounded-xl shadow-md shadow-select-blue/20">
-              <IndianRupee size={13} />
-              <div>
-                <p className="text-[8.5px] font-bold uppercase tracking-widest opacity-80">
-                  Grand Total
-                </p>
-                <p className="text-[14px] font-bold tabular-nums leading-tight">
-                  {formatAmount(totals.grandTotal)}
-                </p>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -1546,6 +2840,17 @@ const BOQEditor = () => {
         />
       )}
 
+      {/* Survey site picker — shown when BOQ has no siteID yet */}
+      {showSurveyPicker && (
+        <SurveyLinker
+          onClose={() => setShowSurveyPicker(false)}
+          onPick={(siteID) => {
+            setShowSurveyPicker(false);
+            runGenerateFromSurvey(siteID);
+          }}
+        />
+      )}
+
       {/* Item Master picker modal */}
       {libraryPickerSection && (
         <LibraryPicker
@@ -1566,6 +2871,30 @@ const BOQEditor = () => {
             addSection();
           }}
           onAddFromCategory={addSectionFromCategory}
+        />
+      )}
+
+      {/* Measurement sheet overlay */}
+      {showMeasurementSheet && (
+        <MeasurementSheetPreview
+          boq={boq}
+          onClose={() => setShowMeasurementSheet(false)}
+        />
+      )}
+
+      {/* Material sheet overlay */}
+      {showMaterialSheet && (
+        <MaterialSheetPreview
+          boq={boq}
+          onClose={() => setShowMaterialSheet(false)}
+        />
+      )}
+
+      {/* Revision snapshot viewer */}
+      {viewingSnapshot && (
+        <RevisionSnapshotModal
+          snapshot={viewingSnapshot}
+          onClose={() => setViewingSnapshot(null)}
         />
       )}
 
@@ -1617,13 +2946,18 @@ const ItemRow = ({
   onRemove,
   onDuplicate,
   onEdit,
-  accent,
   isLinked,
   isCompact,
   onToggleCompact,
+  disabled = false,
 }) => {
   const r = computeItemAmount(item);
   const computedQty = computeItemQty(item);
+  const rateAnalysis = computeRateAnalysis(item.rateAnalysis, item.unit);
+  const effectiveRate =
+    item.rateAnalysis?.enabled && item.rateAnalysis?.useFinalRate
+      ? rateAnalysis.roundedFinalRate
+      : Number(item.rate) || 0;
   const hasSurveyDrift =
     item.siteSurveySource &&
     Math.abs(computedQty - (Number(item.siteMeasuredQty) || 0)) > 0.001;
@@ -1631,24 +2965,102 @@ const ItemRow = ({
   const dimsEnabled = item.dimensions?.enabled;
   const canUseDims = !!dimInfo;
   const isArea = dimInfo?.kind === "area";
+  const hasDimValues =
+    canUseDims &&
+    (Number(item.dimensions?.length) > 0 ||
+      Number(item.dimensions?.breadth) > 0 ||
+      Number(item.dimensions?.height) > 0);
+  const showDims = canUseDims && (dimsEnabled || hasDimValues);
   const unitLabel = UNITS.find((u) => u.code === item.unit)?.label || item.unit;
+  const [detailsOpen, setDetailsOpen] = useState(
+    () =>
+      isLinked ||
+      !!item.spec ||
+      !!item.hsn ||
+      (item.materials || []).length > 0 ||
+      (item.measurementRows || []).length > 0 ||
+      !!item.rateAnalysis?.enabled ||
+      (item.vendorComparisons || []).length > 0,
+  );
+
+  // Resolve HSN from Item Master when item is linked — scope-of-work HSN
+  // lives on the library record, not on the material rows.
+  const masterHsn = useMemo(
+    () =>
+      item.masterId
+        ? (listLibrary().find((l) => l.id === item.masterId)?.hsn || "")
+        : "",
+    [item.masterId],
+  );
+
+  // Auto-populate item.hsn from Item Master on first render if still empty.
+  useEffect(() => {
+    if (!item.hsn && masterHsn && !disabled) {
+      onUpdate({ hsn: masterHsn });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [masterHsn]);
+
+  const effectiveHsn = item.hsn || masterHsn;
 
   const updateDim = (changes) =>
     onUpdate({ dimensions: { ...(item.dimensions || {}), ...changes } });
 
-  const toggleDimensions = () => {
-    if (!canUseDims) return;
-    updateDim({ enabled: !dimsEnabled });
-  };
+  const badges = (
+    <div className="flex flex-wrap items-center gap-1">
+      {isLinked && (
+        <button
+          type="button"
+          onClick={onToggleCompact}
+          disabled={disabled}
+          className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider bg-select-blue/10 text-select-blue px-1.5 py-0.5 rounded border border-select-blue/20 hover:bg-select-blue/20 disabled:cursor-not-allowed"
+          title="Show item details"
+        >
+          <Link2 size={9} /> Library
+        </button>
+      )}
+      {item.siteSurveySource && (
+        <span
+          className={`inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-bold ${
+            hasSurveyDrift
+              ? "border border-amber-200 bg-amber-50 text-amber-700"
+              : "border border-emerald-200 bg-emerald-50 text-emerald-700"
+          }`}
+          title={
+            hasSurveyDrift
+              ? `Editor quantity differs from site measurement (${item.siteMeasuredQty})`
+              : "Quantity matches the frozen site survey"
+          }
+        >
+          {hasSurveyDrift ? <AlertTriangle size={9} /> : <ShieldCheck size={9} />}
+          {hasSurveyDrift ? "Survey drift" : "Site measured"}
+        </span>
+      )}
+      {item.isVariation && (
+        <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-700">
+          <AlertTriangle size={9} /> Variation
+        </span>
+      )}
+      {(item.measurementRows || []).length > 0 && (
+        <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[9px] font-bold text-blue-700">
+          <Ruler size={9} /> Measurement
+        </span>
+      )}
+      {item.rateAnalysis?.enabled && (
+        <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700">
+          <Calculator size={9} /> RA
+        </span>
+      )}
+    </div>
+  );
 
-  // ── Compact row (linked items, before user clicks Override) ─────────────
   const compactMainRow = (
-    <tr className="border-b border-bordergray hover:bg-active-bg/20 group bg-select-blue/[0.03]">
-      <td className="px-2 py-2 align-top">
-        <div className="flex items-center gap-1">
+    <tr className="border-b border-bordergray bg-select-blue/[0.03] hover:bg-active-bg/20">
+      <td className="px-2 py-2 align-top text-center">
+        <div className="flex items-center justify-center gap-1">
           <button
             type="button"
-            className="text-text-subtle opacity-0 group-hover:opacity-100 cursor-grab"
+            className="text-text-subtle cursor-grab"
             title="Drag (coming soon)"
           >
             <GripVertical size={11} />
@@ -1658,129 +3070,64 @@ const ItemRow = ({
           </span>
         </div>
       </td>
-      <td colSpan={2} className="px-2 py-2 align-top max-w-[480px]">
-        <div className="flex items-start gap-1.5 w-full min-w-0">
-          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider bg-select-blue/10 text-select-blue px-1.5 py-0.5 rounded mt-0.5 shrink-0 border border-select-blue/20">
-            <Link2 size={9} /> Library
-          </span>
+      <td className="px-2 py-2 align-top w-[42%] min-w-[260px]">
+        <div className="space-y-1">
           <textarea
             value={item.description}
             onChange={(e) => onUpdate({ description: e.target.value })}
+            disabled={disabled}
             placeholder="Item description"
-            className={`${compactInput} font-medium resize-none`}
+            className={`${compactInput} font-medium resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
             rows={2}
           />
-          {item.siteSurveySource && (
-            <span
-              className={`inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-bold ${
-                hasSurveyDrift
-                  ? "border border-amber-200 bg-amber-50 text-amber-700"
-                  : "border border-emerald-200 bg-emerald-50 text-emerald-700"
-              }`}
-              title={
-                hasSurveyDrift
-                  ? `Editor quantity differs from site measurement (${item.siteMeasuredQty})`
-                  : "Quantity matches the frozen site survey"
-              }
-            >
-              {hasSurveyDrift ? <AlertTriangle size={9} /> : <ShieldCheck size={9} />}
-              {hasSurveyDrift ? "Survey drift" : "Site measured"}
-            </span>
-          )}
-          {item.isVariation && (
-            <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-700">
-              <AlertTriangle size={9} /> Variation
-            </span>
-          )}
+          <input
+            type="text"
+            value={effectiveHsn}
+            onChange={(e) => onUpdate({ hsn: e.target.value })}
+            disabled={disabled}
+            placeholder="HSN code"
+            className={`${compactInput} tabular-nums text-[10.5px] disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+          />
+          {badges}
         </div>
-        <p className="text-[9.5px] text-text-muted mt-1 ml-1">
-          HSN{" "}
-          <span className="font-semibold text-textcolor">
-            {item.hsn || "—"}
-          </span>
-          {" · "}₹
-          <span className="font-semibold text-textcolor tabular-nums">
-            {Number(item.rate || 0).toLocaleString("en-IN")}
-          </span>
-          /{unitLabel}
-          {" · "}
-          GST{" "}
-          <span className="font-semibold text-textcolor">
-            {item.gstPercent || 0}%
-          </span>
-        </p>
         {item.siteSurveySource && (
-          <p className="mt-0.5 ml-1 text-[9.5px] text-text-subtle">
+          <p className="mt-0.5 text-[10px] text-text-subtle">
             Quoted: {Number(item.quotedQty || 0).toLocaleString("en-IN")} {unitLabel}
-            {" · "}{formatAmount(item.quotedAmount || 0)}
-            {" · "}Frozen measured: {Number(item.siteMeasuredQty || 0).toLocaleString("en-IN")} {unitLabel}
-          </p>
-        )}
-        {(item.materials || []).length > 0 && (
-          <p className="text-[9.5px] text-text-subtle mt-0.5 ml-1 truncate">
-            <span
-              className={`inline-block h-1.5 w-1.5 rounded-full mr-1 align-middle ${accent.dot}`}
-            />
-            {item.materials
-              .map((m) => `${m.name}${m.spec ? ` (${m.spec})` : ""}`)
-              .filter(Boolean)
-              .join(" · ")}
+            {" | "}{formatAmount(item.quotedAmount || 0)}
+            {" | "}Frozen measured: {Number(item.siteMeasuredQty || 0).toLocaleString("en-IN")} {unitLabel}
           </p>
         )}
       </td>
-      <td className="px-2 py-2 align-top">
-        {dimsEnabled ? (
-          <div className="bg-active-bg/40 border border-select-blue/20 rounded-md px-2 py-1.5 text-right">
-            <p className="text-[12px] font-bold text-select-blue tabular-nums">
-              {computedQty.toFixed(2).replace(/\.00$/, "")}
-            </p>
-            <p className="text-[9px] text-text-subtle">from dims</p>
-          </div>
+      <td className="px-2 py-2 align-top text-center">
+        {showDims ? (
+          <input
+            type="text"
+            value={computedQty.toFixed(2).replace(/\.00$/, "")}
+            readOnly
+            className={`${compactInput} text-center tabular-nums font-semibold cursor-default`}
+          />
         ) : (
           <input
             type="number"
             value={item.qty}
             onChange={(e) => onUpdate({ qty: e.target.value })}
             onFocus={(e) => e.target.select()}
-            className={`${compactInput} text-right tabular-nums`}
+            disabled={disabled}
+            className={`${compactInput} text-center tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
           />
         )}
-        {canUseDims && (
-          <button
-            type="button"
-            onClick={toggleDimensions}
-            className={`mt-1 w-full flex items-center justify-center gap-1 text-[9.5px] font-semibold rounded-md py-1 border transition-all ${
-              dimsEnabled
-                ? "bg-select-blue/10 border-select-blue/30 text-select-blue"
-                : "bg-white border-bordergray text-text-muted hover:border-select-blue/40 hover:text-select-blue"
-            }`}
-            title={
-              dimsEnabled
-                ? "Use direct quantity"
-                : "Calculate from L × D × H × Nos"
-            }
-          >
-            <Calculator size={10} />
-            {dimsEnabled ? "Using dims" : "L×D×H"}
-          </button>
-        )}
       </td>
-      <td className="px-2 py-2 align-top">
+      <td className="px-2 py-2 align-top text-center">
         <span className="text-[11px] font-semibold text-text-muted">
           {unitLabel}
         </span>
       </td>
-      <td colSpan={2} className="px-2 py-2 align-top text-center">
-        <button
-          type="button"
-          onClick={onToggleCompact}
-          className="text-[10px] font-semibold text-text-muted hover:text-select-blue border border-bordergray hover:border-select-blue/30 rounded-md px-2 py-1 flex items-center gap-1 mx-auto transition-all"
-          title="Override rate / HSN / GST from library defaults"
-        >
-          <Edit3 size={10} /> Override
-        </button>
+      <td className="px-2 py-2 align-top text-center">
+        <span className="text-[12px] font-bold text-textcolor tabular-nums">
+          {Number(effectiveRate || 0).toLocaleString("en-IN")}
+        </span>
       </td>
-      <td className="px-2 py-2 align-top text-right">
+      <td className="px-2 py-2 align-top text-center">
         <p className="text-[12px] font-bold text-textcolor tabular-nums">
           {formatAmount(r.net)}
         </p>
@@ -1791,10 +3138,19 @@ const ItemRow = ({
         )}
       </td>
       <td className="px-2 py-2 align-top">
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+        <div className="flex items-center justify-end gap-1">
+          <button
+            type="button"
+            onClick={onToggleCompact}
+            className="h-7 px-2 flex items-center justify-center rounded-md border border-bordergray text-[10px] font-semibold text-text-muted hover:text-select-blue hover:border-select-blue/30 bg-white"
+            title="Show details"
+          >
+            Details
+          </button>
           <button
             type="button"
             onClick={onEdit}
+            disabled={disabled}
             className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-select-blue hover:bg-white"
             title="Edit in full form"
           >
@@ -1803,7 +3159,8 @@ const ItemRow = ({
           <button
             type="button"
             onClick={onDuplicate}
-            className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-textcolor hover:bg-white"
+            disabled={disabled}
+            className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-select-blue hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
             title="Duplicate row"
           >
             <Copy size={11} />
@@ -1811,6 +3168,7 @@ const ItemRow = ({
           <button
             type="button"
             onClick={onRemove}
+            disabled={disabled}
             className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
             title="Remove row"
           >
@@ -1825,7 +3183,7 @@ const ItemRow = ({
     return (
       <>
         {compactMainRow}
-        {dimsEnabled && canUseDims && (
+        {showDims && (
           <DimensionEditor
             item={item}
             dimInfo={dimInfo}
@@ -1834,6 +3192,7 @@ const ItemRow = ({
             r={r}
             updateDim={updateDim}
             unitLabel={unitLabel}
+            disabled={disabled}
           />
         )}
       </>
@@ -1842,12 +3201,12 @@ const ItemRow = ({
 
   return (
     <>
-      <tr className="border-b border-bordergray hover:bg-bg-soft/40 group">
-        <td className="px-2 py-2 align-top">
-          <div className="flex items-center gap-1">
+      <tr className="border-b border-bordergray hover:bg-bg-soft/40">
+        <td className="px-2 py-2 align-top text-center">
+          <div className="flex items-center justify-center gap-1">
             <button
               type="button"
-              className="text-text-subtle opacity-0 group-hover:opacity-100 cursor-grab"
+              className="text-text-subtle cursor-grab"
               title="Drag (coming soon)"
             >
               <GripVertical size={11} />
@@ -1857,103 +3216,52 @@ const ItemRow = ({
             </span>
           </div>
         </td>
-        <td className="px-2 py-2 align-top w-[35%] min-w-[220px] max-w-[400px]">
-          <div className="flex items-start gap-1.5 w-full min-w-0">
-            {isLinked && (
-              <button
-                type="button"
-                onClick={onToggleCompact}
-                className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider bg-select-blue/10 text-select-blue px-1.5 py-0.5 rounded mt-1 shrink-0 border border-select-blue/20 hover:bg-select-blue/20"
-                title="Collapse — hide HSN/Rate/GST overrides"
-              >
-                <Link2 size={9} /> Library
-              </button>
-            )}
-            {item.siteSurveySource && (
-              <span
-                className={`mt-1 inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-bold ${
-                  hasSurveyDrift
-                    ? "border border-amber-200 bg-amber-50 text-amber-700"
-                    : "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                }`}
-                title={`Frozen site quantity: ${item.siteMeasuredQty}`}
-              >
-                {hasSurveyDrift ? <AlertTriangle size={9} /> : <ShieldCheck size={9} />}
-                {hasSurveyDrift ? "Survey drift" : "Site measured"}
-              </span>
-            )}
-            {item.isVariation && (
-              <span className="mt-1 inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-700">
-                <AlertTriangle size={9} /> Variation
-              </span>
-            )}
+        <td className="px-2 py-2 align-top w-[42%] min-w-[260px] max-w-[520px]">
+          <div className="space-y-1">
             <textarea
               value={item.description}
               onChange={(e) => onUpdate({ description: e.target.value })}
+              disabled={disabled}
               placeholder="Item description"
-              className={`${compactInput} font-medium resize-none`}
+              className={`${compactInput} font-medium resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
               rows={2}
             />
+            <input
+              type="text"
+              value={effectiveHsn}
+              onChange={(e) => onUpdate({ hsn: e.target.value })}
+              disabled={disabled}
+              placeholder="HSN code"
+              className={`${compactInput} tabular-nums text-[10.5px] disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+            {badges}
           </div>
-          <textarea
-            value={item.spec || ""}
-            onChange={(e) => onUpdate({ spec: e.target.value })}
-            placeholder="Brand / model / finish (e.g. Hettich soft-close, Greenply BWP 19mm)"
-            className={`${compactInput} mt-1 text-text-muted italic resize-none`}
-            rows={1}
-          />
-          {(item.materials || []).length > 0 && (
-            <p className="text-[9.5px] text-text-subtle mt-1 truncate">
-              <span
-                className={`inline-block h-1.5 w-1.5 rounded-full mr-1 align-middle ${accent.dot}`}
-              />
-              {item.materials
-                .map((m) => `${m.name}${m.spec ? ` (${m.spec})` : ""}`)
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-          )}
         </td>
-        <td className="px-2 py-2 align-top">
-          <input
-            type="text"
-            value={item.hsn || ""}
-            onChange={(e) => onUpdate({ hsn: e.target.value })}
-            placeholder="9403"
-            list={`hsn-list-${item.id}`}
-            className={`${compactInput} tabular-nums`}
-          />
-          <datalist id={`hsn-list-${item.id}`}>
-            {HSN_SUGGESTIONS.map((h) => (
-              <option key={h.code} value={h.code}>
-                {h.desc}
-              </option>
-            ))}
-          </datalist>
-        </td>
-        <td className="px-2 py-2 align-top">
-          {dimsEnabled ? (
-            <div className="bg-active-bg/40 border border-select-blue/20 rounded-md px-2 py-1.5 text-right">
-              <p className="text-[12px] font-bold text-select-blue tabular-nums">
-                {computedQty.toFixed(2).replace(/\.00$/, "")}
-              </p>
-              <p className="text-[9px] text-text-subtle">from dimensions</p>
-            </div>
+        <td className="px-2 py-2 align-top text-center">
+          {showDims ? (
+            <input
+              type="text"
+              value={computedQty.toFixed(2).replace(/\.00$/, "")}
+              readOnly
+              className={`${compactInput} text-center tabular-nums font-semibold cursor-default`}
+            />
           ) : (
             <input
               type="number"
               value={item.qty}
               onChange={(e) => onUpdate({ qty: e.target.value })}
               onFocus={(e) => e.target.select()}
-              className={`${compactInput} text-right tabular-nums`}
+              disabled={disabled}
+              className={`${compactInput} text-center tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
             />
           )}
         </td>
-        <td className="px-2 py-2 align-top">
+        <td className="px-2 py-2 align-top text-center">
           <select
             value={item.unit}
             onChange={(e) => onUpdate({ unit: e.target.value })}
-            className={`${compactInput} cursor-pointer`}
+            disabled={disabled}
+            className={`${compactInput} cursor-pointer disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
           >
             {UNITS.map((u) => (
               <option key={u.code} value={u.code}>
@@ -1961,49 +3269,23 @@ const ItemRow = ({
               </option>
             ))}
           </select>
-          {canUseDims && (
-            <button
-              type="button"
-              onClick={toggleDimensions}
-              className={`mt-1 w-full flex items-center justify-center gap-1 text-[9.5px] font-semibold rounded-md py-1 border transition-all ${
-                dimsEnabled
-                  ? "bg-select-blue/10 border-select-blue/30 text-select-blue"
-                  : "bg-white border-bordergray text-text-muted hover:border-select-blue/40 hover:text-select-blue"
-              }`}
-              title={
-                dimsEnabled
-                  ? "Use direct quantity"
-                  : "Calculate from L × D × Nos"
-              }
-            >
-              <Calculator size={10} />
-              {dimsEnabled ? "Using dims" : "Use L×D"}
-            </button>
-          )}
         </td>
-        <td className="px-2 py-2 align-top">
+        <td className="px-2 py-2 align-top text-center">
           <input
             type="number"
             value={item.rate}
             onChange={(e) => onUpdate({ rate: e.target.value })}
             onFocus={(e) => e.target.select()}
-            className={`${compactInput} text-right tabular-nums`}
+            disabled={disabled}
+            className={`${compactInput} text-center tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
           />
+          {item.rateAnalysis?.enabled && item.rateAnalysis?.useFinalRate && (
+            <p className="mt-1 text-[9.5px] font-semibold text-emerald-600">
+              Using RA: {formatAmount(effectiveRate)}
+            </p>
+          )}
         </td>
-        <td className="px-2 py-2 align-top">
-          <select
-            value={item.gstPercent}
-            onChange={(e) => onUpdate({ gstPercent: Number(e.target.value) })}
-            className={`${compactInput} cursor-pointer text-right`}
-          >
-            {GST_OPTIONS.map((g) => (
-              <option key={g} value={g}>
-                {g}%
-              </option>
-            ))}
-          </select>
-        </td>
-        <td className="px-2 py-2 align-top text-right">
+        <td className="px-2 py-2 align-top text-center">
           <p className="text-[12px] font-bold text-textcolor tabular-nums">
             {formatAmount(r.net)}
           </p>
@@ -2014,10 +3296,23 @@ const ItemRow = ({
           )}
         </td>
         <td className="px-2 py-2 align-top">
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+          <div className="flex items-center justify-end gap-1">
+            <button
+              type="button"
+              onClick={() => setDetailsOpen((p) => !p)}
+              className={`h-7 px-2 flex items-center justify-center rounded-md border text-[10px] font-semibold transition-colors ${
+                detailsOpen
+                  ? "border-select-blue/30 bg-select-blue/10 text-select-blue"
+                  : "border-bordergray bg-white text-text-muted hover:text-select-blue hover:border-select-blue/30"
+              }`}
+              title={detailsOpen ? "Hide details" : "Show item details"}
+            >
+              Details
+            </button>
             <button
               type="button"
               onClick={onEdit}
+              disabled={disabled}
               className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-select-blue hover:bg-white"
               title="Edit in full form"
             >
@@ -2026,7 +3321,8 @@ const ItemRow = ({
             <button
               type="button"
               onClick={onDuplicate}
-              className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-textcolor hover:bg-white"
+              disabled={disabled}
+              className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-select-blue hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
               title="Duplicate row"
             >
               <Copy size={11} />
@@ -2034,6 +3330,7 @@ const ItemRow = ({
             <button
               type="button"
               onClick={onRemove}
+              disabled={disabled}
               className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
               title="Remove row"
             >
@@ -2044,7 +3341,7 @@ const ItemRow = ({
       </tr>
 
       {/* Dimension calculator row */}
-      {dimsEnabled && canUseDims && (
+      {showDims && (
         <DimensionEditor
           item={item}
           dimInfo={dimInfo}
@@ -2053,32 +3350,390 @@ const ItemRow = ({
           r={r}
           updateDim={updateDim}
           unitLabel={unitLabel}
+          disabled={disabled}
         />
       )}
 
-      {/* Materials editor row */}
-      <MaterialEditor item={item} onUpdate={onUpdate} />
+      {detailsOpen && (
+        <ItemDetailsRow item={item} onUpdate={onUpdate} disabled={disabled} />
+      )}
     </>
   );
 };
 
-const MaterialEditor = ({ item, onUpdate }) => {
-  const [open, setOpen] = useState((item.materials || []).length > 0);
-  const materials = item.materials || [];
+const ItemDetailsRow = ({ item, onUpdate, disabled = false }) => {
+  // Look up the Item Master entry so we can offer grade re-pricing.
+  const libItem = useMemo(
+    () =>
+      item.masterId
+        ? listLibrary().find((l) => l.id === item.masterId) || null
+        : null,
+    [item.masterId],
+  );
 
-  const update = (mats) => onUpdate({ materials: mats });
+  // Grades present in the Item Master recipe (economy / premium / luxury / custom).
+  const libGrades = useMemo(() => {
+    if (!libItem?.recipes) return [];
+    const baseLabels = { economy: "Economy", premium: "Premium", luxury: "Luxury" };
+    return Object.keys(libItem.recipes).map((k) => ({
+      key: k,
+      label:
+        baseLabels[k] ||
+        k.charAt(0).toUpperCase() + k.slice(1).replace(/_/g, " "),
+    }));
+  }, [libItem]);
 
-  const add = () => {
-    update([...materials, { name: "", spec: "" }]);
-    setOpen(true);
+  // Pre-compute the derived rate for every available grade so we can show
+  // price chips without re-running computeRecipe on every click.
+  const libGradeRates = useMemo(() => {
+    if (!libItem?.recipes) return {};
+    const matLookup = mkMatById(listMaterials());
+    const acc = {};
+    for (const k of Object.keys(libItem.recipes)) {
+      acc[k] = computeRecipe(libItem.recipes[k], matLookup).rate;
+    }
+    return acc;
+  }, [libItem]);
+
+  const currentGrade = item.grade || "economy";
+  const hierarchy = item.hierarchy || {};
+  const details = item.details || {};
+  const patchHierarchy = (values) =>
+    onUpdate({ hierarchy: { ...hierarchy, ...values } });
+  const patchDetails = (values) =>
+    onUpdate({ details: { ...details, ...values } });
+
+  const applyGrade = (grade) => {
+    if (!libItem?.recipes?.[grade]) return;
+    const matLookup = mkMatById(listMaterials());
+    const calc = computeRecipe(libItem.recipes[grade], matLookup);
+    const newMaterials = recipeToMaterials(libItem.recipes[grade], matLookup);
+    onUpdate({ grade, rate: Math.round(calc.rate), materials: newMaterials });
   };
-  const change = (idx, key, v) =>
-    update(materials.map((m, i) => (i === idx ? { ...m, [key]: v } : m)));
-  const remove = (idx) => update(materials.filter((_, i) => i !== idx));
 
   return (
     <tr className="border-b border-bordergray bg-bg-soft/30">
-      <td colSpan={9} className="px-3 py-1.5">
+      <td colSpan={7} className="px-4 py-3">
+        {/* Grade selector — only shown for library-linked items with multiple grades */}
+        {SHOW_GRADE_SELECTOR && libGrades.length > 1 && (
+          <div className="mb-3 flex items-center gap-2 flex-wrap rounded-lg bg-active-bg/40 border border-select-blue/20 px-3 py-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue flex items-center gap-1 shrink-0">
+              <Sparkles size={10} /> Grade
+            </span>
+            {libGrades.map(({ key, label }) => {
+              const rate = libGradeRates[key];
+              const isActive = currentGrade === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => !disabled && applyGrade(key)}
+                  disabled={disabled}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10.5px] font-semibold transition-all disabled:cursor-not-allowed ${
+                    isActive
+                      ? "bg-select-blue text-white border-select-blue shadow-sm"
+                      : "bg-white border-bordergray text-text-muted hover:border-select-blue/50 hover:text-select-blue"
+                  }`}
+                >
+                  {label}
+                  {rate > 0 && (
+                    <span
+                      className={`text-[9.5px] tabular-nums ${
+                        isActive ? "text-white/80" : "text-text-subtle"
+                      }`}
+                    >
+                      ₹{Math.round(rate).toLocaleString("en-IN")}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            <span className="ml-auto text-[9.5px] text-text-subtle hidden sm:block">
+              Sets rate + materials from Item Master recipe
+            </span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <Field icon={<Layers size={11} />} label="Block / Tower">
+            <input
+              type="text"
+              value={hierarchy.blockTower || hierarchy.block || hierarchy.tower || ""}
+              onChange={(e) => patchHierarchy({ blockTower: e.target.value })}
+              disabled={disabled}
+              placeholder="Block A / Tower 1"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<Building2 size={11} />} label="Floor">
+            <input
+              type="text"
+              value={hierarchy.floor || ""}
+              onChange={(e) => patchHierarchy({ floor: e.target.value })}
+              disabled={disabled}
+              placeholder="Ground floor"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<MapPin size={11} />} label="Room / Area">
+            <input
+              type="text"
+              value={hierarchy.roomArea || ""}
+              onChange={(e) => patchHierarchy({ roomArea: e.target.value })}
+              disabled={disabled}
+              placeholder="Living room"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<BookOpen size={11} />} label="Work Category">
+            <input
+              type="text"
+              value={hierarchy.workCategory || ""}
+              onChange={(e) => patchHierarchy({ workCategory: e.target.value })}
+              disabled={disabled}
+              placeholder="Civil / Carpentry / Electrical"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<List size={11} />} label="Sub-category">
+            <input
+              type="text"
+              value={hierarchy.subCategory || ""}
+              onChange={(e) => patchHierarchy({ subCategory: e.target.value })}
+              disabled={disabled}
+              placeholder="Wardrobe / false ceiling"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<FileText size={11} />} label="Drawing Ref / Rev">
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="text"
+                value={details.drawingRefNo || ""}
+                onChange={(e) => patchDetails({ drawingRefNo: e.target.value })}
+                disabled={disabled}
+                placeholder="DRG-101"
+                className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+              />
+              <input
+                type="text"
+                value={details.drawingRevision || ""}
+                onChange={(e) => patchDetails({ drawingRevision: e.target.value })}
+                disabled={disabled}
+                placeholder="R2"
+                className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+              />
+            </div>
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <Field icon={<Hash size={11} />} label="Specification Code">
+            <input
+              type="text"
+              value={details.specificationCode || ""}
+              onChange={(e) => patchDetails({ specificationCode: e.target.value })}
+              disabled={disabled}
+              placeholder="SPEC-CARP-001"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<Package size={11} />} label="Brand / Make / Model">
+            <input
+              type="text"
+              value={details.brandMakeModel || ""}
+              onChange={(e) => patchDetails({ brandMakeModel: e.target.value })}
+              disabled={disabled}
+              placeholder="Hettich / Asian Paints"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<Sparkles size={11} />} label="Finish / Color / Grade">
+            <input
+              type="text"
+              value={details.finishColorGrade || ""}
+              onChange={(e) => patchDetails({ finishColorGrade: e.target.value })}
+              disabled={disabled}
+              placeholder="Matte white / BWP"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+          <Field icon={<PackageCheck size={11} />} label="Item Type">
+            <select
+              value={details.itemType || ITEM_TYPES[2]}
+              onChange={(e) => patchDetails({ itemType: e.target.value })}
+              disabled={disabled}
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            >
+              {ITEM_TYPES.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </Field>
+          <Field icon={<Calculator size={11} />} label="Billing Type">
+            <select
+              value={details.billingType || BILLING_TYPES[1]}
+              onChange={(e) => patchDetails({ billingType: e.target.value })}
+              disabled={disabled}
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            >
+              {BILLING_TYPES.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </Field>
+          <Field icon={<ShieldCheck size={11} />} label="Scope Type">
+            <select
+              value={details.scopeType || SCOPE_TYPES[0]}
+              onChange={(e) => patchDetails({ scopeType: e.target.value })}
+              disabled={disabled}
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            >
+              {SCOPE_TYPES.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </Field>
+          <Field icon={<User size={11} />} label="Execution By">
+            <select
+              value={details.executionBy || EXECUTION_BY[0]}
+              onChange={(e) => patchDetails({ executionBy: e.target.value })}
+              disabled={disabled}
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            >
+              {EXECUTION_BY.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </Field>
+          <Field icon={<StickyNote size={11} />} label="Item Remarks">
+            <input
+              type="text"
+              value={details.remarks || ""}
+              onChange={(e) => patchDetails({ remarks: e.target.value })}
+              disabled={disabled}
+              placeholder="Client/internal remark"
+              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+            />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3">
+          <Field icon={<FileText size={11} />} label="Specification">
+            <textarea
+              value={item.spec || ""}
+              onChange={(e) => onUpdate({ spec: e.target.value })}
+              disabled={disabled}
+              placeholder="Brand, model, finish, quality notes"
+              className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+              rows={2}
+            />
+          </Field>
+        </div>
+        <MeasurementRowsEditor item={item} onUpdate={onUpdate} disabled={disabled} />
+        <RateAnalysisEditor item={item} onUpdate={onUpdate} disabled={disabled} />
+        <VendorComparisonEditor item={item} onUpdate={onUpdate} disabled={disabled} />
+        <MaterialEditor item={item} onUpdate={onUpdate} disabled={disabled} />
+      </td>
+    </tr>
+  );
+};
+
+// Mirrors the formula parser in procurementStorage so the editor's takeoff
+// numbers always match what procurement computes. Format: "Q * <factor>".
+const parseConsumeFormula = (formula) => {
+  const text = String(formula || "").replace(/\s+/g, "");
+  const m = text.match(/^(?:Q|Qty)\*([0-9]+(?:\.[0-9]+)?)$/i);
+  return m ? Number(m[1]) : null;
+};
+
+const MaterialEditor = ({ item, onUpdate, disabled = false }) => {
+  const [open, setOpen] = useState((item.materials || []).length > 0);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [materialQuery, setMaterialQuery] = useState("");
+  const materials = item.materials || [];
+  const libraryMaterials = useMemo(() => listMaterials(), []);
+
+  const update = (mats) => onUpdate({ materials: mats });
+
+  const pickMaterial = (material) => {
+    update([
+      ...materials,
+      {
+        id: material.id || null,
+        materialId: material.id || null,
+        name: material.name || "",
+        spec: material.specifications || material.spec || "",
+        unit: material.unit || item.unit || "nos",
+        qty: 1,
+        wastagePct: 0,
+        rate: Number(material.rate) || 0,
+        consumptionMode: "per_unit",
+        hsn: material.hsn || "",
+        gstPercent: Number(material.gstPercent) || 0,
+      },
+    ]);
+    setOpen(true);
+    setPickerOpen(false);
+    setMaterialQuery("");
+  };
+  const change = (idx, key, v) =>
+    update(materials.map((m, i) => (i === idx ? { ...m, [key]: v } : m)));
+  const patch = (idx, values) =>
+    update(materials.map((m, i) => (i === idx ? { ...m, ...values } : m)));
+  const remove = (idx) => update(materials.filter((_, i) => i !== idx));
+  const itemQty = computeItemQty(item);
+
+  // Prefer explicit qty/wastagePct fields (written by this editor and by
+  // RateBuildupModal). Fall back to consumptionFormula which encodes
+  // qty × (1 + waste%) as a single multiplier — same logic as procurementStorage.
+  const materialCalc = (material) => {
+    const hasExplicitQty =
+      material.consumptionMode === "per_unit" ||
+      material.qty != null ||
+      material.perUnitQty != null ||
+      material.consumptionQty != null;
+    let perUnitQty, wastagePct;
+    if (!hasExplicitQty) {
+      const factor = parseConsumeFormula(material.consumptionFormula);
+      perUnitQty = factor !== null ? factor : 1;
+      wastagePct = 0;
+    } else {
+      const raw = Number(
+        material.qty ?? material.perUnitQty ?? material.consumptionQty ?? 1,
+      );
+      perUnitQty = Number.isFinite(raw) && raw >= 0 ? raw : 1;
+      wastagePct = Math.max(0, Number(material.wastagePct) || 0);
+    }
+    const takeoffQty = itemQty * perUnitQty * (1 + wastagePct / 100);
+    const amount = takeoffQty * (Number(material.rate) || 0);
+    return { perUnitQty, wastagePct, takeoffQty, amount };
+  };
+
+  // Sum of material costs per unit of work — shown as a read-only reference
+  // so the user knows the material floor before adding labour and overhead.
+  const derivedRate =
+    itemQty > 0
+      ? materials.reduce((sum, m) => sum + materialCalc(m).amount / itemQty, 0)
+      : 0;
+  const filteredMaterials = useMemo(() => {
+    const query = materialQuery.trim().toLowerCase();
+    if (!query) return libraryMaterials;
+    return libraryMaterials.filter((material) =>
+      [
+        material.name,
+        material.specifications,
+        material.spec,
+        material.unit,
+        material.hsn,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    );
+  }, [libraryMaterials, materialQuery]);
+
+  return (
+    <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -2102,64 +3757,1173 @@ const MaterialEditor = ({ item, onUpdate }) => {
             )}
           </button>
           {open && (
-            <button
-              type="button"
-              onClick={add}
-              className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary"
-            >
-              <Plus size={11} /> Add Material
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  if (disabled) return;
+                  setPickerOpen((prev) => !prev);
+                  setMaterialQuery("");
+                }}
+                disabled={disabled}
+                className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Package size={11} /> Pick from Library
+              </button>
+              {pickerOpen && !disabled && (
+                <div className="absolute right-0 z-30 mt-2 w-[360px] max-w-[calc(100vw-3rem)] rounded-xl border border-bordergray bg-white shadow-xl p-2">
+                  <div className="flex items-center gap-1.5 border border-bordergray rounded-lg px-2 py-1.5">
+                    <Search size={12} className="text-text-subtle shrink-0" />
+                    <input
+                      value={materialQuery}
+                      onChange={(e) => setMaterialQuery(e.target.value)}
+                      placeholder="Search material library..."
+                      className="w-full text-[11.5px] text-textcolor outline-none placeholder:text-text-subtle"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="mt-2 max-h-64 overflow-y-auto space-y-1">
+                    {filteredMaterials.length === 0 ? (
+                      <p className="px-2 py-3 text-[11px] text-text-subtle text-center">
+                        No materials found in library.
+                      </p>
+                    ) : (
+                      filteredMaterials.map((material, materialIdx) => (
+                        <button
+                          key={
+                            material.id ||
+                            `${material.name}-${material.specifications}-${materialIdx}`
+                          }
+                          type="button"
+                          onClick={() => pickMaterial(material)}
+                          className="w-full text-left rounded-lg px-2 py-2 hover:bg-bg-soft border border-transparent hover:border-bordergray"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[11.5px] font-semibold text-textcolor truncate">
+                                {material.name || "Unnamed material"}
+                              </p>
+                              <p className="text-[10.5px] text-text-muted line-clamp-2">
+                                {material.specifications || material.spec || "-"}
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="text-[11px] font-semibold text-select-blue tabular-nums">
+                                {Number(material.rate) > 0
+                                  ? formatAmount(material.rate)
+                                  : "-"}
+                              </p>
+                              <p className="text-[10px] text-text-subtle">
+                                {material.unit || "unit"}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
         {open && (
           <div className="mt-2 space-y-1.5 pl-5">
             {materials.length === 0 && (
               <p className="text-[10.5px] text-text-subtle">
-                No materials specified. Add brand, spec, or finish details (e.g.
-                "Plywood — BWP 19mm Greenply") to lock in the quality bar.
+                No materials specified. Pick from the Material Library to bring
+                in the name, specification, unit, and rate.
               </p>
             )}
-            {materials.map((m, idx) => (
+            {materials.length > 0 && (
+              <div className="hidden md:grid grid-cols-[130px_1fr_70px_76px_70px_92px_28px] gap-2 mb-0.5 px-0.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Material</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Specification</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Unit</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Qty / Unit</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Waste %</span>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Rate (₹)</span>
+                <span />
+              </div>
+            )}
+            {materials.map((m, idx) => {
+              const unit = m.unit || item.unit || "nos";
+              return (
+                <div
+                  key={idx}
+                  className="grid grid-cols-1 md:grid-cols-[130px_1fr_70px_76px_70px_92px_28px] gap-2 items-start"
+                >
+                  <textarea
+                    value={m.name}
+                    onChange={(e) => change(idx, "name", e.target.value)}
+                    disabled={disabled}
+                    placeholder="Plywood"
+                    className={`${compactInput} font-medium resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    rows={1}
+                  />
+                  <textarea
+                    value={m.spec}
+                    onChange={(e) => change(idx, "spec", e.target.value)}
+                    disabled={disabled}
+                    placeholder="BWP 19mm Greenply"
+                    className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    rows={1}
+                  />
+                  <input
+                    type="text"
+                    value={unit}
+                    onChange={(e) => change(idx, "unit", e.target.value)}
+                    disabled={disabled}
+                    placeholder="Unit"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    title="Material unit"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={m.qty ?? m.perUnitQty ?? m.consumptionQty ?? 1}
+                    onChange={(e) =>
+                      patch(idx, {
+                        qty: Number(e.target.value) || 0,
+                        consumptionMode: "per_unit",
+                      })
+                    }
+                    disabled={disabled}
+                    placeholder="Qty/unit"
+                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    title="Material quantity consumed per BOQ unit"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={m.wastagePct ?? 0}
+                    onChange={(e) =>
+                      patch(idx, {
+                        wastagePct: Number(e.target.value) || 0,
+                        consumptionMode: "per_unit",
+                      })
+                    }
+                    disabled={disabled}
+                    placeholder="Waste %"
+                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    title="Wastage percentage"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={m.rate || 0}
+                    onChange={(e) =>
+                      change(idx, "rate", Number(e.target.value) || 0)
+                    }
+                    disabled={disabled}
+                    placeholder="Rate"
+                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => remove(idx)}
+                    disabled={disabled}
+                    className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Remove material"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              );
+            })}
+            {materials.length > 0 && derivedRate > 0 && (
+              <div className="mt-2 flex items-center gap-2 flex-wrap border-t border-bordergray/50 pt-2">
+                <span className="text-[10px] text-text-muted">
+                  Material cost:{" "}
+                  <span className="font-bold text-textcolor tabular-nums">
+                    {formatAmount(derivedRate)}
+                  </span>
+                  /unit
+                </span>
+
+                <span className="text-[9.5px] text-text-subtle">
+                  excludes labour & overhead
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+    </div>
+  );
+};
+
+const measurementNetQty = (row, unit) => {
+  const explicitQty = Number(row.netQuantity ?? row.qty) || 0;
+  if (explicitQty > 0) return explicitQty;
+  const nos = Number(row.nos) || 1;
+  const L = Number(row.length) || 0;
+  const B = Number(row.breadth ?? row.width) || 0;
+  const H = Number(row.height) || 0;
+  const deduction = Number(row.deduction) || 0;
+  let qty = 0;
+  if (DIMENSIONAL_UNITS[unit]?.kind === "length") {
+    qty = L;
+  } else {
+    const factors = [L, B, H].filter((v) => v > 0);
+    qty = factors.length > 0 ? factors.reduce((p, v) => p * v, 1) : 0;
+  }
+  return Math.max(0, qty * nos - deduction);
+};
+
+const MeasurementRowsEditor = ({ item, onUpdate, disabled = false }) => {
+  const rows = item.measurementRows || [];
+  const [open, setOpen] = useState(rows.length > 0);
+  const update = (next) => onUpdate({ measurementRows: next });
+  const patch = (idx, values) =>
+    update(rows.map((row, i) => (i === idx ? { ...row, ...values } : row)));
+  const add = () => {
+    update([...rows, { ...blankMeasurementRow(), unit: item.unit || "" }]);
+    setOpen(true);
+  };
+  const remove = (idx) => update(rows.filter((_, i) => i !== idx));
+  const totalQty = rows.reduce(
+    (sum, row) => sum + measurementNetQty(row, item.unit),
+    0,
+  );
+
+  return (
+    <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((p) => !p)}
+          className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted hover:text-select-blue"
+        >
+          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          Measurement Sheet
+          {rows.length > 0 && (
+            <span className="text-[9.5px] font-bold text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
+              {rows.length}
+            </span>
+          )}
+        </button>
+        <div className="flex items-center gap-2">
+          {rows.length > 0 && (
+            <span className="text-[10px] font-bold text-text-muted tabular-nums">
+              Qty {totalQty.toFixed(2).replace(/\.00$/, "")} {unitLabelOf(item.unit)}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={add}
+            disabled={disabled}
+            className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Plus size={11} /> Add row
+          </button>
+        </div>
+      </div>
+      {open && (
+        <div className="mt-2 space-y-2">
+          {rows.length === 0 ? (
+            <p className="text-[10.5px] text-text-subtle">
+              Add measurement rows to calculate BOQ quantity from location-wise measurements.
+            </p>
+          ) : (
+            rows.map((row, idx) => (
               <div
-                key={idx}
-                className="grid grid-cols-[140px_1fr_28px] gap-2 items-center"
+                key={row.id || idx}
+                className="rounded-lg border border-bordergray/70 bg-bg-soft/25 p-2"
               >
-                <textarea
-                  value={m.name}
-                  onChange={(e) => change(idx, "name", e.target.value)}
-                  placeholder="Plywood"
-                  className={`${compactInput} font-medium resize-none`}
-                  rows={1}
+                <div className="grid grid-cols-1 md:grid-cols-[110px_1fr_52px_62px_62px_62px_70px_82px_70px_28px] gap-2 items-start">
+                  <input
+                    type="text"
+                    value={row.location || ""}
+                    onChange={(e) => patch(idx, { location: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Location"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <input
+                    type="text"
+                    value={row.description || ""}
+                    onChange={(e) => patch(idx, { description: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Description"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  {[
+                    ["nos", "Nos"],
+                    ["length", "L"],
+                    ["breadth", "B"],
+                    ["height", "H"],
+                    ["deduction", "Deduct"],
+                  ].map(([key, label]) => (
+                    <input
+                      key={key}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row[key] ?? (key === "nos" ? 1 : 0)}
+                      onChange={(e) => patch(idx, { [key]: Number(e.target.value) || 0 })}
+                      disabled={disabled}
+                      placeholder={label}
+                      title={label}
+                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  ))}
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={row.netQuantity ?? row.qty ?? 0}
+                    onChange={(e) =>
+                      patch(idx, {
+                        netQuantity: Number(e.target.value) || 0,
+                        qty: Number(e.target.value) || 0,
+                      })
+                    }
+                    disabled={disabled}
+                    placeholder="Net qty"
+                    title={`Calculated: ${measurementNetQty(row, item.unit).toFixed(2)}`}
+                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <input
+                    type="text"
+                    value={row.unit || item.unit || ""}
+                    onChange={(e) => patch(idx, { unit: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Unit"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => remove(idx)}
+                    disabled={disabled}
+                    className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Remove measurement row"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+                <div className="mt-2 grid grid-cols-1 md:grid-cols-[1fr_110px_110px_128px_1fr] gap-2">
+                  <input
+                    type="text"
+                    value={row.drawingPhotoRef || ""}
+                    onChange={(e) => patch(idx, { drawingPhotoRef: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Drawing/photo reference"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <input
+                    type="text"
+                    value={row.measuredBy || ""}
+                    onChange={(e) => patch(idx, { measuredBy: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Measured by"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <input
+                    type="text"
+                    value={row.checkedBy || ""}
+                    onChange={(e) => patch(idx, { checkedBy: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Checked by"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <input
+                    type="date"
+                    value={row.measurementDate || ""}
+                    onChange={(e) => patch(idx, { measurementDate: e.target.value })}
+                    disabled={disabled}
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <input
+                    type="text"
+                    value={row.remarks || ""}
+                    onChange={(e) => patch(idx, { remarks: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Remarks"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const rateRowAmount = (row) => {
+  const quantity = Number(row.quantity) || 0;
+  const wastage = Number(row.wastagePercent) || 0;
+  const qww = Number(row.quantityWithWastage) || quantity * (1 + wastage / 100);
+  return qww * (Number(row.rate) || 0);
+};
+
+// Read-only quantity-with-wastage = qty × (1 + waste%). Mirrors boqStorage.
+const rateRowQww = (row) => {
+  const quantity = Number(row.quantity) || 0;
+  const wastage = Number(row.wastagePercent) || 0;
+  return Number(row.quantityWithWastage) || quantity * (1 + wastage / 100);
+};
+
+// One shared 9-column grid drives the whole sheet — the column header, the A/B
+// group bands, the editable item rows, and the C→F calculation cascade all line
+// up under the same template so it reads like the printed rate-analysis sheet.
+//  Sl · Description · Unit · Qty · Waste% · QWW · Rate · Amount · Rate/unit
+const RA_COLS =
+  "grid grid-cols-[24px_minmax(110px,1fr)_52px_60px_56px_60px_70px_84px_82px] gap-px items-stretch";
+
+const raCellInput =
+  "bg-white text-[11px] text-textcolor px-1.5 py-1.5 w-full h-full focus:outline-none focus:ring-1 focus:ring-select-blue/40 placeholder:text-text-subtle disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed";
+
+// A read-only money / number cell inside the sheet grid.
+const RaValueCell = ({ children, className = "", strong = false }) => (
+  <div
+    className={`flex items-center justify-end bg-white px-2 py-1.5 text-[11px] tabular-nums ${
+      strong ? "font-bold text-textcolor" : "text-text-muted"
+    } ${className}`}
+  >
+    {children}
+  </div>
+);
+
+// Description cell for Material rows — a pick-or-type combobox over the Material
+// Master. Selecting fills unit/rate/HSN/GST and seeds wastage; free typing keeps
+// the row as a custom (unlinked) entry. The menu is fixed-positioned so it isn't
+// clipped by the sheet's horizontal scroll container.
+const MaterialPickerCell = ({ row, disabled, materials, onChange, onSelect }) => {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState(null);
+  const inputRef = useRef(null);
+  const linked = !!row.materialId;
+
+  const filtered = useMemo(() => {
+    const q = (row.description || "").trim().toLowerCase();
+    const list = q
+      ? materials.filter(
+          (m) =>
+            m.name.toLowerCase().includes(q) ||
+            (m.specifications || "").toLowerCase().includes(q),
+        )
+      : materials;
+    return list.slice(0, 8);
+  }, [row.description, materials]);
+
+  const openMenu = () => {
+    if (disabled) return;
+    const r = inputRef.current?.getBoundingClientRect();
+    if (r) setRect(r);
+    setOpen(true);
+  };
+
+  return (
+    <div className="relative flex h-full items-center">
+      {linked && (
+        <Link2
+          size={11}
+          className="pointer-events-none absolute left-1.5 text-select-blue"
+        />
+      )}
+      <input
+        ref={inputRef}
+        type="text"
+        value={row.description || ""}
+        // Typing diverges from the master entry, so drop the link.
+        onChange={(e) => {
+          onChange({ description: e.target.value, materialId: "" });
+          openMenu();
+        }}
+        onFocus={openMenu}
+        disabled={disabled}
+        placeholder="Search material or type custom…"
+        className={`${raCellInput} ${linked ? "pl-6" : ""}`}
+        title={linked ? "Linked to Material Master" : undefined}
+      />
+      {open && rect && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div
+            className="fixed z-50 max-h-56 overflow-y-auto rounded-lg border border-bordergray bg-white shadow-2xl"
+            style={{
+              top: rect.bottom + 4,
+              left: rect.left,
+              width: Math.max(rect.width, 248),
+            }}
+          >
+            {filtered.length === 0 ? (
+              <p className="px-3 py-2 text-[10.5px] text-text-subtle">
+                No master match — keep typing to use as a custom item.
+              </p>
+            ) : (
+              filtered.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => {
+                    onSelect(m);
+                    setOpen(false);
+                  }}
+                  className="flex w-full items-start justify-between gap-2 border-b border-bordergray/50 px-2.5 py-1.5 text-left last:border-0 hover:bg-active-bg/40"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[11px] font-semibold text-textcolor">
+                      {m.name}
+                    </span>
+                    {m.specifications && (
+                      <span className="block truncate text-[9.5px] text-text-muted">
+                        {m.specifications}
+                      </span>
+                    )}
+                  </span>
+                  <span className="shrink-0 text-[10px] font-bold tabular-nums text-select-blue">
+                    {formatAmount(m.rate)}/{m.unit}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Editable item row (material or contract). idx is the running Sl within block.
+// When `materials` is supplied, the Description cell becomes a Master picker.
+const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials }) => (
+  <div className={`${RA_COLS} border-t border-bordergray/60`}>
+    <div className="flex items-center justify-center bg-white text-[10px] font-semibold tabular-nums text-text-subtle">
+      {idx + 1}
+    </div>
+    {materials ? (
+      <MaterialPickerCell
+        row={row}
+        disabled={disabled}
+        materials={materials}
+        onChange={onChange}
+        onSelect={(m) =>
+          onChange({
+            materialId: m.id,
+            description: m.name,
+            unit: m.unit || "",
+            rate: Number(m.rate) || 0,
+            hsn: m.hsn || "",
+            gstPercent: Number(m.gstPercent) || 0,
+            wastagePercent: defaultWastageFor(m.name),
+          })
+        }
+      />
+    ) : (
+      <input
+        type="text"
+        value={row.description || ""}
+        onChange={(e) => onChange({ description: e.target.value })}
+        disabled={disabled}
+        placeholder="Description"
+        className={raCellInput}
+      />
+    )}
+    <input
+      type="text"
+      value={row.unit || ""}
+      onChange={(e) => onChange({ unit: e.target.value })}
+      disabled={disabled}
+      placeholder="Unit"
+      className={raCellInput}
+    />
+    <input
+      type="number"
+      min="0"
+      step="0.01"
+      value={row.quantity || 0}
+      onChange={(e) => onChange({ quantity: Number(e.target.value) || 0 })}
+      disabled={disabled}
+      className={`${raCellInput} text-right`}
+    />
+    <input
+      type="number"
+      min="0"
+      step="0.01"
+      value={row.wastagePercent || 0}
+      onChange={(e) => onChange({ wastagePercent: Number(e.target.value) || 0 })}
+      disabled={disabled}
+      className={`${raCellInput} text-right`}
+    />
+    <div
+      className="flex items-center justify-end bg-bg-soft/60 px-2 py-1.5 text-[11px] tabular-nums text-text-muted"
+      title="Quantity with wastage"
+    >
+      {rateRowQww(row).toFixed(2)}
+    </div>
+    <input
+      type="number"
+      min="0"
+      step="0.01"
+      value={row.rate || 0}
+      onChange={(e) => onChange({ rate: Number(e.target.value) || 0 })}
+      disabled={disabled}
+      className={`${raCellInput} text-right`}
+    />
+    <RaValueCell strong>{formatAmount(rateRowAmount(row))}</RaValueCell>
+    <div className="flex items-center justify-end bg-white pr-1">
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={disabled}
+        className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
+        title="Remove row"
+      >
+        <Trash2 size={11} />
+      </button>
+    </div>
+  </div>
+);
+
+// Group band header (A. Material Items / B. Contract Items) with the block
+// subtotal in the Amount column and the per-unit contribution at the far right.
+const RaGroupHeader = ({ letter, title, subtotal, ratePerUnit, unit, onAdd, disabled }) => (
+  <div className={`${RA_COLS} border-t border-bordergray bg-rose-50/70`}>
+    <div className="flex items-center justify-center text-[10px] font-bold text-rose-700">
+      {letter}
+    </div>
+    <div className="col-span-5 flex items-center gap-2 px-1.5 py-1.5">
+      <span className="text-[10.5px] font-bold uppercase tracking-wide text-textcolor">
+        {title}
+      </span>
+      <button
+        type="button"
+        onClick={onAdd}
+        disabled={disabled}
+        className="flex items-center gap-0.5 text-[10px] font-semibold text-select-blue hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <Plus size={10} /> Add
+      </button>
+    </div>
+    <RaValueCell strong className="bg-rose-50/70">
+      {formatAmount(subtotal)}
+    </RaValueCell>
+    <RaValueCell strong className="bg-rose-50/70 text-select-blue" title={`Rate per ${unit || "unit"}`}>
+      {formatAmount(ratePerUnit)}
+    </RaValueCell>
+  </div>
+);
+
+// A cascade row (C / D / E / F). Renders the label across the middle columns,
+// an optional inline % editor, and the resulting value in the Amount column.
+const RaCascadeRow = ({
+  letter,
+  label,
+  value,
+  tint = "",
+  strong = false,
+  percentValue,
+  onPercentChange,
+  disabled,
+}) => (
+  <div className={`${RA_COLS} border-t border-bordergray/70 ${tint}`}>
+    <div className={`flex items-center justify-center text-[10px] font-bold ${strong ? "text-emerald-800" : "text-text-muted"}`}>
+      {letter}
+    </div>
+    <div className="col-span-5 flex items-center gap-2 px-1.5 py-1.5">
+      <span className={`text-[11px] ${strong ? "font-bold text-textcolor" : "font-semibold text-text-muted"}`}>
+        {label}
+      </span>
+      {onPercentChange && (
+        <span className="inline-flex items-center gap-0.5">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={percentValue || 0}
+            onChange={(e) => onPercentChange(Number(e.target.value) || 0)}
+            disabled={disabled}
+            className="w-12 rounded border border-bordergray bg-white px-1 py-0.5 text-right text-[10.5px] tabular-nums focus:outline-none focus:ring-1 focus:ring-select-blue/40 disabled:bg-bg-soft disabled:cursor-not-allowed"
+          />
+          <span className="text-[10px] font-semibold text-text-muted">%</span>
+        </span>
+      )}
+    </div>
+    <RaValueCell strong={strong} className={tint || "bg-white"}>
+      {formatAmount(value)}
+    </RaValueCell>
+    <div className={tint || "bg-white"} />
+  </div>
+);
+
+const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
+  const current = computeRateAnalysis(item.rateAnalysis, item.unit);
+  const [open, setOpen] = useState(!!current.enabled);
+  const [showAdjustments, setShowAdjustments] = useState(false);
+  const unitLabel = current.unit || item.unit || "unit";
+  const ro = disabled || !current.enabled;
+  // Material Master catalog, read once — powers the Material Items picker.
+  const materials = useMemo(() => listMaterials(), []);
+
+  const applyRa = (values) => {
+    const next = computeRateAnalysis({ ...current, ...values }, item.unit);
+    onUpdate({
+      rateAnalysis: next,
+      ...(next.enabled && next.useFinalRate ? { rate: next.roundedFinalRate } : {}),
+    });
+  };
+  const changeRows = (key, rows) => applyRa({ [key]: rows });
+  const patchRow = (key, idx, values) =>
+    changeRows(
+      key,
+      (current[key] || []).map((row, i) =>
+        i === idx ? { ...row, ...values } : row,
+      ),
+    );
+  const addRow = (key) =>
+    changeRows(key, [
+      ...(current[key] || []),
+      { ...blankRateAnalysisRow(), unit: item.unit || "" },
+    ]);
+  const removeRow = (key, idx) =>
+    changeRows(key, (current[key] || []).filter((_, i) => i !== idx));
+
+  return (
+    <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((p) => !p)}
+          className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted hover:text-select-blue"
+        >
+          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          Rate Analysis
+          {current.enabled && (
+            <span className="text-[9.5px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+              {formatAmount(current.roundedFinalRate)} / {unitLabel}
+            </span>
+          )}
+        </button>
+        <label className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted">
+          <input
+            type="checkbox"
+            checked={!!current.enabled}
+            onChange={(e) => {
+              applyRa({ enabled: e.target.checked });
+              setOpen(true);
+            }}
+            disabled={disabled}
+            className="h-3.5 w-3.5 accent-select-blue"
+          />
+          Enable
+        </label>
+      </div>
+
+      {open && (
+        <div className="mt-2 space-y-2">
+          {/* Work identity — short name + specification straight from the item. */}
+          {(item.description || item.spec) && (
+            <div className="rounded-lg border border-bordergray/70 bg-bg-soft/30 px-3 py-2">
+              {item.description && (
+                <p className="text-[11.5px] font-bold text-textcolor">
+                  {item.description}
+                </p>
+              )}
+              {item.spec && (
+                <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
+                  {item.spec}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* RA quantity + unit — the basis the per-unit rate is divided by. */}
+          <div className="flex flex-wrap items-end gap-3 rounded-lg border border-bordergray/70 bg-bg-soft/30 px-3 py-2">
+            <Field icon={<Hash size={10} />} label="RA Qty">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={current.raQuantity || 0}
+                onChange={(e) => applyRa({ raQuantity: Number(e.target.value) || 0 })}
+                disabled={ro}
+                className={`${compactInput} w-24 text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+              />
+            </Field>
+            <Field icon={<Ruler size={10} />} label="Unit">
+              <input
+                type="text"
+                value={current.unit || item.unit || ""}
+                onChange={(e) => applyRa({ unit: e.target.value })}
+                disabled={ro}
+                className={`${compactInput} w-24 disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+              />
+            </Field>
+          </div>
+
+          {/* ── The sheet ─────────────────────────────────────────────── */}
+          <div className="overflow-x-auto rounded-lg border border-bordergray">
+            <div className="min-w-[640px]">
+              {/* Column header */}
+              <div className={`${RA_COLS} bg-primary/5 text-[8.5px] font-bold uppercase tracking-wider text-text-muted`}>
+                <span className="flex items-center justify-center py-1.5">Sl</span>
+                <span className="flex items-center px-1.5 py-1.5">Description</span>
+                <span className="flex items-center px-1.5 py-1.5">Unit</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">Qty</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">Waste%</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">QWW</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">Rate</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">Amount</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">
+                  Rate/{unitLabel}
+                </span>
+              </div>
+
+              {/* A — Material Items */}
+              <RaGroupHeader
+                letter="A"
+                title="Material Items"
+                subtotal={current.subtotalMaterials}
+                ratePerUnit={current.materialRatePerUnit}
+                unit={unitLabel}
+                onAdd={() => addRow("materialItems")}
+                disabled={ro}
+              />
+              {(current.materialItems || []).length === 0 ? (
+                <div className={`${RA_COLS} border-t border-bordergray/60`}>
+                  <div className="col-span-9 bg-white px-3 py-2 text-[10px] text-text-subtle">
+                    No material items — click <b>Add</b> on the band above.
+                  </div>
+                </div>
+              ) : (
+                (current.materialItems || []).map((row, idx) => (
+                  <RaItemRow
+                    key={row.id || idx}
+                    row={row}
+                    idx={idx}
+                    disabled={ro}
+                    materials={materials}
+                    onChange={(values) => patchRow("materialItems", idx, values)}
+                    onRemove={() => removeRow("materialItems", idx)}
+                  />
+                ))
+              )}
+
+              {/* B — Contract Items */}
+              <RaGroupHeader
+                letter="B"
+                title="Contract Items"
+                subtotal={current.subtotalContracts}
+                ratePerUnit={current.contractRatePerUnit}
+                unit={unitLabel}
+                onAdd={() => addRow("contractItems")}
+                disabled={ro}
+              />
+              {(current.contractItems || []).length === 0 ? (
+                <div className={`${RA_COLS} border-t border-bordergray/60`}>
+                  <div className="col-span-9 bg-white px-3 py-2 text-[10px] text-text-subtle">
+                    No contract items — click <b>Add</b> on the band above.
+                  </div>
+                </div>
+              ) : (
+                (current.contractItems || []).map((row, idx) => (
+                  <RaItemRow
+                    key={row.id || idx}
+                    row={row}
+                    idx={idx}
+                    disabled={ro}
+                    onChange={(values) => patchRow("contractItems", idx, values)}
+                    onRemove={() => removeRow("contractItems", idx)}
+                  />
+                ))
+              )}
+
+              {/* Price Calculation band */}
+              <div className={`${RA_COLS} border-t-2 border-bordergray bg-primary/5`}>
+                <div className="col-span-9 px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+                  Price Calculation
+                </div>
+              </div>
+
+              {/* Optional cost lines that aren't material/contract rows */}
+              {current.subtotalConsumables > 0 && (
+                <RaCascadeRow letter="" label="Consumables" value={current.subtotalConsumables} />
+              )}
+              {current.labourRate > 0 && (
+                <RaCascadeRow letter="" label="Labour (lump sum)" value={current.labourRate} />
+              )}
+
+              {/* C — Total of Material + Contracts (A+B) */}
+              <RaCascadeRow
+                letter="C"
+                label="Total of Material + Contracts (A+B)"
+                value={current.directCost}
+                tint="bg-emerald-50/60"
+                strong
+              />
+              {/* D — Cost per unit */}
+              <RaCascadeRow
+                letter="D"
+                label={`Cost per unit (C / ${current.raQuantity || 0} ${unitLabel})`}
+                value={current.costPerUnit}
+                tint="bg-emerald-50/40"
+                strong
+              />
+              {current.overheadAmount > 0 && (
+                <RaCascadeRow
+                  letter=""
+                  label="Overhead"
+                  value={current.overheadAmount}
+                  percentValue={current.overheadPercent}
+                  onPercentChange={(v) => applyRa({ overheadPercent: v })}
+                  disabled={ro}
                 />
-                <textarea
-                  value={m.spec}
-                  onChange={(e) => change(idx, "spec", e.target.value)}
-                  placeholder="BWP 19mm Greenply"
-                  className={`${compactInput} resize-none`}
-                  rows={1}
+              )}
+              {/* E — Contract PCE (D × E%) */}
+              <RaCascadeRow
+                letter="E"
+                label="Contract PCE — adds to basic cost"
+                value={current.rateBeforeMargin}
+                tint="bg-emerald-50/40"
+                strong
+                percentValue={current.pcePercent}
+                onPercentChange={(v) => applyRa({ pcePercent: v })}
+                disabled={ro}
+              />
+              {/* F — Margin (on selling price: basic cost ÷ (1 − margin%)) */}
+              <RaCascadeRow
+                letter="F"
+                label="Margin — on selling price"
+                value={current.roundedFinalRate}
+                tint="bg-emerald-100/70"
+                strong
+                percentValue={current.marginPercent}
+                onPercentChange={(v) => applyRa({ marginPercent: v })}
+                disabled={ro}
+              />
+            </div>
+          </div>
+
+          {/* Final rate highlight */}
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-select-blue/10 px-3 py-2">
+            <span className="text-[10.5px] font-bold uppercase tracking-wider text-select-blue">
+              Final Rate / {unitLabel}
+            </span>
+            <span className="text-[16px] font-bold tabular-nums text-select-blue">
+              {formatAmount(current.roundedFinalRate)}
+            </span>
+          </div>
+
+          {/* Adjustments — secondary inputs kept out of the main sheet view */}
+          <div className="rounded-lg border border-bordergray/70 bg-bg-soft/25">
+            <button
+              type="button"
+              onClick={() => setShowAdjustments((p) => !p)}
+              className="flex w-full items-center gap-1.5 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-text-muted hover:text-select-blue"
+            >
+              {showAdjustments ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+              Adjustments &amp; basis
+            </button>
+            {showAdjustments && (
+              <div className="space-y-3 px-3 pb-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <Field icon={<User size={10} />} label="Labour (lump sum)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={current.labourRate || 0}
+                      onChange={(e) => applyRa({ labourRate: Number(e.target.value) || 0 })}
+                      disabled={ro}
+                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <Field icon={<Package size={10} />} label="Consumables">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={current.consumables || 0}
+                      onChange={(e) => applyRa({ consumables: Number(e.target.value) || 0 })}
+                      disabled={ro}
+                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <Field icon={<Percent size={10} />} label="Overhead %">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={current.overheadPercent || 0}
+                      onChange={(e) => applyRa({ overheadPercent: Number(e.target.value) || 0 })}
+                      disabled={ro}
+                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <label className="flex items-center gap-1.5 pt-5 text-[10.5px] font-semibold text-text-muted">
+                    <input
+                      type="checkbox"
+                      checked={!!current.useFinalRate}
+                      onChange={(e) => applyRa({ useFinalRate: e.target.checked })}
+                      disabled={ro}
+                      className="h-3.5 w-3.5 accent-select-blue"
+                    />
+                    Use calculated rate
+                  </label>
+                </div>
+                <p className="text-[9.5px] text-text-subtle">
+                  Margin is applied on the selling price: final rate = basic cost
+                  ÷ (1 − margin%).
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const VendorComparisonEditor = ({ item, onUpdate, disabled = false }) => {
+  const rows = item.vendorComparisons || [];
+  const [open, setOpen] = useState(rows.length > 0);
+  const update = (next) => onUpdate({ vendorComparisons: next });
+  const patch = (idx, values) => {
+    const next = rows.map((row, i) => {
+      if (i !== idx) return values.selected ? { ...row, selected: false } : row;
+      return { ...row, ...values };
+    });
+    update(next);
+  };
+  const add = () => {
+    update([...rows, blankVendorComparison()]);
+    setOpen(true);
+  };
+  const remove = (idx) => update(rows.filter((_, i) => i !== idx));
+
+  return (
+    <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((p) => !p)}
+          className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted hover:text-select-blue"
+        >
+          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          Vendor Comparison
+          {rows.length > 0 && (
+            <span className="text-[9.5px] font-bold text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
+              {rows.length}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={add}
+          disabled={disabled}
+          className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Plus size={11} /> Add vendor
+        </button>
+      </div>
+      {open && (
+        <div className="mt-2 space-y-2">
+          {rows.length === 0 ? (
+            <p className="text-[10.5px] text-text-subtle">
+              Add vendor quotes to compare commercial options for this item.
+            </p>
+          ) : (
+            rows.map((row, idx) => (
+              <div
+                key={row.id || idx}
+                className="grid grid-cols-1 md:grid-cols-[1fr_90px_64px_78px_110px_84px_1fr_28px] gap-2 items-start rounded-lg border border-bordergray/70 bg-bg-soft/25 p-2"
+              >
+                <input
+                  type="text"
+                  value={row.vendorName || ""}
+                  onChange={(e) => patch(idx, { vendorName: e.target.value })}
+                  disabled={disabled}
+                  placeholder="Vendor name"
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={row.quotedRate || 0}
+                  onChange={(e) => patch(idx, { quotedRate: Number(e.target.value) || 0 })}
+                  disabled={disabled}
+                  placeholder="Quoted rate"
+                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={row.gstPercent || 0}
+                  onChange={(e) => patch(idx, { gstPercent: Number(e.target.value) || 0 })}
+                  disabled={disabled}
+                  placeholder="GST %"
+                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={row.leadTimeDays || 0}
+                  onChange={(e) =>
+                    patch(idx, { leadTimeDays: Number(e.target.value) || 0 })
+                  }
+                  disabled={disabled}
+                  placeholder="Lead days"
+                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+                <input
+                  type="text"
+                  value={row.warranty || ""}
+                  onChange={(e) => patch(idx, { warranty: e.target.value })}
+                  disabled={disabled}
+                  placeholder="Warranty"
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+                <label className="flex h-7 items-center gap-1.5 rounded-md border border-bordergray bg-white px-2 text-[10px] font-semibold text-text-muted">
+                  <input
+                    type="checkbox"
+                    checked={!!row.selected}
+                    onChange={(e) => patch(idx, { selected: e.target.checked })}
+                    disabled={disabled}
+                    className="h-3.5 w-3.5 accent-select-blue"
+                  />
+                  Select
+                </label>
+                <input
+                  type="text"
+                  value={row.selectionReason || ""}
+                  onChange={(e) => patch(idx, { selectionReason: e.target.value })}
+                  disabled={disabled}
+                  placeholder="Selection reason"
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                 />
                 <button
                   type="button"
                   onClick={() => remove(idx)}
-                  className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
-                  title="Remove material"
+                  disabled={disabled}
+                  className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Remove vendor"
                 >
                   <Trash2 size={11} />
                 </button>
               </div>
-            ))}
-          </div>
-        )}
-      </td>
-    </tr>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 };
 
-const ClientPicker = ({ current, onPick, onClear }) => {
+const ClientPicker = ({ current, onPick, onClear, disabled = false }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   const handleOpen = () => {
+    if (disabled) return;
     setOpen(true);
     setQuery("");
   };
@@ -2184,7 +4948,8 @@ const ClientPicker = ({ current, onPick, onClear }) => {
       <button
         type="button"
         onClick={open ? () => setOpen(false) : handleOpen}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-bordergray bg-white text-[11px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor"
+        disabled={disabled}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-bordergray bg-white text-[11px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {current?.id ? "Change Client" : "Select Existing Client"}
       </button>
@@ -2192,7 +4957,8 @@ const ClientPicker = ({ current, onPick, onClear }) => {
         <button
           type="button"
           onClick={onClear}
-          className="ml-1 inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-bordergray bg-white text-[11px] text-text-subtle hover:text-red-500 hover:border-red-200"
+          disabled={disabled}
+          className="ml-1 inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-bordergray bg-white text-[11px] text-text-subtle hover:text-red-500 hover:border-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
           title="Unlink client"
         >
           <X size={11} />
@@ -2284,9 +5050,10 @@ const DimensionEditor = ({
   r,
   updateDim,
   unitLabel,
+  disabled = false,
 }) => (
   <tr className="bg-active-bg/20 border-b border-bordergray">
-    <td colSpan={9} className="px-3 py-3">
+    <td colSpan={7} className="px-3 py-3">
       <div className="flex items-start gap-3 flex-wrap">
         <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-select-blue mt-2">
           <Calculator size={11} /> Measurement
@@ -2297,6 +5064,7 @@ const DimensionEditor = ({
             suffix={dimInfo?.suffix}
             value={item.dimensions?.length || 0}
             onChange={(v) => updateDim({ length: v })}
+            disabled={disabled}
           />
           {isArea && (
             <>
@@ -2306,6 +5074,7 @@ const DimensionEditor = ({
                 suffix={dimInfo?.suffix}
                 value={item.dimensions?.breadth ?? item.dimensions?.width ?? 0}
                 onChange={(v) => updateDim({ breadth: v })}
+                disabled={disabled}
               />
               <span className="text-text-subtle font-bold mt-2">×</span>
               <DimInput
@@ -2313,33 +5082,26 @@ const DimensionEditor = ({
                 suffix={dimInfo?.suffix}
                 value={item.dimensions?.height || 0}
                 onChange={(v) => updateDim({ height: v })}
+                disabled={disabled}
               />
             </>
           )}
-          <span className="text-text-subtle font-bold mt-2">×</span>
-          <DimInput
-            label="Nos"
-            value={item.dimensions?.nos || 1}
-            onChange={(v) => updateDim({ nos: v })}
-          />
           <span className="text-text-subtle font-bold mt-2">=</span>
-          <div className="flex flex-col items-end bg-white border border-select-blue/30 rounded-md px-3 py-1.5">
+          <div className="flex flex-col gap-1">
             <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
               Total Qty
             </span>
-            <span className="text-[14px] font-bold text-select-blue tabular-nums leading-tight">
-              {computedQty.toFixed(2).replace(/\.00$/, "")}{" "}
-              <span className="text-[10px] text-text-muted font-normal">
-                {unitLabel}
+            <span className="bg-white border border-select-blue/30 rounded-md px-3 py-1.5 text-right">
+              <span className="text-[14px] font-bold text-select-blue tabular-nums leading-tight">
+                {computedQty.toFixed(2).replace(/\.00$/, "")}{" "}
+                <span className="text-[10px] text-text-muted font-normal">
+                  {unitLabel}
+                </span>
               </span>
             </span>
           </div>
         </div>
         <div className="ml-auto flex flex-col items-end gap-0.5 text-[10.5px] text-text-muted mt-1">
-          <span className="text-[9.5px] text-text-subtle">
-            Tip: leave a dimension at 0 to skip it (e.g. floor = L × B, wall = L
-            × H).
-          </span>
           <span>
             Rate{" "}
             <span className="font-bold tabular-nums text-textcolor">
@@ -2356,346 +5118,212 @@ const DimensionEditor = ({
   </tr>
 );
 
-const DimInput = ({ label, suffix, value, onChange }) => (
-  <div className="relative">
-    <input
-      type="number"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onFocus={(e) => e.target.select()}
-      placeholder="0"
-      title={label}
-      className={`${compactInput} w-20 text-right tabular-nums ${suffix ? "pr-7" : "pr-2"}`}
-    />
-    {suffix && (
-      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9.5px] text-text-subtle font-semibold pointer-events-none">
-        {suffix}
-      </span>
-    )}
-    <span className="absolute -top-1.5 left-2 text-[8px] font-bold uppercase tracking-wider text-text-subtle bg-active-bg/20 px-0.5">
+const DimInput = ({ label, suffix, value, onChange, disabled = false }) => (
+  <label className="flex flex-col gap-1">
+    <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
       {label}
     </span>
-  </div>
+    <span className="relative">
+      <input
+        type="number"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={(e) => e.target.select()}
+        disabled={disabled}
+        placeholder="0"
+        title={label}
+        className={`${compactInput} w-20 text-right tabular-nums ${suffix ? "pr-7" : "pr-2"} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+      />
+      {suffix && (
+        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9.5px] text-text-subtle font-semibold pointer-events-none">
+          {suffix}
+        </span>
+      )}
+    </span>
+  </label>
 );
 
 // ─── Small components ──────────────────────────────────────────────────────
-const Field = ({ icon, label, hint, children }) => (
-  <div>
-    <label className="flex items-center justify-between text-[10.5px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">
-      <span className="flex items-center gap-1">
-        <span className="text-select-blue">{icon}</span>
-        {label}
-      </span>
-      {hint && (
-        <span className="text-[9.5px] font-normal text-text-subtle normal-case tracking-normal">
-          {hint}
+const formatSignoffDate = (iso) => {
+  if (!iso) return "Pending";
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+};
+
+
+const AuditTrailList = ({ items = [], revisionHistory = [], onViewSnapshot }) => {
+  const latest = [...items].reverse();
+
+  return (
+    <div className="rounded-xl border border-bordergray bg-white">
+      <div className="flex items-center justify-between border-b border-bordergray px-3 py-2">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">
+          Approval History
         </span>
+        <span className="rounded bg-bg-soft px-1.5 py-0.5 text-[9.5px] font-bold text-text-subtle">
+          {items.length}
+        </span>
+      </div>
+      {latest.length === 0 ? (
+        <p className="px-3 py-3 text-[10.5px] text-text-subtle">
+          No workflow events recorded yet.
+        </p>
+      ) : (
+        <div className="max-h-52 overflow-y-auto">
+          {latest.map((entry) => {
+            const snap =
+              entry.action === "revision_created"
+                ? revisionHistory.find((r) => r.revision === entry.revision)
+                : null;
+            return (
+              <div
+                key={entry.id}
+                className="border-b border-bordergray/70 px-3 py-2 last:border-b-0"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-bold text-textcolor">
+                      {entry.label}
+                    </p>
+                    <p className="text-[10px] text-text-muted">
+                      {entry.actor} · Rev {entry.revision} · {entry.status}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {snap && onViewSnapshot && (
+                      <button
+                        type="button"
+                        onClick={() => onViewSnapshot(snap)}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold text-select-blue hover:bg-active-bg border border-select-blue/30"
+                        title={`View Rev ${snap.revision} content`}
+                      >
+                        <Eye size={9} /> View Rev {snap.revision}
+                      </button>
+                    )}
+                    <span className="text-[9.5px] font-semibold text-text-subtle">
+                      {formatSignoffDate(entry.at)}
+                    </span>
+                  </div>
+                </div>
+                {entry.details && (
+                  <p className="mt-1 text-[10px] leading-snug text-text-subtle">
+                    {entry.details}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
-    </label>
-    {children}
-  </div>
-);
+    </div>
+  );
+};
 
-const BulletListEditor = ({
-  title,
-  icon,
-  items,
-  placeholder,
-  accent,
-  onChange,
-}) => {
-  const bullet =
-    accent === "emerald"
-      ? "bg-emerald-100 text-emerald-700"
-      : "bg-red-100 text-red-600";
-  const headerTint =
-    accent === "emerald"
-      ? "from-emerald-50/60 to-white"
-      : "from-red-50/60 to-white";
-  const add = () => onChange([...(items || []), ""]);
-  const updateItem = (idx, v) =>
-    onChange(items.map((it, i) => (i === idx ? v : it)));
-  const remove = (idx) => onChange(items.filter((_, i) => i !== idx));
-
+const RevisionSnapshotModal = ({ snapshot, onClose }) => {
+  const totalItems = (snapshot.sections || []).reduce(
+    (s, sec) => s + (sec.items?.length || 0),
+    0,
+  );
   return (
-    <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-      <div
-        className={`px-4 py-3 border-b border-bordergray bg-linear-to-r ${headerTint} flex items-center justify-between`}
-      >
+    <div className="fixed inset-0 z-50 flex flex-col bg-overallbg">
+      {/* Header */}
+      <div className="modal-no-print flex items-center justify-between gap-3 border-b border-bordergray bg-white px-4 py-3 shrink-0">
+        <div className="flex items-center gap-2.5">
+          <History size={15} className="text-text-muted" />
+          <span className="text-[13px] font-bold text-textcolor">
+            Revision {snapshot.revision} Snapshot
+          </span>
+          <span className="rounded-full bg-bg-soft px-2 py-0.5 text-[10px] font-semibold text-text-muted border border-bordergray capitalize">
+            {snapshot.status}
+          </span>
+          <span className="text-[10.5px] text-text-subtle">
+            · {snapshot.sections?.length || 0} sections · {totalItems} items
+          </span>
+        </div>
         <div className="flex items-center gap-2">
-          {icon}
-          <h3 className="text-[12px] font-bold text-textcolor">{title}</h3>
-          <span className="text-[10px] font-semibold text-text-muted bg-white/70 px-1.5 py-0.5 rounded-md border border-bordergray">
-            {(items || []).length}
+          <span className="text-[10.5px] text-text-subtle">
+            {snapshot.at
+              ? new Date(snapshot.at).toLocaleDateString("en-IN", {
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
+                })
+              : ""}
           </span>
-        </div>
-        <button
-          type="button"
-          onClick={add}
-          className="flex items-center gap-1 text-[11px] font-semibold text-select-blue hover:text-primary"
-        >
-          <Plus size={12} /> Add
-        </button>
-      </div>
-      <div className="p-3 space-y-2">
-        {(items || []).map((item, idx) => (
-          <div key={idx} className="flex items-start gap-2 group">
-            <span
-              className={`mt-2 h-4 w-4 rounded-full flex items-center justify-center shrink-0 ${bullet}`}
-            >
-              {accent === "emerald" ? (
-                <Check size={9} strokeWidth={3} />
-              ) : (
-                <X size={9} strokeWidth={3} />
-              )}
-            </span>
-            <input
-              type="text"
-              value={item}
-              onChange={(e) => updateItem(idx, e.target.value)}
-              placeholder={placeholder}
-              className="bg-bg-soft border border-transparent text-[11.5px] text-textcolor rounded-lg px-2.5 py-1.5 w-full focus:outline-none focus:bg-white focus:border-select-blue/40 placeholder:text-text-subtle"
-            />
-            <button
-              type="button"
-              onClick={() => remove(idx)}
-              className="h-7 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 transition-colors shrink-0 opacity-0 group-hover:opacity-100"
-              title="Remove"
-            >
-              <Trash2 size={11} />
-            </button>
-          </div>
-        ))}
-        {(!items || items.length === 0) && (
           <button
             type="button"
-            onClick={add}
-            className="w-full text-[11px] text-text-subtle border border-dashed border-bordergray rounded-lg py-3 hover:border-select-blue hover:text-select-blue transition-colors"
+            onClick={onClose}
+            className="flex items-center gap-1 rounded-lg border border-bordergray bg-white px-3 py-1.5 text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
           >
-            + Add your first entry
+            <X size={12} /> Close
           </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-6">
+        {(!snapshot.sections || snapshot.sections.length === 0) ? (
+          <div className="text-center py-16 text-text-subtle text-[13px]">
+            No sections were captured in this snapshot.
+          </div>
+        ) : (
+          <div className="mx-auto max-w-4xl space-y-4">
+            {snapshot.sections.map((sec, si) => (
+              <div key={sec.id || si} className="rounded-xl border border-bordergray bg-white overflow-hidden">
+                <div className="flex items-center gap-2 bg-bg-soft px-4 py-2.5 border-b border-bordergray">
+                  <span className="text-[11px] font-bold text-textcolor">{sec.name || "Untitled Section"}</span>
+                  {sec.category && (
+                    <span className="text-[10px] text-text-muted">· {sec.category}</span>
+                  )}
+                  <span className="ml-auto text-[10px] text-text-subtle">{sec.items?.length || 0} items</span>
+                </div>
+                {(!sec.items || sec.items.length === 0) ? (
+                  <p className="px-4 py-3 text-[11px] text-text-subtle">No items.</p>
+                ) : (
+                  <table className="w-full text-[11.5px]">
+                    <thead>
+                      <tr className="text-[10px] text-text-muted uppercase tracking-wide border-b border-bordergray">
+                        <th className="px-4 py-2 text-center font-semibold w-8">#</th>
+                        <th className="px-4 py-2 text-center font-semibold">Description</th>
+                        <th className="px-4 py-2 text-center font-semibold">Qty</th>
+                        <th className="px-4 py-2 text-center font-semibold">Unit</th>
+                        <th className="px-4 py-2 text-center font-semibold">Rate</th>
+                        <th className="px-4 py-2 text-center font-semibold">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sec.items.map((item, ii) => {
+                        const qty = computeItemQty(item);
+                        const amt = qty * (Number(item.rate) || 0);
+                        return (
+                          <tr key={item.id || ii} className="border-b border-bordergray/60 last:border-b-0 hover:bg-bg-soft/40">
+                            <td className="px-4 py-2 text-text-subtle">{ii + 1}</td>
+                            <td className="px-4 py-2">
+                              <p className="font-medium text-textcolor">{item.description || "—"}</p>
+                              {item.spec && <p className="text-[10px] text-text-muted mt-0.5">{item.spec}</p>}
+                            </td>
+                            <td className="px-4 py-2 text-right text-textcolor">{Number(qty).toFixed(2)}</td>
+                            <td className="px-4 py-2 text-text-muted">{item.unit || "—"}</td>
+                            <td className="px-4 py-2 text-right text-textcolor">
+                              {Number(item.rate || 0).toLocaleString("en-IN")}
+                            </td>
+                            <td className="px-4 py-2 text-right font-semibold text-textcolor">
+                              {amt.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ))}
+          </div>
         )}
-      </div>
-    </section>
-  );
-};
-
-const Row = ({ label, value, accent = "text-textcolor" }) => (
-  <div className="flex items-center justify-between">
-    <span className="text-text-muted">{label}</span>
-    <span className={`tabular-nums ${accent}`}>{value}</span>
-  </div>
-);
-
-const FooterStat = ({ label, value, accent = "text-textcolor" }) => (
-  <div className="flex flex-col">
-    <span className="text-[9px] font-bold uppercase tracking-widest text-text-subtle">
-      {label}
-    </span>
-    <span className={`text-[13px] font-bold tabular-nums ${accent}`}>
-      {value}
-    </span>
-  </div>
-);
-
-const CommercialValue = ({ label, value, signed = false, tone = "text-textcolor" }) => {
-  const amount = Number(value) || 0;
-  const prefix = signed && amount > 0 ? "+" : "";
-  return (
-    <div className="rounded-lg border border-bordergray bg-white px-3 py-2">
-      <p className="text-[9px] font-bold uppercase tracking-wider text-text-muted">
-        {label}
-      </p>
-      <p className={`mt-0.5 text-[13px] font-bold tabular-nums ${tone}`}>
-        {prefix}{formatAmount(amount)}
-      </p>
-    </div>
-  );
-};
-
-const BentoStat = ({ icon, label, value, tint }) => {
-  const tints = {
-    blue: "from-blue-50 to-white text-blue-600 border-blue-100",
-    purple: "from-purple-50 to-white text-purple-600 border-purple-100",
-    orange: "from-orange-50 to-white text-orange-600 border-orange-100",
-    emerald: "from-emerald-50 to-white text-emerald-600 border-emerald-100",
-  };
-  return (
-    <div
-      className={`relative bg-linear-to-br ${tints[tint]} border rounded-xl p-3 overflow-hidden`}
-    >
-      <div className="flex items-center justify-between mb-1">
-        <span className="opacity-80">{icon}</span>
-        <span className="text-[9.5px] font-bold uppercase tracking-wider opacity-70">
-          {label}
-        </span>
-      </div>
-      <p className="text-[16px] font-bold text-textcolor tabular-nums leading-tight">
-        {value}
-      </p>
-    </div>
-  );
-};
-
-const Toast = ({ toast, onClose }) => {
-  const variants = {
-    success: { bg: "bg-emerald-500", icon: <CheckCircle2 size={14} /> },
-    error: { bg: "bg-red-500", icon: <AlertTriangle size={14} /> },
-    info: { bg: "bg-select-blue", icon: <Info size={14} /> },
-  };
-  const v = variants[toast.type] || variants.info;
-  return (
-    <div className="fixed top-6 right-6 z-50">
-      <div
-        className={`${v.bg} text-white rounded-xl shadow-xl px-4 py-3 flex items-center gap-2.5 min-w-[260px] max-w-md`}
-      >
-        <span className="shrink-0">{v.icon}</span>
-        <p className="text-[12px] font-medium flex-1">{toast.message}</p>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-white/80 hover:text-white shrink-0"
-        >
-          <X size={16} />
-        </button>
-      </div>
-    </div>
-  );
-};
-
-const ConfirmDialog = ({
-  title,
-  message,
-  confirmLabel,
-  danger,
-  onCancel,
-  onConfirm,
-}) => (
-  <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden relative">
-      <button
-        type="button"
-        onClick={onCancel}
-        className="absolute top-4 right-4 text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"
-        title="Close dialog"
-      >
-        <X size={16} />
-      </button>
-      <div className="p-5 flex items-start gap-3">
-        <span
-          className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${
-            danger
-              ? "bg-red-50 text-red-500"
-              : "bg-select-blue/10 text-select-blue"
-          }`}
-        >
-          {danger ? <AlertTriangle size={18} /> : <Info size={18} />}
-        </span>
-        <div>
-          <h3 className="text-[14px] font-bold text-textcolor">{title}</h3>
-          <p className="text-[12px] text-text-muted mt-1 leading-relaxed">
-            {message}
-          </p>
-        </div>
-      </div>
-      <div className="px-5 py-3 bg-bg-soft border-t border-bordergray flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-3 py-1.5 rounded-lg border border-bordergray bg-white text-[12px] font-semibold text-text-muted hover:text-textcolor"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onClick={onConfirm}
-          autoFocus
-          className={`px-3 py-1.5 rounded-lg text-[12px] font-semibold text-white shadow-sm ${
-            danger
-              ? "bg-red-500 hover:bg-red-600"
-              : "bg-select-blue hover:bg-primary"
-          }`}
-        >
-          {confirmLabel || "Confirm"}
-        </button>
-      </div>
-    </div>
-  </div>
-);
-
-// Shown when "Mark Sent" is pressed and validateBoqForSend() finds issues.
-// Blocks have no confirm action (status doesn't change until fixed);
-// warnings get a "Send anyway" override. Mirrors ConfirmDialog's styling.
-const SendValidationDialog = ({ blocks, warnings, onCancel, onSendAnyway }) => {
-  const hasBlocks = blocks.length > 0;
-  return (
-    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden relative">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="absolute top-4 right-4 text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"
-          title="Close dialog"
-        >
-          <X size={16} />
-        </button>
-        <div className="p-5 flex items-start gap-3">
-          <span
-            className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${
-              hasBlocks ? "bg-red-50 text-red-500" : "bg-amber-50 text-amber-600"
-            }`}
-          >
-            <AlertTriangle size={18} />
-          </span>
-          <div className="min-w-0">
-            <h3 className="text-[14px] font-bold text-textcolor">
-              {hasBlocks ? "Can't mark this BOQ as sent" : "Send with warnings?"}
-            </h3>
-            <p className="text-[12px] text-text-muted mt-1 leading-relaxed">
-              {hasBlocks
-                ? "Fix these before sending:"
-                : "These won't block sending, but worth checking first:"}
-            </p>
-          </div>
-        </div>
-        <div className="px-5 pb-2 space-y-1.5 max-h-[260px] overflow-y-auto">
-          {blocks.map((b, i) => (
-            <div
-              key={`b${i}`}
-              className="flex items-start gap-2 text-[11.5px] text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
-            >
-              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-              <span>{b}</span>
-            </div>
-          ))}
-          {warnings.map((w, i) => (
-            <div
-              key={`w${i}`}
-              className="flex items-start gap-2 text-[11.5px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
-            >
-              <Info size={12} className="mt-0.5 shrink-0" />
-              <span>{w}</span>
-            </div>
-          ))}
-        </div>
-        <div className="px-5 py-3 bg-bg-soft border-t border-bordergray flex items-center justify-end gap-2 mt-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-3 py-1.5 rounded-lg border border-bordergray bg-white text-[12px] font-semibold text-text-muted hover:text-textcolor"
-          >
-            {hasBlocks ? "Close" : "Cancel"}
-          </button>
-          {!hasBlocks && (
-            <button
-              type="button"
-              onClick={onSendAnyway}
-              className="px-3 py-1.5 rounded-lg text-[12px] font-semibold text-white shadow-sm bg-select-blue hover:bg-primary"
-            >
-              Send anyway
-            </button>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -3334,5 +5962,69 @@ const EmptySectionsState = ({ onAdd, onAddFromTemplate, onSeed }) => (
     </div>
   </div>
 );
+
+const SurveyLinker = ({ onClose, onPick }) => {
+  const sites = useMemo(() => {
+    return getAllSites()
+      .map((s) => {
+        const flow = getDesignFlow(s.siteID);
+        if (!flow?.siteBasis) return null;
+        return { siteID: s.siteID, name: s.clientName || s.siteID };
+      })
+      .filter(Boolean);
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl border border-bordergray w-full max-w-sm mx-4 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-bordergray">
+          <div>
+            <p className="text-[14px] font-bold text-textcolor">Link a Site Survey</p>
+            <p className="text-[11.5px] text-text-muted mt-0.5">
+              Pick a site with a frozen survey to generate from
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-text-subtle hover:bg-bg-soft"
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <div className="px-3 py-3 max-h-72 overflow-y-auto">
+          {sites.length === 0 ? (
+            <p className="py-8 text-center text-[12.5px] text-text-subtle">
+              No sites with frozen surveys found.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {sites.map((s) => (
+                <button
+                  key={s.siteID}
+                  type="button"
+                  onClick={() => onPick(s.siteID)}
+                  className="w-full flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-left hover:bg-active-bg transition-colors"
+                >
+                  <div>
+                    <p className="text-[13px] font-semibold text-textcolor">{s.name}</p>
+                    <p className="text-[11px] text-text-muted">{s.siteID}</p>
+                  </div>
+                  <Ruler size={14} className="text-text-subtle shrink-0" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export default BOQEditor;

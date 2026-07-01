@@ -20,6 +20,58 @@ const readJson = (key, fallback) => {
   }
 };
 
+const positiveNumber = (value, fallback = 0) => {
+  const next = Number(value);
+  return Number.isFinite(next) && next >= 0 ? next : fallback;
+};
+
+const formulaFactor = (formula) => {
+  const text = String(formula || "").replace(/\s+/g, "");
+  if (!text) return null;
+  const match = text.match(/^(?:Q|Qty)\*([0-9]+(?:\.[0-9]+)?)$/i);
+  if (!match) return null;
+  return positiveNumber(match[1], null);
+};
+
+const materialHasPerUnitQty = (mat = {}) =>
+  mat.consumptionMode === "per_unit" ||
+  mat.qtyMode === "per_unit" ||
+  mat.perUnitQty !== undefined ||
+  mat.consumptionQty !== undefined;
+
+const materialConsumption = (mat = {}) => {
+  const formulaQty = formulaFactor(mat.consumptionFormula);
+  const hasPerUnitQty = materialHasPerUnitQty(mat);
+  const qty =
+    formulaQty !== null && !hasPerUnitQty
+      ? formulaQty
+      : positiveNumber(mat.qty ?? mat.perUnitQty ?? mat.consumptionQty, 1);
+  const wastagePct =
+    formulaQty !== null && !hasPerUnitQty
+      ? 0
+      : positiveNumber(mat.wastagePct, 0);
+
+  return { qty, wastagePct };
+};
+
+export const computeMaterialTakeoff = (item = {}, mat = {}) => {
+  const itemQty = positiveNumber(computeItemQty(item), 0);
+  const { qty: perUnitQty, wastagePct } = materialConsumption(mat);
+  const takeoffQty = itemQty * perUnitQty * (1 + wastagePct / 100);
+  const rate = positiveNumber(mat.rate, 0);
+  const unit = mat.unit || item.unit || "nos";
+
+  return {
+    itemQty,
+    perUnitQty,
+    wastagePct,
+    takeoffQty,
+    unit,
+    rate,
+    amount: takeoffQty * rate,
+  };
+};
+
 // ── Material take-off ────────────────────────────────────────────────────────
 // Roll every material referenced across a BOQ's line items into a deduped
 // requisition. BOQ item materials are { name, spec } (no per-line qty), so we
@@ -30,21 +82,26 @@ export const buildTakeoffFromBoq = (boq) => {
   const byMaterial = new Map();
   for (const section of boq?.sections || []) {
     for (const item of section.items || []) {
-      const qty = computeItemQty(item);
       for (const mat of item.materials || []) {
-        const k = `${mat.name || ""}|${mat.spec || ""}`;
+        const takeoff = computeMaterialTakeoff(item, mat);
+        const k = `${mat.name || ""}|${mat.spec || ""}|${takeoff.unit || ""}`;
         if (!byMaterial.has(k)) {
           byMaterial.set(k, {
             materialId: mat.id || null,
             name: mat.name || "",
             spec: mat.spec || "",
             estimatedQty: 0,
-            unit: item.unit || "nos",
+            unit: takeoff.unit,
+            rate: 0,
+            estimatedAmount: 0,
             usedIn: [],
           });
         }
         const entry = byMaterial.get(k);
-        entry.estimatedQty += qty;
+        entry.estimatedQty += takeoff.takeoffQty;
+        entry.estimatedAmount += takeoff.amount;
+        entry.rate =
+          entry.estimatedQty > 0 ? entry.estimatedAmount / entry.estimatedQty : 0;
         const room = section.category || section.name || "";
         if (room && !entry.usedIn.includes(room)) entry.usedIn.push(room);
       }

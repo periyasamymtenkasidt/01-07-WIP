@@ -11,8 +11,12 @@ import {
   Layers,
   Wallet,
   ChevronRight,
+  Ruler,
+  X,
 } from "lucide-react";
 import { listBoqs, deleteBoq, duplicateBoq } from "../../data/boqStorage";
+import { generateBoqFromSurvey, getDesignFlow } from "../../data/designFlowStorage";
+import { getAllSites } from "../../data/siteStorage";
 import { formatAmount } from "../../utils/formatAmount";
 
 const STATUS_STYLES = {
@@ -32,10 +36,25 @@ const STATUS_STYLES = {
     text: "text-amber-700",
     border: "border-amber-200",
   },
+  issued_for_tender: {
+    bg: "bg-amber-100",
+    text: "text-amber-700",
+    border: "border-amber-200",
+  },
   signed: {
     bg: "bg-purple-100",
     text: "text-purple-700",
     border: "border-purple-200",
+  },
+  issued_for_procurement: {
+    bg: "bg-indigo-100",
+    text: "text-indigo-700",
+    border: "border-indigo-200",
+  },
+  procurement: {
+    bg: "bg-indigo-100",
+    text: "text-indigo-700",
+    border: "border-indigo-200",
   },
 };
 
@@ -44,8 +63,36 @@ const BOQList = () => {
   const [items, setItems] = useState(() => listBoqs());
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [showSitePicker, setShowSitePicker] = useState(false);
 
   const refresh = () => setItems(listBoqs());
+
+  // Sites that have a frozen survey (siteBasis set in their design flow)
+  const frozenSites = useMemo(() => {
+    const all = getAllSites();
+    return all
+      .map((s) => {
+        const flow = getDesignFlow(s.siteID);
+        if (!flow?.siteBasis) return null;
+        return { siteID: s.siteID, name: s.clientName || s.siteID, boqId: flow.boqId || null };
+      })
+      .filter(Boolean);
+  }, []);
+
+  const handleFromSurvey = (siteID) => {
+    const flow = getDesignFlow(siteID);
+    if (flow?.boqId) {
+      navigate(`/boq/${flow.boqId}`);
+      setShowSitePicker(false);
+      return;
+    }
+    const boqId = generateBoqFromSurvey(siteID);
+    if (boqId) {
+      refresh();
+      navigate(`/boq/${boqId}`);
+    }
+    setShowSitePicker(false);
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -104,9 +151,19 @@ const BOQList = () => {
     },
     { value: "approved", label: "Approved", count: stats.approved },
     {
+      value: "issued_for_tender",
+      label: "Tender",
+      count: items.filter((b) => b.status === "issued_for_tender").length,
+    },
+    {
       value: "signed",
       label: "Signed",
       count: items.filter((b) => b.status === "signed").length,
+    },
+    {
+      value: "issued_for_procurement",
+      label: "Procurement",
+      count: items.filter((b) => b.status === "issued_for_procurement" || b.status === "procurement").length,
     },
   ];
 
@@ -128,13 +185,65 @@ const BOQList = () => {
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => navigate("/boq/new")}
-            className="flex items-center gap-1.5 px-4 py-2 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md hover:scale-[1.02] transition-all"
-          >
-            <Plus size={13} /> New BOQ
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSitePicker(true)}
+              className="flex items-center gap-1.5 px-4 py-2 border border-bordergray bg-white text-text-muted rounded-lg text-[12px] font-semibold hover:bg-bg-soft transition-all"
+            >
+              <Ruler size={13} /> From Survey
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/boq/new")}
+              className="flex items-center gap-1.5 px-4 py-2 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md hover:scale-[1.02] transition-all"
+            >
+              <Plus size={13} /> New BOQ
+            </button>
+          </div>
+
+          {/* Site picker modal */}
+          {showSitePicker && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={() => setShowSitePicker(false)}>
+              <div className="bg-white rounded-2xl shadow-2xl border border-bordergray w-full max-w-sm mx-4 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between px-5 py-4 border-b border-bordergray">
+                  <div>
+                    <p className="text-[14px] font-bold text-textcolor">Generate BOQ from Survey</p>
+                    <p className="text-[11.5px] text-text-muted mt-0.5">Select a site with a frozen survey</p>
+                  </div>
+                  <button type="button" onClick={() => setShowSitePicker(false)} className="rounded-lg p-1.5 text-text-subtle hover:bg-bg-soft">
+                    <X size={15} />
+                  </button>
+                </div>
+                <div className="px-3 py-3 max-h-72 overflow-y-auto">
+                  {frozenSites.length === 0 ? (
+                    <p className="py-8 text-center text-[12.5px] text-text-subtle">No sites with frozen surveys found.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {frozenSites.map((s) => (
+                        <button
+                          key={s.siteID}
+                          type="button"
+                          onClick={() => handleFromSurvey(s.siteID)}
+                          className="w-full flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-left hover:bg-active-bg transition-colors"
+                        >
+                          <div>
+                            <p className="text-[13px] font-semibold text-textcolor">{s.name}</p>
+                            <p className="text-[11px] text-text-muted">{s.siteID}</p>
+                          </div>
+                          {s.boqId ? (
+                            <span className="text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 border border-emerald-200 shrink-0">Open BOQ</span>
+                          ) : (
+                            <span className="text-[10px] font-bold rounded-full bg-blue-50 text-select-blue px-2 py-0.5 border border-blue-200 shrink-0">Generate</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Stats */}
@@ -260,7 +369,7 @@ const BOQList = () => {
                         <span
                           className={`inline-block text-[9.5px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${s.bg} ${s.text} ${s.border}`}
                         >
-                          {b.status}
+                          {b.status.replace(/_/g, " ")}
                         </span>
                       </td>
                       <td className="px-4 py-3">

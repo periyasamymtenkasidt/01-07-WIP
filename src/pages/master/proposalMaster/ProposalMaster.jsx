@@ -2,16 +2,14 @@ import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import {
   Plus,
   Trash2,
-  RotateCcw,
-  Save,
   Check,
   X,
   Copy,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
   Layers,
   Package,
-  FileText,
   Search,
   Home,
   Ruler,
@@ -19,10 +17,8 @@ import {
   CheckCircle2,
   XCircle,
   Sparkles,
-  TrendingUp,
-  Hash,
+  // TrendingUp, Hash — used only by the hidden stats banner (commented out below)
   IndianRupee,
-  GripVertical,
   ChefHat,
   Sofa,
   Bed,
@@ -30,7 +26,6 @@ import {
   DoorOpen,
   BookOpen,
   Building2,
-  Command,
   BarChart3,
   Wallet,
   AlertTriangle,
@@ -50,14 +45,21 @@ import { formatAmount } from "../../../utils/formatAmount";
 import {
   validateSizeRangeInput,
   formatSizeRange,
-  cleanSizeRange,
+  digitsOnly,
+  handleSizeRangeKeyDown,
 } from "../../../utils/sizeRangeValidation";
-import { DIMENSIONAL_UNITS } from "../../../data/boqStorage";
-import { UNITS } from "../../../data/boqUnits";
 import {
   assignCategoryNames,
   addScopeItemsWithDuplicateCheck,
 } from "../../../utils/scopeNaming";
+import {
+  scopeRoomKey,
+  parseBaseArea,
+  getNormalizedAllocations,
+  initializeFormulasForItems,
+  recalculateScopeItems,
+  getNormalizedConfig,
+} from "../../../data/scopeEstimator";
 import ItemFormModal from "../../../components/ItemFormModal";
 import Modal from "../../../components/Modal";
 import {
@@ -71,7 +73,10 @@ import {
   collectGrades,
   gradeLabel,
 } from "../../../data/rateBuildup";
-import { mapScopeItemsToGrade } from "../../../data/gradeMapping";
+import {
+  mapScopeItemsToGrade,
+  syncScopeItemsToLibrary,
+} from "../../../data/gradeMapping";
 import { PROPERTY_TYPES } from "../../../helperConfigData/helperData";
 import {
   getGlobalPropertyTypes,
@@ -79,199 +84,6 @@ import {
   removePropertyTypeGlobally,
   isPropertyTypeInUse,
 } from "../../../data/propertyTypeStorage";
-
-// ── Smart Estimator Helper Functions ─────────────────────────────────────────
-
-const evaluateFormula = (formulaStr, variables = {}) => {
-  if (!formulaStr) return 0;
-  try {
-    let sanitized = formulaStr;
-    Object.keys(variables).forEach((name) => {
-      const regex = new RegExp(`\\b${name}\\b`, "gi");
-      sanitized = sanitized.replace(regex, variables[name]);
-    });
-    sanitized = sanitized.replace(/[a-zA-Z]/g, "");
-    const result = new Function(`return (${sanitized});`)();
-    return typeof result === "number" && !isNaN(result) ? Math.round(result * 100) / 100 : 0;
-  } catch {
-    return 0;
-  }
-};
-
-const scopeRoomKey = (item) =>
-  (item.area || item.heading || "Unassigned").trim().toUpperCase();
-
-// Base carpet area from the size range: single → itself, range → midpoint.
-const parseBaseArea = (sizeRange) => {
-  const nums = (cleanSizeRange(sizeRange || "").match(/\d+/g) || [])
-    .map(Number)
-    .filter((n) => n > 0);
-  if (!nums.length) return 0;
-  return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
-};
-
-const isAreaUnit = (unit) => unit === "sqft" || unit === "sqm";
-const isLengthUnit = (unit) => unit === "rmt" || unit === "rft" || unit === "mm";
-const isCountUnit = (unit) => ["nos", "set", "pair", "lot", "ls", "day"].includes(unit);
-
-const roundQty = (value) => Math.round((Number(value) || 0) * 100) / 100;
-
-const getUnitBaseForItem = (item, roomArea) => {
-  const unit = item.unit || "sqft";
-  if (isAreaUnit(unit)) return roomArea;
-  if (isLengthUnit(unit)) return Math.max(1, Math.sqrt(roomArea) * 4);
-  if (isCountUnit(unit)) return 1;
-  return roomArea;
-};
-
-const defaultQtyFormulaForItem = (item) => {
-  const unit = item.unit || "sqft";
-  const factor = Number(item.areaFactor) > 0 ? Number(item.areaFactor) : 1;
-  if (isAreaUnit(unit) || isLengthUnit(unit)) return `A * ${factor}`;
-  return `${factor}`;
-};
-
-const formulaVars = ({ unitBase, roomArea, totalArea, count }) => ({
-  A: unitBase,
-  Area: unitBase,
-  area: unitBase,
-  UnitBase: unitBase,
-  unitBase,
-  RoomArea: roomArea,
-  roomArea,
-  TotalArea: totalArea,
-  totalArea,
-  Count: count,
-  count,
-});
-
-const getNormalizedAllocations = (scopeItems, savedAllocs = {}) => {
-  const rooms = Array.from(
-    new Set((scopeItems || []).map(scopeRoomKey))
-  );
-  if (rooms.length === 0) return {};
-
-  const defaults = {
-    "LIVING ROOM": 30,
-    "KITCHEN": 20,
-    "MASTER BEDROOM": 25,
-    "BEDROOM 2": 15,
-    "BEDROOM 3": 15,
-    "BATHROOMS": 10,
-    "FOYER": 5,
-    "DINING": 12,
-    "STUDY": 8,
-    "STAIRCASE": 5,
-    "UTILITY": 5,
-  };
-
-  const rawAllocs = {};
-  rooms.forEach((room) => {
-    if (typeof savedAllocs[room] === "number" && !isNaN(savedAllocs[room])) {
-      rawAllocs[room] = savedAllocs[room];
-    } else {
-      rawAllocs[room] = defaults[room] !== undefined ? defaults[room] : 10;
-    }
-  });
-
-  const sum = Object.values(rawAllocs).reduce((s, val) => s + val, 0);
-  const normalized = {};
-  if (sum > 0) {
-    let tempSum = 0;
-    rooms.forEach((room) => {
-      const pct = Math.round((rawAllocs[room] / sum) * 100);
-      normalized[room] = pct;
-      tempSum += pct;
-    });
-
-    const diff = 100 - tempSum;
-    if (diff !== 0 && rooms.length > 0) {
-      const keyToAdjust = rooms.reduce((a, b) => normalized[a] > normalized[b] ? a : b, rooms[0]);
-      normalized[keyToAdjust] = Math.max(0, normalized[keyToAdjust] + diff);
-    }
-  } else {
-    const share = Math.floor(100 / rooms.length);
-    rooms.forEach((room, idx) => {
-      normalized[room] = idx === 0 ? 100 - share * (rooms.length - 1) : share;
-    });
-  }
-
-  return normalized;
-};
-
-const estimateScopeItems = (items, areaVal, allocsVal) => {
-  const roomCounts = {};
-  (items || []).forEach((item) => {
-    const normRoom = scopeRoomKey(item);
-    roomCounts[normRoom] = (roomCounts[normRoom] || 0) + 1;
-  });
-
-  return (items || []).map((item) => {
-    const normRoom = scopeRoomKey(item);
-    const pct = allocsVal[normRoom] !== undefined ? allocsVal[normRoom] : 10;
-    const roomArea = Math.round(areaVal * (pct / 100)) || 100;
-    const count = roomCounts[normRoom] || 1;
-    const unitBase = roundQty(getUnitBaseForItem(item, roomArea)) || 1;
-    const vars = formulaVars({ unitBase, roomArea, totalArea: areaVal, count });
-    const qtyFormula = item.qtyFormula || defaultQtyFormulaForItem(item);
-    const calculatedQty = evaluateFormula(qtyFormula, vars);
-    const previousAmount = Number(item.amount) || 0;
-    const previousQty = Number(item.qty) || 0;
-    const finalRate =
-      Number(item.rate) ||
-      Math.round((previousAmount / (calculatedQty || previousQty || unitBase || 1)) * 100) / 100 ||
-      0;
-    const amount = Math.round(calculatedQty * finalRate);
-
-    const materials = (item.materials || []).map((m) => {
-      const consFormula = m.consumptionFormula || "Q * 4.5";
-      const matQty = evaluateFormula(consFormula, { ...vars, Q: calculatedQty, Qty: calculatedQty });
-      return {
-        ...m,
-        consumptionFormula: consFormula,
-        qty: matQty,
-      };
-    });
-
-    return {
-      ...item,
-      qtyFormula,
-      qty: calculatedQty,
-      estimatorBaseQty: unitBase,
-      estimatorRoomArea: roomArea,
-      rate: finalRate,
-      amount,
-      materials,
-    };
-  });
-};
-
-const initializeFormulasForItems = estimateScopeItems;
-
-const recalculateScopeItems = (items, areaVal, allocsVal, enabled) => {
-  if (!enabled) return items;
-  return estimateScopeItems(items, areaVal, allocsVal);
-};
-
-const getNormalizedConfig = (config) => {
-  if (!config) return config;
-  const enableFormulaEstimator = config.enableFormulaEstimator ?? false;
-  const totalArea = config.totalArea || parseBaseArea(config.sizeRange) || 1000;
-  const roomAllocations = getNormalizedAllocations(config.scopeItems, config.roomAllocations || {});
-
-  let scopeItems = config.scopeItems || [];
-  if (enableFormulaEstimator) {
-    scopeItems = initializeFormulasForItems(scopeItems, totalArea, roomAllocations);
-  }
-
-  return {
-    ...config,
-    enableFormulaEstimator,
-    totalArea,
-    roomAllocations,
-    scopeItems,
-  };
-};
 
 const blankPreset = (propertyType = "Apartment") => ({
   label: "New Preset",
@@ -289,6 +101,28 @@ const blankPreset = (propertyType = "Apartment") => ({
 
 const inputBase =
   "bg-white border border-bordergray text-[12px] text-textcolor rounded-lg px-3 py-2 w-full focus:outline-none focus:border-select-blue focus:ring-2 focus:ring-select-blue/15 transition-all placeholder:text-text-subtle";
+
+// Per-scope grade chip — shorthand (Economy → EC, Premium → PR, Luxury → LX)
+// shown next to the item name so the grade is identifiable at a glance.
+// Mirrors the shorthand used on the Item Master cards.
+const gradeShorthand = (key) => {
+  const label = gradeLabel(key);
+  if (!label) return "";
+  return label
+    .trim()
+    .split(/\s+/)
+    .slice(0, 3)
+    .map((word) => word.slice(0, 2).toUpperCase())
+    .join("");
+};
+
+const GRADE_CHIP_STYLE = {
+  economy: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  premium: "bg-amber-50 text-amber-700 border-amber-200",
+  luxury: "bg-violet-50 text-violet-700 border-violet-200",
+};
+const gradeChipStyle = (key) =>
+  GRADE_CHIP_STYLE[key] || "bg-active-bg text-select-blue border-select-blue/20";
 
 const CATEGORY_STYLES = {
   kitchen: { color: "orange", icon: ChefHat },
@@ -374,16 +208,16 @@ const getCategory = (area) => {
 
 const ProposalMaster = () => {
   const [master, setMaster] = useState(() => getMaster());
-  const [hasChanges, setHasChanges] = useState(false);
-  const [isInitial, setIsInitial] = useState(true);
+  const isInitialRef = useRef(true);
   const [activeKey, setActiveKey] = useState(() => {
     const keys = Object.keys(getMaster());
     return keys[0] || "2BHK";
   });
   const [showAddPreset, setShowAddPreset] = useState(false);
   const [newPresetKey, setNewPresetKey] = useState("");
-  const [savedFlash, setSavedFlash] = useState(false);
-  const [expanded, setExpanded] = useState({});
+  // Anchored materials popover: { idx, rect } where rect is the trigger button's
+  // bounding box, or null when closed.
+  const [matPopover, setMatPopover] = useState(null);
   const [presetSearch, setPresetSearch] = useState("");
   const [toast, setToast] = useState(null);
   const [sizeRangeError, setSizeRangeError] = useState("");
@@ -395,6 +229,8 @@ const ProposalMaster = () => {
   const [editingScopeIdx, setEditingScopeIdx] = useState(null);
   // Detailed read-only preview of the whole preset, grouped by room.
   const [previewOpen, setPreviewOpen] = useState(false);
+  // Read-only info modal for a single scope row: { item, idx } or null.
+  const [scopeInfo, setScopeInfo] = useState(null);
   // Whether the Add Type modal is open.
   const [addTypeModalOpen, setAddTypeModalOpen] = useState(false);
   // Preserved configs for unchecked property types. Keyed by
@@ -434,63 +270,6 @@ const ProposalMaster = () => {
     setScopeFormOpen(true);
   };
 
-  // The work's estimating factor, from the Item Master (matched by name).
-  const masterAreaFactorFor = (name) => {
-    const n = (name || "").trim().toLowerCase();
-    if (!n) return 1;
-    const lib = listLibrary();
-    const hit =
-      lib.find((it) => (it.description || "").trim().toLowerCase() === n) ||
-      lib.find((it) => (it.description || "").toLowerCase().includes(n));
-    return hit && Number(hit.areaFactor) > 0 ? Number(hit.areaFactor) : 1;
-  };
-
-  // One-click: estimate every work's assumed qty from the package size range.
-  // Dimensional works (sqft/rft) = area × factor; count (nos) works = factor.
-  const autofillQtyFromSize = () => {
-    const baseArea = parseBaseArea(activeConfig?.sizeRange);
-    if (!baseArea) {
-      showToast("Set a valid size range first (e.g. 300 or 300-400)", "error");
-      return;
-    }
-    let n = 0;
-    setConfigField((cfg) => {
-      if (cfg.enableFormulaEstimator) {
-        n = (cfg.scopeItems || []).length;
-        const totalArea = cfg.totalArea || baseArea;
-        const allocations = getNormalizedAllocations(
-          cfg.scopeItems,
-          cfg.roomAllocations || {},
-        );
-        return {
-          ...cfg,
-          totalArea,
-          roomAllocations: allocations,
-          scopeItems: recalculateScopeItems(
-            cfg.scopeItems || [],
-            totalArea,
-            allocations,
-            true,
-          ),
-        };
-      }
-
-      return {
-        ...cfg,
-        scopeItems: (cfg.scopeItems || []).map((s) => {
-          const factor = masterAreaFactorFor(s.itemName || s.description);
-          const dimensional = !!DIMENSIONAL_UNITS[s.unit || "nos"];
-          const qty = dimensional
-            ? Math.round(baseArea * factor)
-            : Math.max(1, Math.round(factor));
-          n += 1;
-          return { ...s, qty, amount: computeLibraryItemAmount({ ...s, qty }) };
-        }),
-      };
-    });
-    showToast(`Estimated ${n} qty from ${baseArea} sqft`, "success");
-  };
-
   // Map a scope row → the flat form shape ItemFormModal expects. Rate-based:
   // the quote carries an assumed qty × a fixed ₹/unit rate, so the survey-driven
   // BOQ reuses the SAME rate and only varies by measured quantity. Legacy
@@ -517,10 +296,15 @@ const ProposalMaster = () => {
   const presetKeys = Object.keys(master);
   const active = master[activeKey];
   const [activeConfigIdx, setActiveConfigIdx] = useState(0);
+  // When false, the editor is collapsed and only the property-type cards show;
+  // clicking a type card opens the editor as a separate view for that type.
+  const [typeEditorOpen, setTypeEditorOpen] = useState(false);
 
-  // Reset config tab when switching presets
+  // Reset config tab + collapse the editor back to type selection when the
+  // preset changes.
   useEffect(() => {
     setActiveConfigIdx(0);
+    setTypeEditorOpen(false);
     setSizeRangeError("");
   }, [activeKey]);
 
@@ -547,13 +331,14 @@ const ProposalMaster = () => {
     availableGrades[0]?.key ||
     "economy";
 
+  // Every edit to `master` is persisted immediately — there is no separate
+  // "Save Changes" step, so this is the only place that writes to storage.
   useEffect(() => {
-    if (isInitial) {
-      setIsInitial(false);
+    if (isInitialRef.current) {
+      isInitialRef.current = false;
       return;
     }
     saveMaster(master);
-    setHasChanges(true);
   }, [master]);
 
   const showToast = (message, type = "success") => {
@@ -569,12 +354,12 @@ const ProposalMaster = () => {
   const askConfirm = (cfg) => setConfirmDialog(cfg);
 
   // Preset-level updates (e.g. label)
-  const updateActive = (changes) => {
+  const updateActive = useCallback((changes) => {
     setMaster((prev) => ({
       ...prev,
       [activeKey]: { ...prev[activeKey], ...changes },
     }));
-  };
+  }, [activeKey]);
 
   // Automatically update the preset label based on key and active config property
   // type. When there is no property type, fall back to the formatted key alone so
@@ -592,7 +377,7 @@ const ProposalMaster = () => {
     if (generatedLabel && active.label !== generatedLabel) {
       updateActive({ label: generatedLabel });
     }
-  }, [activeKey, activeConfig?.propertyType, active]);
+  }, [activeKey, activeConfig?.propertyType, active, updateActive]);
 
   // Automatically normalize the configuration's estimator fields if missing
   useEffect(() => {
@@ -712,71 +497,65 @@ const ProposalMaster = () => {
     }
   };
 
-  // Auto-map the scope of work to the selected quality grade. Whenever a config
-  // loads, its grade changes, or a row is added, any row not yet aligned to the
-  // active grade is mapped to that grade's Item Master rate/materials/amount —
-  // so the scope data always reflects the selected grade without a manual
-  // toggle. Rows already tagged with the active grade are left untouched, so
-  // this never loops and never clobbers manual rate edits on aligned rows.
+  // Reflect the Item Master into the Scope of Work. The Master page is tabbed, so
+  // Proposal Master is unmounted while the user edits in the Item Master tab —
+  // the live `itemLibraryChanged` event therefore can't be relied on. Instead we
+  // re-derive every linked scope row from the master whenever this config loads
+  // (e.g. on returning to the tab), the active grade changes, a row is added, or
+  // the library changes in a background window (libVersion):
+  //   1. sync the descriptive fields (name, spec, HSN, unit, GST, days) — except
+  //      fields the user has hand-edited on the row (isItemNameCustom /
+  //      isDescriptionCustom), so manual wording is preserved;
+  //   2. re-map rate / materials / amount to the active grade;
+  //   3. recalculate the area-based estimator.
+  // It writes only when the derived rows actually differ from the current ones,
+  // so it never loops and is a no-op once everything is already in sync.
   useEffect(() => {
     if (!active || !activeConfig) return;
     const items = activeConfig.scopeItems || [];
     if (items.length === 0) return;
-    const aligned = items.every((it) => (it.grade || "") === activeGrade);
-    if (aligned) return;
-    applyGradeToConfig(activeGrade);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeKey, activeConfigIdx, activeGrade, activeConfig?.scopeItems?.length]);
 
-  const updateScope = (idx, key, value) => {
-    setConfigField((cfg) => {
-      // Check for duplicate heading if changing the area/heading field
-      if (key === "area") {
-        const item = cfg.scopeItems[idx];
-        const newHeading = value.trim().toUpperCase();
-        const duplicateExists = cfg.scopeItems.some((s, i) => {
-          if (i === idx) return false;
-          return (
-            (s.area || s.heading || "").trim().toUpperCase() === newHeading &&
-            (s.itemName || "").trim().toLowerCase() ===
-              (item.itemName || "").trim().toLowerCase()
-          );
-        });
+    let target = syncScopeItemsToLibrary(items);
+    target = mapScopeItemsToGrade(target, activeGrade);
+    if (activeConfig.enableFormulaEstimator) {
+      const totalArea =
+        activeConfig.totalArea || parseBaseArea(activeConfig.sizeRange) || 1000;
+      const allocations = getNormalizedAllocations(
+        target,
+        activeConfig.roomAllocations || {},
+      );
+      target = recalculateScopeItems(target, totalArea, allocations, true);
+    }
 
-        if (duplicateExists) {
-          showToast(
-            `"${item.itemName}" already exists under heading "${newHeading}".`,
-            "error",
-          );
-          return cfg; // Do not update
-        }
-      }
-
-      const scopeItems = cfg.scopeItems.map((s, i) => {
-          if (i !== idx) return s;
-          const target = { ...s, [key]: value };
-          if (key === "description") {
-            target.isDescriptionCustom = true;
-          }
-          if (key === "area") {
-            target.isAreaCustom = true;
-          }
-          if (key === "itemName") {
-            target.isItemNameCustom = true;
-          }
-          return target;
-        });
-
-      if (key === "area" || key === "rate" || key === "unit") {
-        return recalculateConfigScope(cfg, scopeItems);
-      }
-
-      return {
-        ...cfg,
-        scopeItems,
-      };
+    const differs = target.some((t, i) => {
+      const o = items[i];
+      return (
+        t.itemName !== o.itemName ||
+        t.spec !== o.spec ||
+        t.hsn !== o.hsn ||
+        t.unit !== o.unit ||
+        t.gstPercent !== o.gstPercent ||
+        t.days !== o.days ||
+        t.rate !== o.rate ||
+        t.amount !== o.amount ||
+        (t.grade || "") !== (o.grade || "")
+      );
     });
-  };
+    if (!differs) return;
+
+    setConfigField((config) => ({
+      ...config,
+      grade: activeGrade,
+      scopeItems: target,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeKey,
+    activeConfigIdx,
+    activeGrade,
+    activeConfig?.scopeItems?.length,
+    libVersion,
+  ]);
 
   // Save handler for the shared Item Form modal opened by "Add Scope".
   const handleScopeFormSave = (formOrArray) => {
@@ -912,35 +691,9 @@ const ProposalMaster = () => {
     showToast("Scope item removed", "info");
   };
 
-  const updateMaterial = (scopeIdx, matIdx, key, value) => {
-    setConfigField((cfg) => ({
-      ...cfg,
-      scopeItems: cfg.scopeItems.map((s, i) =>
-        i === scopeIdx
-          ? {
-              ...s,
-              materials: (s.materials || []).map((m, j) =>
-                j === matIdx ? { ...m, [key]: value } : m,
-              ),
-            }
-          : s,
-      ),
-    }));
-  };
-
-  const addMaterial = (scopeIdx, preset) => {
-    const newMat = preset ?? { name: "", spec: "" };
-    setConfigField((cfg) => ({
-      ...cfg,
-      scopeItems: cfg.scopeItems.map((s, i) =>
-        i === scopeIdx
-          ? { ...s, materials: [...(s.materials || []), newMat] }
-          : s,
-      ),
-    }));
-    setExpanded((p) => ({ ...p, [scopeIdx]: true }));
-  };
-
+  // Remove a single material line from a scope row. Note: re-mapping a scope to
+  // a grade (grade switch / tab return / library change) re-seeds materials from
+  // the rate build-up, so a removed material reappears on the next re-map.
   const removeMaterial = (scopeIdx, matIdx) => {
     setConfigField((cfg) => ({
       ...cfg,
@@ -1044,46 +797,27 @@ const ProposalMaster = () => {
     });
   };
 
-  const handleReset = () => {
-    askConfirm({
-      title: "Reset all presets?",
-      message:
-        "All your custom presets will be replaced with the factory defaults. Custom edits will be lost.",
-      confirmLabel: "Reset to defaults",
-      danger: true,
-      onConfirm: () => {
-        setMaster(DEFAULT_PRESETS);
-        setActiveKey(Object.keys(DEFAULT_PRESETS)[0]);
-        setHasChanges(true);
-        showToast("Reset to factory defaults (unsaved changes)", "success");
-      },
+  // Open the anchored materials popover for a scope row. It stays open until the
+  // user clicks the popover's X button; clicking another card's Materials button
+  // just moves the popover to that card.
+  const openMatPopover = (idx, e) => {
+    e.stopPropagation();
+    // Anchor to the whole scope card (not the small button) so the popover sits
+    // directly below the card and matches its width.
+    const card = e.currentTarget.closest("[data-scope-card]") || e.currentTarget;
+    const r = card.getBoundingClientRect();
+    setMatPopover({
+      idx,
+      rect: { top: r.top, bottom: r.bottom, left: r.left, width: r.width },
     });
-  };
-
-  const handleManualSave = () => {
-    const currentSizeRange = activeConfig?.sizeRange || "";
-    const err = validateSizeRangeInput(currentSizeRange);
-    if (err) {
-      showToast(err, "error");
-      setSizeRangeError(err);
-      return;
-    }
-    saveMaster(master);
-    setHasChanges(false);
-    setSavedFlash(true);
-    setTimeout(() => setSavedFlash(false), 1500);
-    showToast("All changes saved successfully", "success");
-  };
-
-  const toggleExpanded = (idx) => {
-    setExpanded((p) => ({ ...p, [idx]: !p[idx] }));
   };
 
   useEffect(() => {
     const onKey = (e) => {
+      // Changes already autosave — just swallow the browser's native
+      // "Save Page As" shortcut so it doesn't hijack the keystroke.
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        handleManualSave();
       }
       if (e.key === "Escape") {
         setConfirmDialog(null);
@@ -1095,7 +829,6 @@ const ProposalMaster = () => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filteredKeys = useMemo(() => {
@@ -1108,26 +841,27 @@ const ProposalMaster = () => {
     );
   }, [presetKeys, presetSearch, master]);
 
-  const globalStats = useMemo(() => {
-    const allItems = presetKeys.flatMap((k) =>
-      (master[k]?.configurations || []).flatMap((c) => c.scopeItems || []),
-    );
-    const totalAmount = allItems.reduce(
-      (s, it) => s + (Number(it.amount) || 0),
-      0,
-    );
-    const totalMaterials = allItems.reduce(
-      (s, it) => s + (it.materials?.length || 0),
-      0,
-    );
-    return {
-      presets: presetKeys.length,
-      items: allItems.length,
-      materials: totalMaterials,
-      avgQuote:
-        presetKeys.length > 0 ? Math.round(totalAmount / presetKeys.length) : 0,
-    };
-  }, [presetKeys, master]);
+  // Stats banner hidden per request — keep the aggregation for future use.
+  // const globalStats = useMemo(() => {
+  //   const allItems = presetKeys.flatMap((k) =>
+  //     (master[k]?.configurations || []).flatMap((c) => c.scopeItems || []),
+  //   );
+  //   const totalAmount = allItems.reduce(
+  //     (s, it) => s + (Number(it.amount) || 0),
+  //     0,
+  //   );
+  //   const totalMaterials = allItems.reduce(
+  //     (s, it) => s + (it.materials?.length || 0),
+  //     0,
+  //   );
+  //   return {
+  //     presets: presetKeys.length,
+  //     items: allItems.length,
+  //     materials: totalMaterials,
+  //     avgQuote:
+  //       presetKeys.length > 0 ? Math.round(totalAmount / presetKeys.length) : 0,
+  //   };
+  // }, [presetKeys, master]);
 
   const sortedScope = useMemo(() => {
     if (!activeConfig) return [];
@@ -1176,7 +910,6 @@ const ProposalMaster = () => {
 
   const scopeItems = activeConfig?.scopeItems || [];
   const totals = computeTotals(scopeItems);
-  const maxScope = Math.max(1, ...scopeItems.map((s) => Number(s.amount) || 0));
   // Cost split — materials vs labour vs margin — aggregated from each scope
   // item's rate build-up (via its linked Item Master recipe). Items without a
   // build-up fall into "No build-up".
@@ -1192,7 +925,7 @@ const ProposalMaster = () => {
       const amount = Number(s.amount) || 0;
       const lib = s.masterId ? libById[s.masterId] : null;
       const recipe = lib?.recipes?.[
-        s.grade || s.defaultGrade || activeConfig?.grade || lib.defaultGrade || "premium"
+        s.grade || s.defaultGrade || activeConfig?.grade || lib.defaultGrade || "economy"
       ];
       const c = recipe ? computeRecipe(recipe, matById) : null;
       if (c && c.rate > 0) {
@@ -1206,135 +939,34 @@ const ProposalMaster = () => {
     return { material, labour, margin, other, total: material + labour + margin + other };
   })();
 
+  // Material lookup for pricing each material line from the rate build-up.
+  const matById = materialsById(listMaterials());
+
   return (
     <div className="bg-overallbg font-sans h-full overflow-hidden flex flex-col">
-      {/* ── Top header ─────────────────────────────────────────────────── */}
-      <div className="shrink-0 z-30 bg-overallbg/80 backdrop-blur-xl border-b border-bordergray/70">
-        <div className="px-6 py-4 flex justify-between items-center flex-wrap gap-3">
-          <div className="flex items-center gap-3">
-            <div className="relative h-11 w-11 rounded-xl bg-linear-to-br from-select-blue to-primary text-white flex items-center justify-center shadow-lg shadow-select-blue/20">
-              <FileText size={18} />
-              <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-overallbg" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-[20px] font-bold text-textcolor leading-tight">
-                  Proposal Master
-                </h1>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Live
-                </span>
-              </div>
-              <p className="text-[12px] text-text-muted mt-0.5">
-                Quotation templates per property preset · changes apply
-                instantly to new proposals
+      <div className="px-6 py-4 flex-1 min-h-0 overflow-hidden flex flex-col gap-4">
+        {/* ── Presets: horizontal tab bar (hidden in the full editor view) ── */}
+        {!typeEditorOpen && (
+        <div className="shrink-0 bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] p-2 flex items-center gap-2">
+          <div className="flex items-center gap-1.5 pl-2 pr-1 shrink-0">
+            <Layers size={13} className="text-select-blue" />
+            <h3 className="hidden sm:block text-[11px] font-bold uppercase tracking-wider text-textcolor">
+              Presets
+            </h3>
+            <span className="text-[10px] font-semibold text-text-muted bg-bg-soft px-1.5 py-0.5 rounded-md">
+              {presetKeys.length}
+            </span>
+          </div>
+
+          {/* Tabs — scroll sideways with the scrollbar hidden */}
+          <div className="flex-1 min-w-0 overflow-x-auto scroll-hidden-bar">
+            {filteredKeys.length === 0 ? (
+              <p className="text-[11px] text-text-subtle px-2 py-1.5">
+                No matches
               </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowShortcuts(true)}
-              title="Keyboard shortcuts ( ? )"
-              className="hidden sm:flex items-center gap-1 px-2.5 py-2 bg-white border border-bordergray rounded-lg text-[11px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor transition-all"
-            >
-              <Keyboard size={12} />
-            </button>
-
-            <button
-              type="button"
-              onClick={handleReset}
-              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray cursor-pointer rounded-lg text-[12px] font-semibold text-textcolor hover:bg-bg-soft hover:border-text-subtle transition-all"
-            >
-              <RotateCcw size={13} /> Reset
-            </button>
-            <button
-              type="button"
-              onClick={handleManualSave}
-              className={`flex items-center gap-1.5 px-4 py-2 cursor-pointer rounded-lg text-[12px] font-semibold transition-all shadow-md ${
-                savedFlash
-                  ? "bg-emerald-500 text-white shadow-emerald-500/20"
-                  : "bg-linear-to-br from-select-blue to-primary text-white hover:shadow-select-blue/30 hover:scale-[1.02]"
-              } ${hasChanges && !savedFlash ? "animate-pulse ring-2 ring-select-blue/20" : ""}`}
-            >
-              {savedFlash ? <Check size={13} /> : <Save size={13} />}
-              {savedFlash ? "Saved" : "Save Changes"}
-              {!savedFlash && (
-                <kbd className="hidden sm:inline-flex items-center gap-0.5 text-[9px] font-semibold bg-white/15 px-1.5 py-0.5 rounded ml-1">
-                  <Command size={9} /> S
-                </kbd>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Bento stats banner */}
-        <div className="px-6 pb-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <BentoStat
-            icon={<Layers size={13} />}
-            label="Presets"
-            value={globalStats.presets}
-            tint="blue"
-          />
-          <BentoStat
-            icon={<Hash size={13} />}
-            label="Total Scope Items"
-            value={globalStats.items}
-            tint="purple"
-          />
-          <BentoStat
-            icon={<Package size={13} />}
-            label="Material Specs"
-            value={globalStats.materials}
-            tint="orange"
-          />
-          <BentoStat
-            icon={<TrendingUp size={13} />}
-            label="Avg Quote Value"
-            value={formatAmount(globalStats.avgQuote)}
-            tint="emerald"
-          />
-        </div>
-      </div>
-
-      <div className="px-6 py-5 flex-1 min-h-0 overflow-hidden">
-        <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)_340px] gap-5 items-stretch h-full">
-          {/* ── Left: Preset rail ───────────────────────────────────────── */}
-          <aside className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] flex flex-col overflow-y-auto scroll-hidden-bar">
-            <div className="p-4 border-b border-bordergray shrink-0">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-1.5">
-                  <Layers size={13} className="text-select-blue" />
-                  <h3 className="text-[11px] font-bold uppercase tracking-wider text-textcolor">
-                    Presets
-                  </h3>
-                </div>
-                <span className="text-[10px] font-semibold text-text-muted bg-bg-soft px-1.5 py-0.5 rounded-md">
-                  {presetKeys.length}
-                </span>
-              </div>
-              <div className="relative">
-                <Search
-                  size={12}
-                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle"
-                />
-                <input
-                  type="text"
-                  value={presetSearch}
-                  onChange={(e) => setPresetSearch(e.target.value)}
-                  placeholder="Search presets"
-                  className="w-full bg-bg-soft border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[11px] placeholder:text-text-subtle focus:outline-none focus:bg-white focus:border-select-blue/30"
-                />
-              </div>
-            </div>
-
-            <div className="p-2 max-h-[55vh] overflow-y-auto scroll-hidden-bar">
-              {filteredKeys.length === 0 ? (
-                <p className="text-[11px] text-text-subtle text-center py-4">
-                  No matches
-                </p>
-              ) : (
-                filteredKeys.map((k) => {
+            ) : (
+              <div className="flex items-center gap-1.5 w-max">
+                {filteredKeys.map((k) => {
                   const p = master[k];
                   const allCfgItems = (p.configurations || []).flatMap(
                     (c) => c.scopeItems || [],
@@ -1344,113 +976,117 @@ const ProposalMaster = () => {
                   const isActive = k === activeKey;
                   const cat = getCategory(p.label || k);
                   const c = COLOR_MAP[cat.color];
+                  const typeCount = (p.configurations || []).length;
                   return (
                     <button
                       key={k}
                       type="button"
                       onClick={() => setActiveKey(k)}
-                      className={`w-full text-left rounded-xl px-3 py-2.5 mb-1 transition-all border ${
+                      title={`${p.label} · ${formatAmount(t.grandTotal)}${firstCfg?.sizeRange ? ` · ${formatSizeRange(firstCfg.sizeRange)}` : ""}`}
+                      className={`flex items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 border transition-all ${
                         isActive
                           ? "bg-active-bg border-select-blue/40 shadow-[0_1px_3px_rgba(30,58,138,0.08)]"
                           : "bg-transparent border-transparent hover:bg-bg-soft"
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span
-                            className={`h-2 w-2 rounded-full shrink-0 ${c.dot}`}
-                          />
-                          <span
-                            className={`text-[12px] font-bold truncate ${isActive ? "text-select-blue" : "text-textcolor"}`}
-                          >
-                            {k}
-                          </span>
-                        </div>
-                        <span className="text-[10px] font-semibold text-text-muted bg-white/70 px-1.5 py-0.5 rounded-md border border-bordergray">
-                          {(p.configurations || []).length} type
-                          {(p.configurations || []).length === 1 ? "" : "s"}
-                        </span>
-                      </div>
-                      <p className="text-[10.5px] text-text-muted truncate ml-4">
-                        {p.label}
-                      </p>
-                      <div className="flex items-center justify-between gap-2 mt-1.5 ml-4">
-                        <p
-                          className={`text-[10.5px] font-bold tabular-nums ${isActive ? "text-select-blue" : "text-textcolor"}`}
-                        >
-                          {formatAmount(t.grandTotal)}
-                        </p>
-                        {firstCfg?.sizeRange && (
-                          <span className="text-[9.5px] text-text-subtle truncate">
-                            {formatSizeRange(firstCfg.sizeRange)}
-                          </span>
-                        )}
-                      </div>
+                      <span className={`h-2 w-2 rounded-full shrink-0 ${c.dot}`} />
+                      <span
+                        className={`text-[12px] font-bold ${isActive ? "text-select-blue" : "text-textcolor"}`}
+                      >
+                        {k}
+                      </span>
+                      <span className="text-[10px] font-semibold text-text-muted bg-white/70 px-1.5 py-0.5 rounded-md border border-bordergray">
+                        {typeCount} type{typeCount === 1 ? "" : "s"}
+                      </span>
                     </button>
                   );
-                })
-              )}
-            </div>
+                })}
+              </div>
+            )}
+          </div>
 
-            <div className="p-3 border-t border-bordergray">
-              {showAddPreset ? (
-                <div className="space-y-2">
-                  <input
-                    type="text"
-                    value={newPresetKey}
-                    onChange={(e) => setNewPresetKey(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddPreset();
-                      if (e.key === "Escape") {
-                        setShowAddPreset(false);
-                        setNewPresetKey("");
-                      }
-                    }}
-                    placeholder="e.g. Studio"
-                    className="w-full bg-white border border-bordergray rounded-lg text-[12px] px-2.5 py-2 focus:outline-none focus:border-select-blue"
-                    autoFocus
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={handleAddPreset}
-                      className="flex-1 px-2.5 py-1.5 rounded-lg bg-select-blue text-white text-[11px] font-semibold hover:bg-primary"
-                    >
-                      Create
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAddPreset(false);
-                        setNewPresetKey("");
-                      }}
-                      className="px-2.5 py-1.5 rounded-lg border border-bordergray text-[11px] text-text-muted hover:bg-bg-soft"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-text-subtle">
-                    Tip: short keys like "1BHK", "Studio", "Penthouse".
-                  </p>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setShowAddPreset(true)}
-                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-bordergray text-[11.5px] font-semibold text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/40 transition-all"
-                >
-                  <Plus size={13} /> New Preset
-                </button>
-              )}
-            </div>
-          </aside>
+          {/* Search */}
+          <div className="relative shrink-0 hidden md:block">
+            <Search
+              size={12}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle"
+            />
+            <input
+              type="text"
+              value={presetSearch}
+              onChange={(e) => setPresetSearch(e.target.value)}
+              placeholder="Search presets"
+              className="w-[150px] bg-bg-soft border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[11px] placeholder:text-text-subtle focus:outline-none focus:bg-white focus:border-select-blue/30"
+            />
+          </div>
 
+          {/* Keyboard shortcuts */}
+          <button
+            type="button"
+            onClick={() => setShowShortcuts(true)}
+            title="Keyboard shortcuts ( ? )"
+            className="hidden sm:flex shrink-0 items-center gap-1 px-2.5 py-2 bg-white border border-bordergray rounded-lg text-[11px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor transition-all"
+          >
+            <Keyboard size={12} />
+          </button>
+
+          {/* Add preset — pinned to the right end */}
+          {showAddPreset ? (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <input
+                type="text"
+                value={newPresetKey}
+                onChange={(e) => setNewPresetKey(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddPreset();
+                  if (e.key === "Escape") {
+                    setShowAddPreset(false);
+                    setNewPresetKey("");
+                  }
+                }}
+                placeholder="e.g. Studio"
+                className="w-[120px] bg-white border border-bordergray rounded-lg text-[12px] px-2.5 py-2 focus:outline-none focus:border-select-blue"
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={handleAddPreset}
+                className="px-2.5 py-2 rounded-lg bg-select-blue text-white text-[11px] font-semibold hover:bg-primary"
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddPreset(false);
+                  setNewPresetKey("");
+                }}
+                className="px-2.5 py-2 rounded-lg border border-bordergray text-[11px] text-text-muted hover:bg-bg-soft"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowAddPreset(true)}
+              className="shrink-0 flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-select-blue text-white text-[11.5px] font-semibold shadow-sm hover:bg-primary transition-all"
+            >
+              <Plus size={13} /> Add Preset
+            </button>
+          )}
+        </div>
+        )}
+
+        {/* ── Editor + right panel ──────────────────────────────────────── */}
+        <div className="grid grid-cols-1 gap-5 items-stretch flex-1 min-h-0 overflow-hidden">
           {/* ── Middle: Editor ──────────────────────────────────────────── */}
           <main className="space-y-5 min-w-0 overflow-y-auto pb-28 scroll-hidden-bar">
-            {/* Preset hero card */}
-            <section className="relative bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-y-auto overflow-hidden">
-              <div className="absolute inset-x-0 top-0 h-24 bg-linear-to-br from-select-blue/8 via-active-bg/40 to-transparent pointer-events-none" />
-              <div className="relative px-5 py-4 border-b border-bordergray flex items-center justify-between gap-3">
+            {/* ── Property Types — selection view (editor collapsed) ─────── */}
+            {!typeEditorOpen && (
+            <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] p-4">
+              {/* Preset header — manage the active preset, then pick a type */}
+              <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-bordergray">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   {renaming ? (
                     <div className="flex items-center gap-1.5 flex-1">
@@ -1490,10 +1126,8 @@ const ProposalMaster = () => {
                     </div>
                   ) : (
                     <>
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold tracking-widest uppercase text-select-blue bg-white/80 backdrop-blur px-2 py-1 rounded-md shrink-0 border border-select-blue/20">
-                        <Tag size={10} /> {activeKey}
-                      </span>
-                      <span className="text-[12px] text-text-muted truncate">
+                      <Tag size={12} className="text-select-blue shrink-0" />
+                      <span className="text-[12.5px] font-bold text-textcolor truncate">
                         {active.label}
                       </span>
                     </>
@@ -1529,33 +1163,203 @@ const ProposalMaster = () => {
                 )}
               </div>
 
-              <div className="relative p-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Field
-                  icon={<Tag size={11} />}
-                  label="Label"
-                  hint="Automatically generated from preset key and property type"
+              <div className="flex items-center gap-1.5 mb-3">
+                <Home size={12} className="text-select-blue" />
+                <h3 className="text-[11px] font-bold uppercase tracking-wider text-textcolor">
+                  Property Types
+                </h3>
+                <span className="text-[10px] text-text-muted">
+                  · select a type to open its editor
+                </span>
+              </div>
+              <div className="flex items-stretch gap-2 flex-wrap">
+                {(active.configurations || []).map((cfg, idx) => {
+                  const isActive = idx === activeConfigIdx;
+                  const cfgItems = cfg.scopeItems || [];
+                  const cfgTotal = computeTotals(cfgItems);
+                  return (
+                    <button
+                      key={cfg.propertyType}
+                      type="button"
+                      onClick={() => {
+                        setActiveConfigIdx(idx);
+                        setTypeEditorOpen(true);
+                      }}
+                      title={`Open the editor for ${cfg.propertyType}`}
+                      className={`text-left rounded-xl border px-3 py-2.5 min-w-[160px] transition-all ${
+                        isActive
+                          ? "bg-active-bg border-select-blue/50 shadow-[0_1px_3px_rgba(30,58,138,0.08)]"
+                          : "bg-white border-bordergray hover:border-select-blue/40 hover:shadow-[0_2px_8px_rgba(15,23,42,0.06)]"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span
+                          className={`text-[12px] font-bold truncate ${isActive ? "text-select-blue" : "text-textcolor"}`}
+                        >
+                          {cfg.propertyType}
+                        </span>
+                        {isActive && (
+                          <Check
+                            size={13}
+                            strokeWidth={3}
+                            className="text-select-blue shrink-0"
+                          />
+                        )}
+                      </div>
+                      <div className="text-[10px] text-text-muted">
+                        {formatSizeRange(cfg.sizeRange) || "Size not set"}
+                      </div>
+                      <div className="flex items-center justify-between gap-2 mt-1.5 text-[10.5px]">
+                        <span className="text-text-muted">
+                          {cfgItems.length} scope
+                          {cfgItems.length === 1 ? "" : "s"}
+                        </span>
+                        <span
+                          className={`font-bold tabular-nums ${isActive ? "text-select-blue" : "text-textcolor"}`}
+                        >
+                          {formatAmount(cfgTotal.grandTotal)}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setAddTypeModalOpen(true)}
+                  className="flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-bordergray px-4 min-w-[110px] text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/40 transition-all"
                 >
-                  <input
-                    type="text"
-                    value={active.label}
-                    readOnly
-                    className={`${inputBase} bg-bg-soft border-bordergray cursor-not-allowed text-text-muted`}
-                    title="Automatically generated from preset key and property type"
-                  />
-                </Field>
-                <Field
-                  icon={<Ruler size={11} />}
-                  label="Size Range"
-                  hint="Per property type · used to compute ₹/sq ft"
+                  <Plus size={15} />
+                  <span className="text-[11px] font-semibold">Add Type</span>
+                </button>
+              </div>
+              {activeConfig && (active.configurations || []).length > 1 && (
+                <div className="mt-2 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const typeName = activeConfig.propertyType;
+                      // Check if this property type is used by any active record globally
+                      if (isPropertyTypeInUse(typeName)) {
+                        showToast(
+                          `Cannot remove "${typeName}" — it is linked with active records.`,
+                          "error",
+                        );
+                        return;
+                      }
+                      askConfirm({
+                        title: `Permanently delete "${typeName}"?`,
+                        message:
+                          "This will remove the property type globally from all presets, inquiry forms, proposal forms, and convert-to-client forms. This cannot be undone.",
+                        confirmLabel: "Delete Globally",
+                        danger: true,
+                        onConfirm: () => {
+                          // 1. Remove from global registry
+                          removePropertyTypeGlobally(typeName);
+                          // 2. Remove from every preset in master
+                          setMaster((prev) => {
+                            const next = {};
+                            for (const pk of Object.keys(prev)) {
+                              const preset = prev[pk];
+                              const configs = (
+                                preset.configurations || []
+                              ).filter(
+                                (c) =>
+                                  c.propertyType.trim().toLowerCase() !==
+                                  typeName.trim().toLowerCase(),
+                              );
+                              // Keep at least one config — if all removed, keep as-is
+                              next[pk] = {
+                                ...preset,
+                                configurations:
+                                  configs.length > 0
+                                    ? configs
+                                    : preset.configurations,
+                              };
+                            }
+                            return next;
+                          });
+                          // 3. Clean up hidden configs cache
+                          setHiddenConfigs((prev) => {
+                            const next = { ...prev };
+                            for (const key of Object.keys(next)) {
+                              if (
+                                key.split("::")[1]?.trim().toLowerCase() ===
+                                typeName.trim().toLowerCase()
+                              ) {
+                                delete next[key];
+                              }
+                            }
+                            return next;
+                          });
+                          setActiveConfigIdx(0);
+                          showToast(`"${typeName}" deleted globally`, "info");
+                        },
+                      });
+                    }}
+                    className="flex items-center gap-1 text-[10px] font-semibold text-red-400 hover:text-red-600"
+                  >
+                    <Trash2 size={10} /> Remove Type
+                  </button>
+                </div>
+              )}
+            </section>
+            )}
+
+            {/* ── Editor view — opens when a type card is clicked ────────── */}
+            {typeEditorOpen && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setTypeEditorOpen(false)}
+                  className="w-fit flex items-center gap-1.5 text-[12px] font-semibold text-text-muted hover:text-select-blue"
                 >
-                  <div className="relative flex items-center">
+                  <ChevronLeft size={15} /> Property Types
+                  {activeConfig?.propertyType && (
+                    <span className="text-text-subtle font-normal">
+                      / {activeConfig.propertyType}
+                    </span>
+                  )}
+                </button>
+
+            {/* Preset hero card */}
+            <section className="relative bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-y-auto overflow-hidden">
+              <div className="absolute inset-x-0 top-0 h-24 bg-linear-to-br from-select-blue/8 via-active-bg/40 to-transparent pointer-events-none" />
+              <div className="relative px-5 py-4 border-b border-bordergray flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                {/* Left — property type + preset context */}
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="h-9 w-9 rounded-xl bg-select-blue/10 text-select-blue flex items-center justify-center shrink-0">
+                    <Home size={16} />
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="text-[15px] font-bold text-textcolor leading-tight truncate">
+                      {activeConfig?.propertyType || "Property Type"}
+                    </h2>
+                    {/* Just the preset key — the full label ("1 BHK / Studio
+                        Apartment") repeats the title + key, so it's omitted. */}
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-select-blue">
+                      <Tag size={9} /> {activeKey}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Right — Size Range shares the row (uses the empty space) */}
+                <div className="shrink-0 w-full sm:w-auto">
+                  <label className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-text-muted mb-1">
+                    <Ruler size={10} /> Size Range
+                    <span className="font-medium normal-case tracking-normal text-text-subtle">
+                      · ₹/sq ft basis
+                    </span>
+                  </label>
+                  <div className="relative flex items-center w-full sm:w-44">
                     <input
                       type="text"
+                      inputMode="numeric"
                       value={activeConfig?.sizeRange || ""}
+                      onKeyDown={handleSizeRangeKeyDown}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        const err = validateSizeRangeInput(val);
-                        setSizeRangeError(err);
+                        // Whole numbers only — strip any non-digit (incl. - and +).
+                        const val = digitsOnly(e.target.value);
+                        setSizeRangeError(validateSizeRangeInput(val));
                         setConfigField((cfg) => {
                           const totalArea = parseBaseArea(val) || 0;
                           const roomAllocations = getNormalizedAllocations(cfg.scopeItems, cfg.roomAllocations || {});
@@ -1569,8 +1373,8 @@ const ProposalMaster = () => {
                           };
                         });
                       }}
-                      placeholder="e.g. 800-1100"
-                      className={`${inputBase} pr-14`}
+                      placeholder="e.g. 1000"
+                      className={`${inputBase} pr-12 py-1.5`}
                     />
                     <span className="absolute right-3 text-[10px] font-bold text-gray-400 pointer-events-none uppercase">
                       Sq Ft
@@ -1581,114 +1385,9 @@ const ProposalMaster = () => {
                       {sizeRangeError}
                     </p>
                   )}
-                </Field>
+                </div>
               </div>
 
-              {/* ── Property Type Configuration Tabs ─────────────────── */}
-              <div className="relative px-5 pb-4">
-                <Field
-                  icon={<Home size={11} />}
-                  label="Property Types"
-                  hint="Each type has its own scope, pricing & inclusions"
-                >
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {(active.configurations || []).map((cfg, idx) => (
-                      <button
-                        key={cfg.propertyType}
-                        type="button"
-                        onClick={() => setActiveConfigIdx(idx)}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-semibold transition-all ${
-                          idx === activeConfigIdx
-                            ? "bg-select-blue text-white border-select-blue shadow-sm"
-                            : "bg-white text-text-muted border-bordergray hover:border-select-blue/40 hover:text-select-blue"
-                        }`}
-                      >
-                        {idx === activeConfigIdx && (
-                          <Check size={10} strokeWidth={3} />
-                        )}
-                        {cfg.propertyType}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setAddTypeModalOpen(true)}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-linear-to-br from-select-blue to-primary text-white text-[11px] font-semibold shadow-sm hover:shadow-md hover:shadow-select-blue/20 transition-all"
-                    >
-                      <Plus size={11} /> Add Type
-                    </button>
-                  </div>
-                </Field>
-                {activeConfig && (active.configurations || []).length > 1 && (
-                  <div className="mt-2 flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const typeName = activeConfig.propertyType;
-                        // Check if this property type is used by any active record globally
-                        if (isPropertyTypeInUse(typeName)) {
-                          showToast(
-                            `Cannot remove "${typeName}" — it is linked with active records.`,
-                            "error",
-                          );
-                          return;
-                        }
-                        askConfirm({
-                          title: `Permanently delete "${typeName}"?`,
-                          message:
-                            "This will remove the property type globally from all presets, inquiry forms, proposal forms, and convert-to-client forms. This cannot be undone.",
-                          confirmLabel: "Delete Globally",
-                          danger: true,
-                          onConfirm: () => {
-                            // 1. Remove from global registry
-                            removePropertyTypeGlobally(typeName);
-                            // 2. Remove from every preset in master
-                            setMaster((prev) => {
-                              const next = {};
-                              for (const pk of Object.keys(prev)) {
-                                const preset = prev[pk];
-                                const configs = (
-                                  preset.configurations || []
-                                ).filter(
-                                  (c) =>
-                                    c.propertyType.trim().toLowerCase() !==
-                                    typeName.trim().toLowerCase(),
-                                );
-                                // Keep at least one config — if all removed, keep as-is
-                                next[pk] = {
-                                  ...preset,
-                                  configurations:
-                                    configs.length > 0
-                                      ? configs
-                                      : preset.configurations,
-                                };
-                              }
-                              return next;
-                            });
-                            // 3. Clean up hidden configs cache
-                            setHiddenConfigs((prev) => {
-                              const next = { ...prev };
-                              for (const key of Object.keys(next)) {
-                                if (
-                                  key.split("::")[1]?.trim().toLowerCase() ===
-                                  typeName.trim().toLowerCase()
-                                ) {
-                                  delete next[key];
-                                }
-                              }
-                              return next;
-                            });
-                            setActiveConfigIdx(0);
-                            showToast(`"${typeName}" deleted globally`, "info");
-                          },
-                        });
-                      }}
-                      className="flex items-center gap-1 text-[10px] font-semibold text-red-400 hover:text-red-600"
-                    >
-                      <Trash2 size={10} /> Remove Type
-                    </button>
-                  </div>
-                )}
-              </div>
 
               {/* Smart Estimator Card */}
               {activeConfig && (
@@ -1735,54 +1434,49 @@ const ProposalMaster = () => {
                   </div>
 
                   {activeConfig.enableFormulaEstimator && (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start border-t border-bordergray pt-3">
-                        <div>
-                          <label className="block text-[10px] font-bold text-text-muted uppercase tracking-wider mb-1.5">
-                            Total Project Area (Sq.ft)
-                          </label>
-                          <input
-                            type="number"
-                            value={
+                    <div className="space-y-3 border-t border-bordergray pt-3">
+                      {/* Compact read-only summary — no fake inputs */}
+                      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px]">
+                        <span className="flex items-center gap-1.5">
+                          <Ruler size={12} className="text-text-subtle" />
+                          <span className="text-text-muted">Total area</span>
+                          <span
+                            className="font-bold text-textcolor tabular-nums"
+                            title="Derived from Size Range — edit Size Range to change this"
+                          >
+                            {(
                               activeConfig.totalArea ||
                               parseBaseArea(activeConfig.sizeRange) ||
-                              ""
-                            }
-                            readOnly
-                            title="Derived from Size Range above — edit Size Range to change this"
-                            placeholder="e.g. 1000"
-                            className="w-full rounded-xl border border-bordergray bg-bg-soft px-3.5 py-2 text-[12.5px] text-text-muted cursor-not-allowed"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-text-muted uppercase tracking-wider mb-1.5">
-                            Allocation Sum
-                          </label>
-                          <div className="flex items-center gap-2 h-[38px]">
-                            <span
-                              className={`px-3 py-1 rounded-full text-[11px] font-bold ${
-                                allocationSum === 100
-                                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                                  : "bg-amber-50 text-amber-700 border border-amber-250 animate-pulse"
-                              }`}
-                            >
-                              {allocationSum}% Allocated
+                              0
+                            ).toLocaleString("en-IN")}{" "}
+                            sqft
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-text-muted">Allocated</span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10.5px] font-bold ${
+                              allocationSum === 100
+                                ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                : "bg-amber-50 text-amber-700 border border-amber-200 animate-pulse"
+                            }`}
+                          >
+                            {allocationSum}%
+                          </span>
+                          {allocationSum !== 100 && (
+                            <span className="text-[9.5px] text-red-500 font-bold">
+                              must equal 100%
                             </span>
-                            {allocationSum !== 100 && (
-                              <span className="text-[9.5px] text-red-500 font-bold">
-                                Should equal exactly 100%
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                          )}
+                        </span>
                       </div>
 
-                      {/* Room Allocation Grid */}
-                      <div className="border-t border-bordergray pt-3 space-y-2">
-                        <p className="text-[10px] font-bold text-text-muted uppercase tracking-wider mb-1">
-                          Room Allocations & Split
+                      {/* Room allocations — compact rows with a visual split bar */}
+                      <div>
+                        <p className="text-[10px] font-bold text-text-muted uppercase tracking-wider mb-1.5">
+                          Room Allocations &amp; Split
                         </p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[160px] overflow-y-auto scroll-hidden-bar">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-1 max-h-[200px] overflow-y-auto scroll-hidden-bar pr-1">
                           {Object.keys(activeConfig.roomAllocations || {}).map((room) => {
                             const pct = activeConfig.roomAllocations[room] || 0;
                             const totalAreaVal = activeConfig.totalArea || parseBaseArea(activeConfig.sizeRange) || 1000;
@@ -1790,38 +1484,45 @@ const ProposalMaster = () => {
                             return (
                               <div
                                 key={room}
-                                className="flex items-center justify-between p-2 rounded-xl border border-bordergray bg-bg-soft/40"
+                                className="flex items-center gap-2 py-1"
                               >
-                                <span className="text-[11px] font-bold text-textcolor truncate max-w-[120px]" title={room}>
+                                <span
+                                  className="text-[11px] font-semibold text-textcolor truncate w-[92px] shrink-0"
+                                  title={room}
+                                >
                                   {room}
                                 </span>
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                  <div className="flex items-center">
-                                    <input
-                                      type="number"
-                                      value={pct}
-                                      onChange={(e) => {
-                                        const newVal = Number(e.target.value);
-                                        setConfigField((cfg) => {
-                                          const currentAllocs = { ...(cfg.roomAllocations || {}) };
-                                          currentAllocs[room] = newVal;
-                                          const totalAreaVal = cfg.totalArea || parseBaseArea(cfg.sizeRange) || 1000;
-                                          const finalItems = recalculateScopeItems(cfg.scopeItems, totalAreaVal, currentAllocs, true);
-                                          return {
-                                            ...cfg,
-                                            roomAllocations: currentAllocs,
-                                            scopeItems: finalItems,
-                                          };
-                                        });
-                                      }}
-                                      className="w-10 text-center rounded-lg border border-bordergray py-1 text-[11px] text-textcolor focus:outline-none focus:border-select-blue"
-                                    />
-                                    <span className="text-[10px] text-text-muted ml-0.5">%</span>
-                                  </div>
-                                  <span className="text-[10px] text-text-muted">
-                                    ({roomArea} sqft)
-                                  </span>
+                                <div className="flex-1 h-1.5 min-w-0 bg-bg-soft rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-select-blue rounded-full transition-all"
+                                    style={{ width: `${Math.min(100, pct)}%` }}
+                                  />
                                 </div>
+                                <div className="flex items-center gap-0.5 shrink-0">
+                                  <input
+                                    type="number"
+                                    value={pct}
+                                    onChange={(e) => {
+                                      const newVal = Number(e.target.value);
+                                      setConfigField((cfg) => {
+                                        const currentAllocs = { ...(cfg.roomAllocations || {}) };
+                                        currentAllocs[room] = newVal;
+                                        const totalAreaVal = cfg.totalArea || parseBaseArea(cfg.sizeRange) || 1000;
+                                        const finalItems = recalculateScopeItems(cfg.scopeItems, totalAreaVal, currentAllocs, true);
+                                        return {
+                                          ...cfg,
+                                          roomAllocations: currentAllocs,
+                                          scopeItems: finalItems,
+                                        };
+                                      });
+                                    }}
+                                    className="w-11 text-center rounded-md border border-bordergray py-0.5 text-[11px] text-textcolor tabular-nums focus:outline-none focus:border-select-blue"
+                                  />
+                                  <span className="text-[10px] text-text-muted">%</span>
+                                </div>
+                                <span className="text-[9.5px] text-text-subtle tabular-nums w-[58px] text-right shrink-0">
+                                  {roomArea.toLocaleString("en-IN")} sqft
+                                </span>
                               </div>
                             );
                           })}
@@ -1907,38 +1608,23 @@ const ProposalMaster = () => {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  <div className="flex flex-wrap items-center gap-1 rounded-lg border border-bordergray bg-bg-soft/50 p-1">
-                    <span className="px-1.5 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+                  <label className="flex items-center gap-1.5 rounded-lg border border-bordergray bg-bg-soft/50 px-2 py-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-text-muted">
                       Grade
                     </span>
-                    {availableGrades.map((grade) => {
-                      const selected = activeGrade === grade.key;
-                      return (
-                        <button
-                          key={grade.key}
-                          type="button"
-                          onClick={() => handleGradeChange(grade.key)}
-                          title={`Apply ${grade.label} Item Master rates and materials`}
-                          className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-all ${
-                            selected
-                              ? "border-select-blue bg-select-blue text-white shadow-sm"
-                              : "border-transparent bg-white text-text-muted hover:border-select-blue/30 hover:text-select-blue"
-                          }`}
-                        >
+                    <select
+                      value={activeGrade}
+                      onChange={(e) => handleGradeChange(e.target.value)}
+                      title="Apply the selected grade's Item Master rates and materials"
+                      className="bg-white border border-bordergray rounded-md px-2 py-1 text-[10px] font-semibold text-textcolor cursor-pointer focus:outline-none focus:border-select-blue"
+                    >
+                      {availableGrades.map((grade) => (
+                        <option key={grade.key} value={grade.key}>
                           {grade.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={autofillQtyFromSize}
-                    disabled={scopeItems.length === 0}
-                    title="Estimate each work's assumed quantity from the size range × the Item Master factor"
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-select-blue/30 bg-select-blue/5 text-[11px] font-semibold text-select-blue hover:bg-select-blue/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <Sparkles size={12} /> Auto-fill qty
-                  </button>
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <button
                     type="button"
                     onClick={() => setPreviewOpen(true)}
@@ -1967,45 +1653,63 @@ const ProposalMaster = () => {
                 {groupedScope.map((group) => {
                   const gcat = getCategory(group.room);
                   const gc = COLOR_MAP[gcat.color];
+                  const GroupIcon = gcat.icon;
                   const groupOpen = isGroupOpen(group.room);
+                  const roomShare =
+                    totals.subtotal > 0
+                      ? Math.round((group.total / totals.subtotal) * 100)
+                      : 0;
                   return (
-                    <div key={group.room}>
-                      {/* Room group accordion header — click to expand/collapse */}
+                    <div
+                      key={group.room}
+                      className="rounded-2xl border border-bordergray bg-white overflow-hidden shadow-[0_1px_3px_rgba(15,23,42,0.04)]"
+                    >
+                      {/* Room header — click to expand/collapse */}
                       <button
                         type="button"
                         onClick={() => toggleGroup(group.room)}
-                        className="w-full flex items-center justify-between mb-2 px-2 py-1.5 rounded-lg hover:bg-bg-soft/60 transition-colors cursor-pointer"
+                        className="w-full flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-bg-soft/60 transition-colors cursor-pointer"
                       >
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-2.5 min-w-0">
                           {groupOpen ? (
-                            <ChevronDown
-                              size={13}
-                              className="text-text-muted shrink-0"
-                            />
+                            <ChevronDown size={14} className="text-text-muted shrink-0" />
                           ) : (
-                            <ChevronRight
-                              size={13}
-                              className="text-text-muted shrink-0"
-                            />
+                            <ChevronRight size={14} className="text-text-muted shrink-0" />
                           )}
                           <span
-                            className={`h-2.5 w-2.5 rounded-full shrink-0 ${gc.dot}`}
-                          />
-                          <h4 className="text-[12px] font-bold text-textcolor uppercase tracking-wide truncate">
-                            {group.room}
-                          </h4>
-                          <span className="text-[10px] font-semibold text-text-muted bg-bg-soft px-1.5 py-0.5 rounded-md border border-bordergray">
-                            {group.rows.length}
+                            className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${gc.bg} ${gc.text}`}
+                          >
+                            <GroupIcon size={15} />
                           </span>
+                          <div className="text-left min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-[12px] font-bold text-textcolor uppercase tracking-wide truncate">
+                                {group.room}
+                              </h4>
+                              <span className="text-[9.5px] font-semibold text-text-muted bg-bg-soft px-1.5 py-0.5 rounded-md border border-bordergray shrink-0">
+                                {group.rows.length}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-text-muted">
+                              {roomShare}% of quote
+                            </p>
+                          </div>
                         </div>
-                        <span className="text-[11px] font-bold text-textcolor tabular-nums shrink-0">
-                          {formatAmount(group.total)}
-                        </span>
+                        <div className="text-right shrink-0">
+                          <span className="block text-[12.5px] font-bold text-textcolor tabular-nums">
+                            {formatAmount(group.total)}
+                          </span>
+                          <div className="w-24 h-1 bg-bg-soft rounded-full overflow-hidden mt-1 ml-auto">
+                            <div
+                              className={`h-full ${gc.bar}`}
+                              style={{ width: `${Math.min(100, roomShare)}%` }}
+                            />
+                          </div>
+                        </div>
                       </button>
                       {groupOpen && (
-                        <div className="space-y-3">
+                        <div className="border-t border-bordergray p-3 grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
                           {group.rows.map(({ item, idx }) => {
-                            const isOpen = !!expanded[idx];
                             const matCount = (item.materials || []).length;
                             const cat = getCategory(item.area);
                             const c = COLOR_MAP[cat.color];
@@ -2015,270 +1719,199 @@ const ProposalMaster = () => {
                               totals.subtotal > 0
                                 ? Math.round((amount / totals.subtotal) * 100)
                                 : 0;
-                            const barWidth =
-                              maxScope > 0 ? (amount / maxScope) * 100 : 0;
+                            const split =
+                              activeConfig?.roomAllocations?.[scopeRoomKey(item)];
+                            // Resolve the linked rate build-up only to tell whether
+                            // this scope has the selected grade's build-up (rate > 0),
+                            // which controls the grade chip's muted/active state.
+                            const matLib = item.masterId
+                              ? libById[item.masterId]
+                              : null;
+                            const rowGrade =
+                              item.grade ||
+                              activeConfig?.grade ||
+                              activeGrade ||
+                              "economy";
+                            const rowRecipe =
+                              matLib?.recipes?.[rowGrade] ||
+                              item.recipes?.[rowGrade];
+                            const rowCalc = rowRecipe
+                              ? computeRecipe(rowRecipe, matById)
+                              : null;
+                            const gradeShort = gradeShorthand(rowGrade);
+                            const gradeAvailable = (rowCalc?.rate || 0) > 0;
+                            const popoverOpen = matPopover?.idx === idx;
                             return (
                               <div
                                 key={idx}
-                                className="rounded-xl border border-bordergray bg-white hover:border-select-blue/40 hover:shadow-[0_2px_8px_rgba(15,23,42,0.06)] transition-all group"
+                                data-scope-card
+                                className={`group bg-white rounded-xl border transition-all ${
+                                  popoverOpen
+                                    ? "border-select-blue/50 shadow-[0_2px_10px_rgba(15,23,42,0.08)]"
+                                    : "border-bordergray hover:border-select-blue/40 hover:shadow-[0_2px_10px_rgba(15,23,42,0.06)]"
+                                }`}
                               >
-                                {/* Two lines instead of one rigid 7-column row — the
-                                    middle column (between the preset rail and the
-                                    right sidebar) isn't wide enough for grip+icon+
-                                    room+description+days+amount+remove on one line,
-                                    which forced a horizontal scrollbar. Identity
-                                    (room/description) on line 1, values (days/amount)
-                                    on line 2 — always fits, never scrolls sideways. */}
-                                <div className="p-3 space-y-2">
-                                  <div className="flex items-center gap-2">
-                                    <button
-                                      type="button"
-                                      className="h-6 w-5 flex items-center justify-center text-text-subtle opacity-0 group-hover:opacity-100 cursor-grab shrink-0"
-                                      title="Drag to reorder (coming soon)"
-                                    >
-                                      <GripVertical size={12} />
-                                    </button>
+                                {/* Card body — click the name to edit (opens Edit
+                                    Scope); the action buttons stop propagation. */}
+                                <div className="p-3.5">
+                                  {/* Header — icon, name + grade chip, amount, delete */}
+                                  <div className="flex items-start gap-2.5">
                                     <span
-                                      className={`h-7 w-7 flex items-center justify-center rounded-lg shrink-0 ${c.bg} ${c.text}`}
+                                      className={`h-8 w-8 flex items-center justify-center rounded-lg shrink-0 ${c.bg} ${c.text}`}
                                     >
-                                      <Icon size={13} />
+                                      <Icon size={14} />
                                     </span>
-                                    <button
-                                      type="button"
-                                      onClick={() => openEditScope(idx)}
-                                      title="Click to edit this scope"
-                                      className="text-[12px] font-semibold text-textcolor px-1 py-2 truncate text-left hover:text-select-blue hover:underline shrink-0 max-w-[120px]"
-                                    >
-                                      {namedOriginalItems[idx]
-                                        ?._displayCategory ||
-                                        item.area || (
-                                          <span className="text-text-subtle font-normal italic no-underline">
-                                            No room
+
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => openEditScope(idx)}
+                                          title="Click to edit this scope"
+                                          className="min-w-0 truncate text-left text-[12.5px] font-bold text-textcolor hover:text-select-blue hover:underline transition-colors cursor-pointer"
+                                        >
+                                          {namedOriginalItems[idx]
+                                            ?._displayCategory ||
+                                            item.itemName ||
+                                            item.area || (
+                                              <span className="text-text-subtle font-normal italic no-underline">
+                                                Untitled scope
+                                              </span>
+                                            )}
+                                        </button>
+                                        {gradeShort && (
+                                          <span
+                                            className={`shrink-0 text-[8.5px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                                              gradeAvailable
+                                                ? gradeChipStyle(rowGrade)
+                                                : "bg-bg-soft text-text-subtle border-bordergray border-dashed"
+                                            }`}
+                                            title={
+                                              gradeAvailable
+                                                ? `${gradeLabel(rowGrade)} grade`
+                                                : `No ${gradeLabel(rowGrade)} build-up for this item — price unchanged`
+                                            }
+                                          >
+                                            {gradeShort}
                                           </span>
                                         )}
-                                    </button>
-                                    <textarea
-                                      value={item.description || ""}
-                                      onChange={(e) =>
-                                        updateScope(
-                                          idx,
-                                          "description",
-                                          e.target.value,
-                                        )
-                                      }
-                                      placeholder="Description"
-                                      className={`${inputBase} min-w-0 flex-1 resize-none`}
-                                        rows={1}
-                                     />
-                                    <div className="w-36 shrink-0">
-                                      <AmountInput
-                                        value={item.amount}
-                                        onChange={(v) =>
-                                          updateScope(idx, "amount", v)
-                                        }
-                                        pct={pct}
-                                      />
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setScopeInfo({ item, idx });
+                                          }}
+                                          title="View scope details"
+                                          className="h-5 w-5 flex items-center justify-center rounded-md text-text-subtle hover:text-select-blue hover:bg-active-bg transition-colors shrink-0"
+                                        >
+                                          <Info size={12} />
+                                        </button>
+                                      </div>
+                                      {item.description && (
+                                        <span
+                                          className="block text-[10.5px] text-text-muted truncate mt-0.5"
+                                          title={item.description}
+                                        >
+                                          {item.description}
+                                        </span>
+                                      )}
                                     </div>
+
+                                    <span className="text-[14px] font-bold text-textcolor tabular-nums shrink-0">
+                                      {formatAmount(amount)}
+                                    </span>
+
                                     <button
                                       type="button"
-                                      onClick={() => removeScopeRow(idx)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeScopeRow(idx);
+                                      }}
+                                      title="Remove scope"
                                       className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-                                      title="Remove row"
                                     >
                                       <Trash2 size={13} />
                                     </button>
                                   </div>
-                                  <div className="space-y-2">
-                                    <div className="grid grid-cols-[1.6fr_1.2fr_92px] gap-3 items-end">
-                                      {/* UNIT */}
-                                      <div>
-                                        <label className="block text-[9px] font-semibold uppercase tracking-wider text-text-muted mb-1">
-                                          Unit
-                                        </label>
-                                        <select
-                                          value={item.unit || "sqft"}
-                                          onChange={(e) =>
-                                            updateScope(idx, "unit", e.target.value)
-                                          }
-                                          className={`${inputBase} cursor-pointer`}
-                                        >
-                                          {UNITS.map((u) => (
-                                            <option key={u.code} value={u.code}>
-                                              {u.label}
-                                            </option>
-                                          ))}
-                                        </select>
-                                      </div>
-                                      {/* RATE */}
-                                      <div>
-                                        <label className="block text-[9px] font-semibold uppercase tracking-wider text-text-muted mb-1">
-                                          Rate (₹)
-                                        </label>
-                                        <div className="relative">
-                                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle text-[11px] pointer-events-none">
-                                            ₹
-                                          </span>
-                                          <input
-                                            type="number"
-                                            min={0}
-                                            value={item.rate ?? ""}
-                                            onChange={(e) =>
-                                              updateScope(idx, "rate", e.target.value)
-                                            }
-                                            placeholder="Rate"
-                                            className={`${inputBase} pl-6 tabular-nums`}
-                                          />
-                                        </div>
-                                      </div>
-                                      {/* DAYS */}
-                                      <div
-                                        title="Default duration in days — seeds the project schedule"
+
+                                  {/* Metrics + share bar — aligned under the name so
+                                      the card fills its width instead of leaving a gap */}
+                                  <div className="mt-2.5 pl-[42px]">
+                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                                      <span
+                                        className="inline-flex items-baseline gap-1.5"
+                                        title={
+                                          split != null
+                                            ? `${split}% area split`
+                                            : "Calculated quantity"
+                                        }
                                       >
-                                        <label className="block text-[9px] font-semibold uppercase tracking-wider text-text-muted mb-1">
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                                          Qty
+                                        </span>
+                                        <span className="text-[11px] font-semibold text-textcolor tabular-nums">
+                                          {Number(item.qty || 0).toLocaleString("en-IN", {
+                                            maximumFractionDigits: 2,
+                                          }) || "—"}{" "}
+                                          {item.unit || ""}
+                                          {split != null && (
+                                            <span className="font-medium text-text-muted">
+                                              {" "}
+                                              · {split}%
+                                            </span>
+                                          )}
+                                        </span>
+                                      </span>
+                                      <span className="inline-flex items-baseline gap-1.5">
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                                          Rate/Sqft
+                                        </span>
+                                        <span className="text-[11px] font-semibold text-textcolor tabular-nums">
+                                          ₹{Number(item.rate || 0).toLocaleString("en-IN")}
+                                        </span>
+                                      </span>
+                                      <span className="inline-flex items-baseline gap-1.5">
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
                                           Days
-                                        </label>
-                                        <div className="relative">
-                                          <input
-                                            type="number"
-                                            min={0}
-                                            value={item.days ?? ""}
-                                            onChange={(e) =>
-                                              updateScope(idx, "days", e.target.value)
-                                            }
-                                            placeholder="Days"
-                                            className={`${inputBase} pr-7 text-center tabular-nums`}
-                                          />
-                                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-text-subtle pointer-events-none">
-                                            d
-                                          </span>
-                                        </div>
-                                      </div>
-                                    </div>
-                                    {activeConfig?.enableFormulaEstimator && (
-                                      <div className="flex items-center justify-between rounded-lg bg-bg-soft/60 border border-bordergray/60 px-3 py-1.5">
-                                        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-                                          Calculated Quantity
                                         </span>
-                                        <span className="text-[11px] font-bold text-textcolor tabular-nums">
-                                          {Number(item.qty || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })} {item.unit || "unit"}
-                                          {(() => {
-                                            const split =
-                                              activeConfig?.roomAllocations?.[
-                                                scopeRoomKey(item)
-                                              ];
-                                            return split != null ? (
-                                              <span className="ml-1.5 text-[9.5px] font-normal text-text-subtle">
-                                                ({split}% split)
-                                              </span>
-                                            ) : null;
-                                          })()}
+                                        <span className="text-[11px] font-semibold text-textcolor tabular-nums">
+                                          {(item.days ?? "") !== ""
+                                            ? `${item.days} d`
+                                            : "—"}
+                                        </span>
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => openMatPopover(idx, e)}
+                                        title="View materials & specifications"
+                                        className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 -my-0.5 text-[10.5px] font-semibold transition-colors ${
+                                          popoverOpen
+                                            ? "bg-active-bg text-select-blue"
+                                            : "text-select-blue hover:bg-active-bg/60"
+                                        }`}
+                                      >
+                                        Materials{matCount > 0 ? ` (${matCount})` : ""}
+                                        {popoverOpen ? (
+                                          <ChevronDown size={11} />
+                                        ) : (
+                                          <ChevronRight size={11} />
+                                        )}
+                                      </button>
+                                    </div>
+                                    {pct > 0 && (
+                                      <div className="flex items-center gap-2 mt-2">
+                                        <div className="flex-1 h-1.5 bg-bg-soft rounded-full overflow-hidden">
+                                          <div
+                                            className={`h-full ${c.bar}`}
+                                            style={{ width: `${Math.min(100, pct)}%` }}
+                                          />
+                                        </div>
+                                        <span className="text-[9px] font-semibold text-text-subtle tabular-nums shrink-0">
+                                          {pct}% of quote
                                         </span>
                                       </div>
                                     )}
                                   </div>
-                                </div>
-
-                                <div className="px-3 pb-2">
-                                  <div className="h-1 w-full bg-bg-soft rounded-full overflow-hidden">
-                                    <div
-                                      className={`h-full ${c.bar} transition-all`}
-                                      style={{ width: `${barWidth}%` }}
-                                    />
-                                  </div>
-                                </div>
-
-                                <div className="border-t border-bordergray bg-bg-soft/40">
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleExpanded(idx)}
-                                    className="w-full flex items-center justify-between px-4 py-2 text-[11px] font-semibold text-text-muted hover:text-select-blue"
-                                  >
-                                    <span className="flex items-center gap-1.5">
-                                      {isOpen ? (
-                                        <ChevronDown size={12} />
-                                      ) : (
-                                        <ChevronRight size={12} />
-                                      )}
-                                      Materials & Specifications
-                                      {matCount > 0 && (
-                                        <span className="ml-1 text-[10px] font-bold text-select-blue bg-white px-1.5 py-0.5 rounded-md border border-bordergray">
-                                          {matCount}
-                                        </span>
-                                      )}
-                                    </span>
-                                    {!isOpen && matCount > 0 && (
-                                      <span className="text-[10px] text-text-subtle truncate max-w-[60%]">
-                                        {item.materials
-                                          .map((m) => m.name)
-                                          .filter(Boolean)
-                                          .join(", ")}
-                                      </span>
-                                    )}
-                                    {isOpen && (
-                                      <span className="text-[10px] text-text-subtle">
-                                        Hide
-                                      </span>
-                                    )}
-                                  </button>
-
-                                  {isOpen && (
-                                    <div className="px-4 pb-3 space-y-1.5">
-                                      {(item.materials || []).map((m, mIdx) => (
-                                        <div
-                                          key={mIdx}
-                                          className="grid grid-cols-[130px_1fr_24px] gap-2 items-center"
-                                        >
-                                          <textarea
-                                            value={m.name}
-                                            onChange={(e) =>
-                                              updateMaterial(
-                                                idx,
-                                                mIdx,
-                                                "name",
-                                                e.target.value,
-                                              )
-                                            }
-                                            placeholder="Plywood"
-                                            className={`${inputBase} py-1.5 text-[11px] resize-none`}
-                                            rows={1}
-                                          />
-                                          <textarea
-                                            value={m.spec}
-                                            onChange={(e) =>
-                                              updateMaterial(
-                                                idx,
-                                                mIdx,
-                                                "spec",
-                                                e.target.value,
-                                              )
-                                            }
-                                            placeholder="BWP 19mm"
-                                            className={`${inputBase} py-1.5 text-[11px] resize-none`}
-                                            rows={1}
-                                          />
-                                          <button
-                                            type="button"
-                                            onClick={() =>
-                                              removeMaterial(idx, mIdx)
-                                            }
-                                            className="h-7 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
-                                            title="Remove material"
-                                          >
-                                            <Trash2 size={11} />
-                                          </button>
-                                        </div>
-                                      ))}
-                                      <div className="flex items-center gap-3 mt-1.5">
-                                        <button
-                                          type="button"
-                                          onClick={() => addMaterial(idx)}
-                                          className="flex items-center gap-1 text-[11px] font-semibold text-select-blue hover:text-primary"
-                                        >
-                                          <Plus size={11} /> Add Material
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )}
                                 </div>
                               </div>
                             );
@@ -2318,10 +1951,8 @@ const ProposalMaster = () => {
                 )}
               </div>
             </section>
-          </main>
 
-          {/* ── Right: Stats + Inclusions / Exclusions ──────────────────── */}
-          <aside className="space-y-5 min-w-0 overflow-y-auto pb-28">
+            {/* ── Cost Breakdown — positioned below Scope of Work ───────── */}
             <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
               <div className="px-4 py-3 border-b border-bordergray flex items-center justify-between gap-2">
                 <span className="flex items-center gap-2">
@@ -2334,77 +1965,97 @@ const ProposalMaster = () => {
                   {scopeItems.length} scope{scopeItems.length === 1 ? "" : "s"}
                 </span>
               </div>
-              <div className="p-4 space-y-3 overflow-y-auto max-h-[calc(100vh-260px)]">
+              <div className="p-4">
                 {scopeItems.length === 0 ? (
                   <p className="text-[11px] text-text-subtle text-center py-2">
                     Add scope items to see distribution
                   </p>
                 ) : (
-                  scopeItems
-                    .map((item, idx) => {
-                      const amount = Number(item.amount) || 0;
-                      const pct =
-                        totals.subtotal > 0
-                          ? Math.round((amount / totals.subtotal) * 100)
-                          : 0;
-                      const cat = getCategory(item.area);
-                      const c = COLOR_MAP[cat.color];
-                      const displayItem = namedOriginalItems[idx] || item;
-                      const title =
-                        displayItem._displayCategory ||
-                        item.itemName ||
-                        item.description ||
-                        item.area ||
-                        "Untitled scope";
-                      const subtitle =
-                        item.area && title !== item.area
-                          ? item.area
-                          : item.description && title !== item.description
-                            ? item.description
-                            : "";
-                      return { item, idx, amount, pct, c, title, subtitle };
-                    })
-                    .map(({ idx, amount, pct, c, title, subtitle }) => (
-                      <div key={idx}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="flex items-center gap-1.5 min-w-0">
-                            <span className={`h-2 w-2 rounded-full ${c.dot}`} />
-                            <span className="min-w-0">
-                              <span className="block text-[11px] text-textcolor truncate font-medium">
-                                {title}
-                              </span>
-                              {subtitle && (
-                                <span className="block text-[9.5px] text-text-subtle truncate">
-                                  {subtitle}
+                  (() => {
+                    // Bars scale to the biggest line item so the progress is
+                    // readable; the % shown is share of the project subtotal.
+                    const maxAmt = Math.max(
+                      1,
+                      ...scopeItems.map((s) => Number(s.amount) || 0),
+                    );
+                    const cards = scopeItems
+                      .map((item, idx) => {
+                        const amount = Number(item.amount) || 0;
+                        const pct =
+                          totals.subtotal > 0
+                            ? Math.round((amount / totals.subtotal) * 100)
+                            : 0;
+                        const cat = getCategory(item.area);
+                        const c = COLOR_MAP[cat.color];
+                        const displayItem = namedOriginalItems[idx] || item;
+                        const title =
+                          displayItem._displayCategory ||
+                          item.itemName ||
+                          item.description ||
+                          item.area ||
+                          "Untitled scope";
+                        const subtitle =
+                          item.area && title !== item.area
+                            ? item.area
+                            : item.description && title !== item.description
+                              ? item.description
+                              : "";
+                        return { idx, amount, pct, c, title, subtitle };
+                      })
+                      .sort((a, b) => b.amount - a.amount);
+
+                    return (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                        {cards.map(({ idx, amount, pct, c, title, subtitle }) => (
+                          <div
+                            key={idx}
+                            className="rounded-xl border border-bordergray bg-white p-3 hover:border-select-blue/40 hover:shadow-[0_2px_8px_rgba(15,23,42,0.06)] transition-all"
+                          >
+                            <div className="flex items-start justify-between gap-2 mb-2">
+                              <span className="flex items-start gap-1.5 min-w-0">
+                                <span
+                                  className={`h-2 w-2 rounded-full shrink-0 mt-1 ${c.dot}`}
+                                />
+                                <span className="min-w-0">
+                                  <span className="block text-[11px] font-semibold text-textcolor truncate">
+                                    {title}
+                                  </span>
+                                  {subtitle && (
+                                    <span className="block text-[9.5px] text-text-subtle uppercase tracking-wide truncate">
+                                      {subtitle}
+                                    </span>
+                                  )}
                                 </span>
-                              )}
-                            </span>
-                          </span>
-                          <span className="text-[10.5px] font-bold text-text-muted tabular-nums">
-                            {pct}%
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-1.5 bg-bg-soft rounded-full overflow-hidden">
-                            <div
-                              className={`h-full ${c.bar}`}
-                              style={{ width: `${pct}%` }}
-                            />
+                              </span>
+                              <span className="shrink-0 text-[10px] font-bold text-select-blue bg-active-bg px-1.5 py-0.5 rounded-md tabular-nums">
+                                {pct}%
+                              </span>
+                            </div>
+                            <p className="text-[14px] font-bold text-textcolor tabular-nums leading-none mb-2">
+                              {formatAmount(amount)}
+                            </p>
+                            <div className="h-1.5 bg-bg-soft rounded-full overflow-hidden">
+                              <div
+                                className={`h-full ${c.bar} transition-all`}
+                                style={{ width: `${(amount / maxAmt) * 100}%` }}
+                              />
+                            </div>
                           </div>
-                          <span className="text-[10px] font-semibold text-text-subtle tabular-nums w-14 text-right">
-                            {formatAmount(amount)}
-                          </span>
-                        </div>
+                        ))}
                       </div>
-                    ))
+                    );
+                  })()
                 )}
               </div>
             </section>
-          </aside>
+              </>
+            )}
+          </main>
         </div>
       </div>
 
-      {/* ── Sticky totals bar ──────────────────────────────────────────── */}
+      {/* ── Sticky totals bar — only in the editor view ────────────────── */}
+      {typeEditorOpen && (
       <div className="fixed bottom-0 left-0 right-0 lg:left-[260px] z-20 pointer-events-none">
         <div className="px-6 pb-4 flex justify-center">
           <div className="pointer-events-auto bg-white/95 backdrop-blur-xl border border-bordergray shadow-[0_8px_30px_rgba(15,23,42,0.12)] rounded-2xl px-5 py-3 flex items-center gap-5 flex-wrap">
@@ -2446,6 +2097,7 @@ const ProposalMaster = () => {
           </div>
         </div>
       </div>
+      )}
 
       {/* ── Toast ──────────────────────────────────────────────────────── */}
       {toast && (
@@ -2611,6 +2263,174 @@ const ProposalMaster = () => {
         />
       )}
 
+      {/* Anchored materials popover — floats next to the clicked card's
+          "Materials" button (z-indexed), so the card grid never reflows. The
+          transparent backdrop closes it on any outside click. */}
+      {matPopover != null &&
+        scopeItems[matPopover.idx] &&
+        (() => {
+          const item = scopeItems[matPopover.idx];
+          const mats = item.materials || [];
+          const mLib = item.masterId ? libById[item.masterId] : null;
+          const grade =
+            item.grade || activeConfig?.grade || activeGrade || "economy";
+          const recipe = mLib?.recipes?.[grade] || item.recipes?.[grade];
+          const calc = recipe ? computeRecipe(recipe, matById) : null;
+          const lines = calc?.lines || [];
+          const matAmount = (m, mIdx) => {
+            const line =
+              lines.find(
+                (l) =>
+                  (m.materialId && l.materialId === m.materialId) ||
+                  (m.id && l.materialId === m.id) ||
+                  (l.name &&
+                    m.name &&
+                    l.name.toLowerCase() === m.name.toLowerCase()),
+              ) || lines[mIdx];
+            if (line) return Number(line.amount) || 0;
+            return (
+              (Number(m.rate) || 0) *
+              (Number(m.qty) || 0) *
+              (1 + (Number(m.wastagePct) || 0) / 100)
+            );
+          };
+          // Match the scope card's width and left edge so the panel sits exactly
+          // below the card; flip above / nudge left to stay inside the viewport.
+          const { rect } = matPopover;
+          const margin = 12;
+          const width = Math.min(rect.width, window.innerWidth - margin * 2);
+          const left = Math.max(
+            margin,
+            Math.min(rect.left, window.innerWidth - width - margin),
+          );
+          const spaceBelow = window.innerHeight - rect.bottom;
+          const openUp = spaceBelow < 260 && rect.top > spaceBelow;
+          const style = openUp
+            ? {
+                left,
+                width,
+                bottom: window.innerHeight - rect.top + 6,
+                maxHeight: rect.top - margin,
+              }
+            : {
+                left,
+                width,
+                top: rect.bottom + 6,
+                maxHeight: spaceBelow - margin,
+              };
+          // Caret: a small rotated square poking out of the panel edge toward the
+          // card. Points up when the panel is below the card, down when flipped
+          // above. Rendered separately so the panel's overflow-hidden can't clip it.
+          const caretLeft = Math.min(left + 28, left + width - 24);
+          const caretStyle = openUp
+            ? { left: caretLeft, top: rect.top - 12 }
+            : { left: caretLeft, top: rect.bottom };
+          const name =
+            namedOriginalItems[matPopover.idx]?._displayCategory ||
+            item.itemName ||
+            item.area ||
+            "Scope";
+          return (
+            <>
+              {/* Blocking overlay — absorbs clicks so nothing behind (scope name,
+                  other cards) is interactive while the popover is open. It does
+                  NOT close the popover; only the X button does. */}
+              <div
+                className="fixed inset-0 z-90 bg-gray-900/5"
+                onClick={(e) => e.stopPropagation()}
+              />
+              {/* Caret pointing at the card */}
+              <div
+                style={caretStyle}
+                className={`fixed z-[101] h-3 w-3 rotate-45 bg-white border-bordergray ${
+                  openUp ? "border-b border-r" : "border-t border-l"
+                }`}
+              />
+              <div
+                role="dialog"
+                style={style}
+                className="fixed z-100 bg-white rounded-xl border border-bordergray shadow-[0_8px_30px_rgba(15,23,42,0.18)] flex flex-col overflow-hidden font-manrope"
+              >
+                {/* Header */}
+                <div className="shrink-0 flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-bordergray bg-bg-soft/50">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Package size={12} className="text-select-blue shrink-0" />
+                    <span className="text-[11.5px] font-bold text-textcolor truncate">
+                      {name}
+                    </span>
+                    {mats.length > 0 && (
+                      <span className="text-[9.5px] font-semibold text-text-subtle shrink-0">
+                        ({mats.length})
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMatPopover(null)}
+                    className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+
+                {/* Body */}
+                <div className="p-3">
+                  {mats.length === 0 ? (
+                    <p className="text-[11px] text-text-subtle py-2 text-center">
+                      No materials. Use Edit Scope to add them.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-[1fr_1.3fr_92px_28px] gap-2 px-1 mb-1.5 text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                        <span>Material</span>
+                        <span>Specification</span>
+                        <span className="text-right">Amount</span>
+                        <span />
+                      </div>
+                      {/* Rows scroll (scrollbar hidden) once there are more than
+                          4 materials — the panel height stays fixed at ~4 rows. */}
+                      <div className="space-y-1.5 max-h-[136px] overflow-y-auto scroll-hidden-bar">
+                      {mats.map((m, mIdx) => {
+                        const amt = matAmount(m, mIdx);
+                        return (
+                          <div
+                            key={mIdx}
+                            className="grid grid-cols-[1fr_1.3fr_92px_28px] gap-2 items-stretch"
+                          >
+                            <div className="bg-white border border-bordergray rounded-lg px-2 py-1.5 text-[11px] font-medium text-textcolor truncate">
+                              {m.name || "—"}
+                            </div>
+                            <div className="bg-white border border-bordergray rounded-lg px-2 py-1.5 text-[11px] text-text-muted truncate">
+                              {m.spec || "—"}
+                            </div>
+                            <div
+                              className="bg-white border border-bordergray rounded-lg px-2 py-1.5 text-[11px] font-semibold text-textcolor tabular-nums text-right truncate"
+                              title="Material amount from the rate build-up"
+                            >
+                              {amt > 0
+                                ? `₹${Math.round(amt).toLocaleString("en-IN")}`
+                                : "—"}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeMaterial(matPopover.idx, mIdx)}
+                              title="Remove material"
+                              className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 transition-colors"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
       {previewOpen && (
         <Modal
           title={`${activeKey} — ${activeConfig?.propertyType || ""}`}
@@ -2694,6 +2514,129 @@ const ProposalMaster = () => {
               );
             })}
           </div>
+        </Modal>
+      )}
+
+      {scopeInfo && (
+        <Modal
+          title={
+            scopeInfo.item.itemName ||
+            scopeInfo.item.area ||
+            "Scope details"
+          }
+          subtitle={`${scopeInfo.item.area || "Unassigned"}${
+            activeConfig?.propertyType ? ` · ${activeConfig.propertyType}` : ""
+          }`}
+          maxWidth="max-w-[560px]"
+          onClose={() => setScopeInfo(null)}
+          footer={
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const { idx } = scopeInfo;
+                  setScopeInfo(null);
+                  openEditScope(idx);
+                }}
+                className="px-3.5 py-2 rounded-lg bg-select-blue text-white text-[12px] font-semibold hover:bg-primary"
+              >
+                Edit scope
+              </button>
+              <button
+                type="button"
+                onClick={() => setScopeInfo(null)}
+                className="px-3.5 py-2 rounded-lg border border-bordergray text-[12px] font-semibold text-text-muted hover:bg-bg-soft"
+              >
+                Close
+              </button>
+            </div>
+          }
+        >
+          {(() => {
+            const s = scopeInfo.item;
+            const hasDimensions =
+              Number(s.length) > 0 ||
+              Number(s.breadth) > 0 ||
+              Number(s.height) > 0;
+            const qtyLabel = `${Number(s.qty || 0).toLocaleString("en-IN", {
+              maximumFractionDigits: 2,
+            })}${s.unit ? ` ${s.unit}` : ""}`;
+            // Compact metadata pairs — only the ones with a value are shown.
+            const meta = [
+              {
+                label: "Grade",
+                value: s.grade ? (
+                  <span
+                    className={`inline-flex items-center text-[9.5px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${gradeChipStyle(
+                      s.grade,
+                    )}`}
+                  >
+                    {gradeLabel(s.grade)}
+                  </span>
+                ) : null,
+              },
+              {
+                label: "Est. days",
+                value:
+                  s.days !== "" && s.days != null ? `${s.days} days` : null,
+              },
+              { label: "HSN", value: s.hsn || null },
+              {
+                label: "Dimensions",
+                value: hasDimensions
+                  ? `${s.length || 0} × ${s.breadth || 0} × ${s.height || 0}`
+                  : null,
+              },
+            ].filter((m) => m.value);
+
+            // Ordered rows for the spec table — quantity/rate lead, then
+            // descriptive attributes. Empty values are dropped.
+            const rows = [
+              { label: "Quantity", value: qtyLabel },
+              {
+                label: "Rate",
+                value: `${formatAmount(s.rate)}${s.unit ? ` / ${s.unit}` : ""}`,
+              },
+              ...meta.map((m) => ({ label: m.label, value: m.value })),
+            ].filter((r) => r.value);
+
+            return (
+              <div className="space-y-5">
+                {s.description && (
+                  <p className="text-[12.5px] text-textcolor leading-relaxed">
+                    {s.description}
+                  </p>
+                )}
+
+                {/* Spec sheet — key/value rows with an emphasized total footer */}
+                <div className="rounded-xl border border-bordergray overflow-hidden">
+                  <dl>
+                    {rows.map((r) => (
+                      <div
+                        key={r.label}
+                        className="flex items-center justify-between gap-4 px-4 py-2.5 border-b border-bordergray"
+                      >
+                        <dt className="text-[11.5px] text-text-muted">
+                          {r.label}
+                        </dt>
+                        <dd className="text-[12.5px] font-semibold text-textcolor tabular-nums text-right">
+                          {r.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="flex items-center justify-between gap-4 px-4 py-3 bg-active-bg/60">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-select-blue">
+                      Total Amount
+                    </span>
+                    <span className="text-[16px] font-bold text-select-blue tabular-nums">
+                      {formatAmount(s.amount)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </Modal>
       )}
     </div>
@@ -2960,81 +2903,30 @@ const AddTypeModal = ({
 
 // Number input that hides "0" so users don't have to delete it before typing,
 // and shows the cost-share % suffix when meaningful.
-const AmountInput = ({ value, onChange, pct }) => {
-  const [focused, setFocused] = useState(false);
-  const display = focused
-    ? value === 0 || value === "0"
-      ? ""
-      : value
-    : value === 0 || value === "0" || value === ""
-      ? ""
-      : value;
-  return (
-    <div className="relative">
-      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle text-[11px]">
-        ₹
-      </span>
-      <input
-        type="number"
-        value={display}
-        onFocus={(e) => {
-          setFocused(true);
-          e.target.select();
-        }}
-        onBlur={() => setFocused(false)}
-        onChange={(e) => onChange(e.target.value === "" ? 0 : e.target.value)}
-        placeholder="0"
-        className={`${inputBase} pl-6 pr-10 text-right tabular-nums font-semibold`}
-      />
-      {pct > 0 && !focused && (
-        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-bold text-text-subtle tabular-nums">
-          {pct}%
-        </span>
-      )}
-    </div>
-  );
-};
-
-const Field = ({ icon, label, hint, children }) => (
-  <div>
-    <label className="flex items-center justify-between text-[10.5px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">
-      <span className="flex items-center gap-1">
-        <span className="text-select-blue">{icon}</span>
-        {label}
-      </span>
-      {hint && (
-        <span className="text-[9.5px] font-normal text-text-subtle normal-case tracking-normal flex items-center gap-1">
-          <Info size={9} /> {hint}
-        </span>
-      )}
-    </label>
-    {children}
-  </div>
-);
-
-const BentoStat = ({ icon, label, value, tint }) => {
-  const tints = {
-    blue: "from-blue-50 to-white text-blue-600 border-blue-100",
-    purple: "from-purple-50 to-white text-purple-600 border-purple-100",
-    orange: "from-orange-50 to-white text-orange-600 border-orange-100",
-    emerald: "from-emerald-50 to-white text-emerald-600 border-emerald-100",
-  };
-  return (
-    <div
-      className={`relative bg-linear-to-br ${tints[tint]} border rounded-xl p-3 overflow-hidden`}
-    >
-      <div className="flex items-center justify-between mb-1">
-        <span className="opacity-80">{icon}</span>
-        <span className="text-[9.5px] font-bold uppercase tracking-wider opacity-70">
-          {label}
-        </span>
-      </div>
-      <p className="text-[18px] font-bold text-textcolor tabular-nums leading-tight">
-        {value}
-      </p>
-    </div>
-  );
-};
+// Stats banner hidden per request — kept for future use.
+// const BentoStat = ({ icon, label, value, tint }) => {
+//   const tints = {
+//     blue: "from-blue-50 to-white text-blue-600 border-blue-100",
+//     purple: "from-purple-50 to-white text-purple-600 border-purple-100",
+//     orange: "from-orange-50 to-white text-orange-600 border-orange-100",
+//     emerald: "from-emerald-50 to-white text-emerald-600 border-emerald-100",
+//   };
+//   return (
+//     <div
+//       className={`relative bg-linear-to-br ${tints[tint]} border rounded-xl p-3 overflow-hidden`}
+//     >
+//       <div className="flex items-center justify-between mb-1">
+//         <span className="opacity-80">{icon}</span>
+//         <span className="text-[9.5px] font-bold uppercase tracking-wider opacity-70">
+//           {label}
+//         </span>
+//       </div>
+//       <p className="text-[18px] font-bold text-textcolor tabular-nums leading-tight">
+//         {value}
+//       </p>
+//     </div>
+//   );
+// };
 
 const FooterStat = ({ label, value, accent = "text-textcolor" }) => (
   <div className="flex flex-col">
@@ -3163,7 +3055,6 @@ const ShortcutsModal = ({ onClose }) => (
         </button>
       </div>
       <div className="p-5 space-y-2.5">
-        <Shortcut keys={["⌘", "S"]} label="Save changes" />
         <Shortcut keys={["?"]} label="Toggle this menu" />
         <Shortcut keys={["Esc"]} label="Close dialogs" />
         <Shortcut keys={["Enter"]} label="Confirm in input fields" />

@@ -40,8 +40,8 @@ export const TableData = [
     inquirySource: "Website",
     propertyType: "Apartment",
     quotePreset: "2BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "800-1100",
+    quoteGrade: "economy",
+    quoteSizeRange: "950",
   },
   {
     sno: 2,
@@ -60,7 +60,7 @@ export const TableData = [
     propertyType: "Studio Apartment",
     quotePreset: "1BHK",
     quoteGrade: "economy",
-    quoteSizeRange: "450-600",
+    quoteSizeRange: "525",
   },
   {
     // Architecture inquiry — track-aware fields, no package quote.
@@ -100,8 +100,8 @@ export const TableData = [
     inquirySource: "Referral",
     propertyType: "Penthouse",
     quotePreset: "3BHK",
-    quoteGrade: "luxury",
-    quoteSizeRange: "1200-1600",
+    quoteGrade: "economy",
+    quoteSizeRange: "1400",
   },
   {
     sno: 5,
@@ -119,8 +119,8 @@ export const TableData = [
     inquirySource: "Walk-in",
     propertyType: "Apartment",
     quotePreset: "2BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "800-1100",
+    quoteGrade: "economy",
+    quoteSizeRange: "950",
   },
   {
     // Architecture qualified — commercial build, due-diligence underway.
@@ -160,8 +160,8 @@ export const TableData = [
     inquirySource: "Website",
     propertyType: "Duplex",
     quotePreset: "3BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "1200-1600",
+    quoteGrade: "economy",
+    quoteSizeRange: "1400",
   },
   {
     sno: 8,
@@ -180,7 +180,7 @@ export const TableData = [
     propertyType: "Apartment",
     quotePreset: "2BHK",
     quoteGrade: "economy",
-    quoteSizeRange: "800-1100",
+    quoteSizeRange: "950",
   },
   {
     sno: 9,
@@ -198,8 +198,8 @@ export const TableData = [
     inquirySource: "Referral",
     propertyType: "Luxury Villa",
     quotePreset: "Villa",
-    quoteGrade: "luxury",
-    quoteSizeRange: "2400+",
+    quoteGrade: "economy",
+    quoteSizeRange: "2400",
   },
   {
     sno: 10,
@@ -218,7 +218,7 @@ export const TableData = [
     propertyType: "Apartment",
     quotePreset: "1BHK",
     quoteGrade: "economy",
-    quoteSizeRange: "450-600",
+    quoteSizeRange: "525",
   },
   {
     sno: 11,
@@ -236,8 +236,8 @@ export const TableData = [
     inquirySource: "Website",
     propertyType: "Penthouse",
     quotePreset: "3BHK",
-    quoteGrade: "luxury",
-    quoteSizeRange: "1200-1600",
+    quoteGrade: "economy",
+    quoteSizeRange: "1400",
   },
   {
     sno: 12,
@@ -255,8 +255,8 @@ export const TableData = [
     inquirySource: "Referral",
     propertyType: "Independent House",
     quotePreset: "Villa",
-    quoteGrade: "premium",
-    quoteSizeRange: "2400+",
+    quoteGrade: "economy",
+    quoteSizeRange: "2400",
   },
   // ── Negotiation ──────────────────────────────────────────────────────────────
   {
@@ -275,8 +275,8 @@ export const TableData = [
     inquirySource: "Social Media",
     propertyType: "Apartment",
     quotePreset: "2BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "800-1100",
+    quoteGrade: "economy",
+    quoteSizeRange: "950",
   },
   {
     sno: 14,
@@ -294,8 +294,8 @@ export const TableData = [
     inquirySource: "Website",
     propertyType: "Duplex",
     quotePreset: "3BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "1200-1600",
+    quoteGrade: "economy",
+    quoteSizeRange: "1400",
   },
   {
     sno: 15,
@@ -313,8 +313,8 @@ export const TableData = [
     inquirySource: "Referral",
     propertyType: "Farm House",
     quotePreset: "Villa",
-    quoteGrade: "luxury",
-    quoteSizeRange: "2400+",
+    quoteGrade: "economy",
+    quoteSizeRange: "2400",
   },
   // ── On hold ──────────────────────────────────────────────────────────────────
   {
@@ -334,7 +334,7 @@ export const TableData = [
     propertyType: "Apartment",
     quotePreset: "2BHK",
     quoteGrade: "economy",
-    quoteSizeRange: "800-1100",
+    quoteSizeRange: "950",
   },
   {
     sno: 17,
@@ -352,8 +352,8 @@ export const TableData = [
     inquirySource: "Walk-in",
     propertyType: "Beach House",
     quotePreset: "Villa",
-    quoteGrade: "premium",
-    quoteSizeRange: "2400+",
+    quoteGrade: "economy",
+    quoteSizeRange: "2400",
   },
   // ── Won (linked to client records) ───────────────────────────────────────────
   {
@@ -372,8 +372,8 @@ export const TableData = [
     inquirySource: "Website",
     propertyType: "Apartment",
     quotePreset: "2BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "800-1100",
+    quoteGrade: "economy",
+    quoteSizeRange: "950",
     convertedClientID: "BL-2026-001",
   },
   {
@@ -392,8 +392,8 @@ export const TableData = [
     inquirySource: "Referral",
     propertyType: "Penthouse",
     quotePreset: "3BHK",
-    quoteGrade: "luxury",
-    quoteSizeRange: "1200-1600",
+    quoteGrade: "economy",
+    quoteSizeRange: "1400",
     convertedClientID: "BL-2026-002",
   },
   {
@@ -412,8 +412,8 @@ export const TableData = [
     inquirySource: "Social Media",
     propertyType: "Luxury Villa",
     quotePreset: "Villa",
-    quoteGrade: "luxury",
-    quoteSizeRange: "2400+",
+    quoteGrade: "economy",
+    quoteSizeRange: "2400",
     convertedClientID: "BL-2026-003",
   },
   {
@@ -433,7 +433,7 @@ export const TableData = [
     propertyType: "Apartment",
     quotePreset: "1BHK",
     quoteGrade: "economy",
-    quoteSizeRange: "450-600",
+    quoteSizeRange: "525",
     convertedClientID: "BL-2026-004",
   },
   {
@@ -478,8 +478,8 @@ export const TableData = [
     inquirySource: "Social Media",
     propertyType: "Apartment",
     quotePreset: "2BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "800-1100",
+    quoteGrade: "economy",
+    quoteSizeRange: "950",
   },
   {
     sno: 24,
@@ -498,7 +498,7 @@ export const TableData = [
     inquirySource: "Website",
     propertyType: "Duplex",
     quotePreset: "3BHK",
-    quoteGrade: "premium",
-    quoteSizeRange: "1200-1600",
+    quoteGrade: "economy",
+    quoteSizeRange: "1400",
   },
 ];
