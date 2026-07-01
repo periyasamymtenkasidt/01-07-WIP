@@ -1,0 +1,286 @@
+================================================================================
+ ORG ONBOARDING + AUTH  —  Frontend integration contract
+ Executive CRM (Digital Atelier / ARCHITECTURE WIP)
+ Multi-tenant: database-per-firm
+================================================================================
+
+READ THIS FIRST  (supersedes AUTH_REGISTER_CONTRACT.txt)
+  There is NO public self-serve POST /auth/register. Organisation (tenant)
+  creation is ADMIN-GATED — it happens on the backend / an internal back-office
+  tool using a platform admin key, NOT from the public signup page.
+
+  So the frontend does NOT create organisations. The public app only:
+    1. LOGS IN an existing user into an already-provisioned org, and
+    2. reads/writes that org's profile + data once logged in.
+
+  If you have a Signup.jsx wired to POST /auth/register (per the old contract),
+  it should be removed or repurposed as an internal admin-only screen. The
+  public app starts at LOGIN.
+
+--------------------------------------------------------------------------------
+ BIG PICTURE — how a firm comes to exist and gets used
+--------------------------------------------------------------------------------
+  STEP 0 (backend / platform admin, NOT the public frontend)
+    Platform operator calls POST /api/admin/firms with the admin key. This:
+      - creates the firm registry row (FRM-###),
+      - creates a NEW physical database for that tenant,
+      - seeds the firm's org_profile (name, gstin, city, state, phone, ...),
+      - creates the FIRST admin user (email + password) inside that firm DB.
+    The operator then hands the org's admin their email + password.
+
+  STEP 1 (public frontend)
+    The org admin logs in via POST /api/auth/login. Backend returns a token
+    pair whose tokens embed the firm internally (firmId claim) — the frontend
+    never sends or manages firmId; it just stores the tokens.
+
+  STEP 2 (public frontend)
+    Every authenticated request sends Authorization: Bearer <accessToken>.
+    The backend reads the firm from the token and routes all data to that
+    org's own database. From here it's the normal WIP app flow, fully isolated
+    per tenant.
+
+--------------------------------------------------------------------------------
+ RESPONSE ENVELOPE  (all endpoints)
+--------------------------------------------------------------------------------
+  Success:  { "status": true,  "data": <payload> }
+  Error:    { "status": false, "message": "human-readable reason" }
+
+  Base URL assumed http://localhost:4000/api in examples.
+
+--------------------------------------------------------------------------------
+ TENANT RESOLUTION — how the backend knows which firm a request is for
+--------------------------------------------------------------------------------
+  Login is CREDENTIALS-ONLY. The email/password alone identify the firm: the
+  backend locates the account across firms, then issues a token carrying that
+  firm's `firmId` claim.
+
+    1. At LOGIN     — the email resolves the tenant. The frontend sends NOTHING
+                      but credentials: no x-firm-id header, no org picker, no
+                      subdomain required.
+    2. AFTER login  — the JWT `firmId` claim is the source of truth. AUTOMATIC:
+                      the frontend does nothing; it lives inside both the access
+                      and refresh tokens, so it survives refresh.
+
+  IMPLICATION: a login email must be unique across firms (per audience). The
+  same email cannot belong to two organisations.
+
+  PRACTICAL RULE FOR FRONTEND: just POST email + password to /auth/login and
+  store the returned tokens. Never send or manage firmId/x-firm-id anywhere.
+
+================================================================================
+ ENDPOINT 1 — LOGIN          POST /api/auth/login        (PUBLIC, no token)
+================================================================================
+ REQUEST  (application/json)
+   {
+     "email":    "admin@studio.com",   // REQUIRED. Lower-cased server-side.
+     "password": "secret123",          // REQUIRED.
+     "audience": "staff"               // OPTIONAL. "staff" (default) | "client".
+   }
+
+   Headers:
+     Content-Type: application/json
+
+ SUCCESS  (200)
+   {
+     "status": true,
+     "data": {
+       "user": { "id": "...", "name": "Admin Name", "email": "admin@studio.com",
+                 "role": "Admin", "active": true },
+       "accessToken":  "<JWT, ~15m>",
+       "refreshToken": "<JWT, ~30d>"
+     }
+   }
+
+   - Token shape is identical for staff and client audiences; only the claims
+     inside differ. Store accessToken + refreshToken exactly as today.
+   - NOTE: login does NOT return an `org` object. Fetch org details after login
+     via GET /api/masters/org-profile (see ENDPOINT 4).
+
+ ERRORS
+   401  Invalid credentials          — wrong password, unknown email, or inactive
+                                        user. The firm is resolved FROM the email,
+                                        so an unknown email (and an account whose
+                                        firm is suspended) reads as invalid creds.
+   400  email and password are required
+
+================================================================================
+ ENDPOINT 2 — REFRESH        POST /api/auth/refresh      (PUBLIC, no token)
+================================================================================
+ Use when an accessToken expires (you get a 401 on a normal request). The
+ refresh token already carries firmId, so the tenant survives the refresh.
+
+ REQUEST   { "refreshToken": "<JWT>" }
+ SUCCESS   200  { "status": true, "data": { "accessToken": "<JWT, ~15m>" } }
+ ERRORS    401  Invalid refresh token   |  400  refreshToken is required
+
+ FRONTEND FLOW (unchanged from today): on 401 → call /auth/refresh → retry the
+ original request once with the new accessToken → if refresh also 401s, log out.
+
+================================================================================
+ ENDPOINT 3 — CURRENT USER   GET /api/auth/me     (Authorization: Bearer)
+================================================================================
+ Returns the logged-in principal's profile from their firm DB. Use on app boot
+ to rehydrate the session from a stored token.
+
+ SUCCESS  200
+   { "status": true,
+     "data": { "id": "...", "name": "...", "email": "...", "role": "Admin",
+               "active": true } }
+ ERRORS   401 invalid/expired token  |  404 User not found
+
+================================================================================
+ ENDPOINT 4 — ORG PROFILE    /api/masters/org-profile   (Authorization: Bearer)
+================================================================================
+ This is the firm-wide org profile that flows onto BOQ / quote / invoice docs.
+ It is PER-TENANT (lives in the firm's own DB) and is auto-seeded at
+ provisioning, so it is already populated on first login.
+
+ GET /api/masters/org-profile
+   SUCCESS 200
+     { "status": true,
+       "data": {
+         "name":      "ARCHITECTURE WIP",
+         "gstin":     "33ABCDE1234F1Z5",
+         "city":      "Chennai",
+         "state":     "Tamil Nadu",
+         "stateCode": "33",            // GST state code, derived from `state`
+         "phone":     "+91 ...",
+         "tagline": "", "address": "", "email": "", "website": "",
+         "pan": "", "logo": "",
+         "bankName": "", "bankAccountNumber": "", "bankIfsc": "",
+         "bankAccountHolder": "", "upi": "",
+         "defaultValidity": "", "defaultWarranty": "", "defaultNotes": "",
+         "surveyToleranceInr": 15000, "freeRevisionRounds": 2
+       } }
+   - If a firm somehow has no profile row yet, `data` is {} (empty object).
+
+ PUT /api/masters/org-profile        (requires MANAGE_MASTERS capability)
+   Replaces/updates the singleton. Send the full profile object you want stored.
+   BODY: same shape as the GET `data` above (send the fields you manage).
+   SUCCESS 200  { "status": true, "data": { ...updated profile... } }
+   NOTE: `stateCode` is NOT auto-derived on PUT — send the value you want, or
+         leave the seeded one in place. (Ask backend if you want auto-derive.)
+
+================================================================================
+ (REFERENCE ONLY — NOT CALLED BY THE PUBLIC FRONTEND)
+ ENDPOINT A — PROVISION FIRM   POST /api/admin/firms   (header: x-admin-key)
+================================================================================
+ Documented here so everyone shares one mental model. This is the back-office /
+ platform-admin call that brings an org into existence. The public app must
+ NEVER call it (it would need the secret admin key).
+
+ REQUEST  (application/json)
+   Headers: x-admin-key: <ADMIN_API_KEY>
+   {
+     "name":  "ARCHITECTURE WIP",       // REQUIRED. Org display name.
+     "slug":  "architecture-wip",       // REQUIRED. lowercase a-z 0-9 - only.
+                                        //   becomes the prod subdomain + db name.
+     "gstin": "33ABCDE1234F1Z5",        // OPTIONAL. upper-cased server-side.
+     "city":  "Chennai",                // OPTIONAL.
+     "state": "Tamil Nadu",             // OPTIONAL. used to derive stateCode.
+     "phone": "+91 ...",                // OPTIONAL.
+     "plan":  "standard",               // OPTIONAL. default "standard".
+     "admin": {                         // OPTIONAL block; falls back to SEED_* env
+       "name":     "Admin",
+       "email":    "admin@studio.com",  // first admin login email
+       "password": "secret123"          // first admin login password
+     }
+   }
+
+ SUCCESS  (201)
+   { "status": true,
+     "data": {
+       "firm":  { "firm_id": "FRM-001", "name": "...", "slug": "...",
+                  "dbName": "atelier_firm_architecture-wip", "status": "active",
+                  "plan": "standard", "gstin": "...", "city": "...",
+                  "state": "...", "stateCode": "33", "phone": "..." },
+       "admin": { "id": "...", "name": "Admin", "email": "admin@studio.com",
+                  "role": "Admin", "active": true }
+     } }
+
+ ERRORS
+   401  Invalid admin API key      — missing/wrong x-admin-key.
+   400  name and slug are required | slug may contain only lowercase letters,
+        numbers, and hyphens | admin email and password are required.
+   409  Firm slug "<slug>" already exists. | A user with email "<email>" already
+        exists. (admin emails are unique across ALL firms — login resolves the
+        tenant from the email, so the same email can't belong to two orgs.)
+
+================================================================================
+ (REFERENCE ONLY — NOT CALLED BY THE PUBLIC FRONTEND)
+ ENDPOINT B — VERIFY ADMIN KEY   GET /api/admin/ping   (header: x-admin-key)
+================================================================================
+ Side-effect-free check of the admin key, used by the internal /admin/login gate
+ so it can verify the key BEFORE showing the create-org form (rather than only
+ finding out on POST /api/admin/firms). Creates nothing.
+
+ REQUEST   Headers: x-admin-key: <ADMIN_API_KEY>   (no body)
+ SUCCESS   200  { "status": true, "data": { "ok": true } }   (any 200 is fine)
+ ERRORS    401  Invalid admin API key   — missing/wrong x-admin-key.
+
+ BACKEND TODO: implement as a no-op guarded by the same x-admin-key middleware as
+ ENDPOINT A — 200 on a valid key, 401 otherwise. The frontend gate
+ (src/api/admin.js pingAdmin / src/pages/admin/AdminLogin.jsx) already calls it.
+ The gate hard-blocks ONLY on a 401; until this route exists a 404 (or any non-401
+ / transport error) lets the admin through and POST /api/admin/firms remains the
+ real enforcement point.
+
+================================================================================
+ (REFERENCE ONLY — INTERNAL ADMIN CONSOLE, NOT THE PUBLIC FRONTEND)
+ ENDPOINT C — LIST FIRMS       GET /api/admin/firms     (header: x-admin-key)
+================================================================================
+ The read counterpart of ENDPOINT A — lists every provisioned firm for the
+ internal /admin/orgs console (src/pages/admin/Orgs.jsx). Admin-key gated; org
+ users never call it. It returns richer registry fields (status, plan, location)
+ since it is behind the admin key.
+
+ REQUEST   Headers: x-admin-key: <ADMIN_API_KEY>   (no body)
+ SUCCESS   200
+   { "status": true,
+     "data": [ { "firm_id": "FRM-001", "name": "ARCHITECTURE WIP",
+                 "slug": "architecture-wip", "status": "active",
+                 "plan": "standard", "gstin": "...", "city": "Chennai",
+                 "state": "Tamil Nadu", "phone": "...",
+                 "createdAt": "2026-..." } ] }
+ ERRORS    401  Invalid admin API key   — missing/wrong x-admin-key.
+ NOTES
+   - A bare array, or an { firms: [...] } / { data: [...] } wrapper, are accepted
+     (src/api/admin.js listFirms). Field aliases firm_id/firmId/id are tolerated.
+   - On 401 the console drops the key and re-gates; on any other failure it falls
+     back to the locally-known org directory so it stays usable offline.
+
+--------------------------------------------------------------------------------
+ CURL — full local dev walkthrough
+--------------------------------------------------------------------------------
+  # (back-office) create the org + its first admin + its database
+  curl -X POST http://localhost:4000/api/admin/firms \
+    -H "Content-Type: application/json" \
+    -H "x-admin-key: $ADMIN_API_KEY" \
+    -d '{ "name":"ARCHITECTURE WIP","slug":"architecture-wip",
+          "gstin":"33ABCDE1234F1Z5","city":"Chennai","state":"Tamil Nadu","phone":"",
+          "admin":{"name":"Admin","email":"admin@studio.com","password":"secret123"} }'
+
+  # (public app) log that admin in — credentials only; the email picks the firm
+  curl -X POST http://localhost:4000/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{ "email":"admin@studio.com","password":"secret123" }'
+
+  # (public app) use the accessToken for everything else
+  curl http://localhost:4000/api/masters/org-profile \
+    -H "Authorization: Bearer <accessToken>"
+
+--------------------------------------------------------------------------------
+ FRONTEND CHECKLIST
+--------------------------------------------------------------------------------
+  [ ] Remove / hide the public POST /auth/register signup path. Org creation is
+      admin-gated; do not build against /auth/register (it does not exist).
+  [ ] Entry point is LOGIN. Keep the existing token store (access_token /
+      refresh_token, audience "staff") and the 401→refresh→retry flow as-is.
+  [ ] Never send firmId or x-firm-id anywhere. Login is credentials-only — the
+      email resolves the firm, and the token carries firmId for every call after.
+  [ ] After login, call GET /auth/me (boot rehydrate) and
+      GET /api/masters/org-profile (seed the firm-wide org_profile used on
+      BOQ/quote/invoice docs).
+  [ ] Org profile edits go through PUT /api/masters/org-profile (needs the
+      MANAGE_MASTERS capability — typically Admin).
+================================================================================

@@ -1,0 +1,208 @@
+@import "tailwindcss";
+
+@theme {
+  --font-manrope: "Manrope", sans-serif;
+
+  /* Brand */
+  --color-primary: #1a2b4d;
+  --color-select-blue: #1e3a8a;
+  --color-dark-blue:#001552;
+
+  /* Backgrounds */
+  --color-overallbg: #f4f4f4;
+  --color-surface: #ffffff;
+  --color-bg-soft: #f1f5f9;
+  --color-active-bg: #e2eefe;
+  --color-palewhite:#f8fafc;
+  --color-light-gray:#f4f5f7;
+
+  /* Borders */
+  --color-bordergray: #e2e8f0;
+  --color-grayborder:#dfdfdf;
+
+  /*Client profile*/
+  --color-emarold:#10b981;
+  --color-orange:#f97316;
+  --color-pending:#D97706;
+
+  /* Text */
+  --color-textcolor: #0f172a;
+  --color-text-muted: #64748b;
+  --color-text-subtle: #94a3b8;
+  --color-grey: #475569;
+  --color-secondary: #9ca3af;
+  --color-sky-blue:#3b82f6;
+  --color-darkgray:#1e293b;
+  --color-midgray:#334155;
+  --color-dark-yellow:#8b6914;
+  --color-gray-text:#7b7b7b;
+
+  /*Background and Border*/
+--color-purple:#0a1b49;
+--color-paleorange:#c5a367;
+
+/*placeholders*/
+--color-placeholder:#cbd5e1;
+}
+
+/* Hidden scrollbar utility */
+.scroll-hidden-bar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scroll-hidden-bar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Logo shimmer sweep — used on the WIP brand block in the app header.
+   A soft highlight glides across the logo every few seconds. */
+@keyframes wip-shimmer {
+  0% {
+    transform: translateX(-120%);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  75% {
+    opacity: 1;
+    transform: translateX(140%);
+  }
+  100% {
+    transform: translateX(140%);
+    opacity: 0;
+  }
+}
+
+@keyframes wip-glow {
+  0%, 100% {
+    box-shadow: 0 4px 18px -6px rgba(197, 163, 103, 0.25),
+                0 1px 2px rgba(139, 105, 20, 0.08);
+  }
+  50% {
+    box-shadow: 0 6px 24px -4px rgba(197, 163, 103, 0.45),
+                0 1px 2px rgba(139, 105, 20, 0.12);
+  }
+}
+
+.wip-glass {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.55) 0%,
+    rgba(197, 163, 103, 0.10) 50%,
+    rgba(255, 255, 255, 0.35) 100%
+  );
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  border: 1px solid rgba(197, 163, 103, 0.35);
+  animation: wip-glow 4s ease-in-out infinite;
+}
+
+.wip-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.75) 40%,
+    rgba(255, 255, 255, 1) 50%,
+    rgba(255, 255, 255, 0.75) 60%,
+    transparent 100%
+  );
+  animation: wip-shimmer 3s ease-in-out infinite;
+}
+
+/* Print: hide everything except the document being printed so users can
+   save it as PDF via the browser print dialog. Multiple `*-print-area`
+   classes share the same behavior (quote, BOQ, invoice, etc.). */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .quote-print-area,
+  .quote-print-area *,
+  .boq-print-area,
+  .boq-print-area * {
+    visibility: visible;
+  }
+  .quote-print-area,
+  .boq-print-area {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding: 0;
+    background: #fff;
+    box-shadow: none !important;
+    border: none !important;
+  }
+  .modal-no-print,
+  .modal-no-print * {
+    visibility: hidden !important;
+  }
+  /* Keep section tables together where possible */
+  .print-avoid-break {
+    page-break-inside: avoid;
+  }
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+}
+
+/* Custom print-mode styling to isolate only the target quote */
+body.printing-quote-mode > #root {
+  display: none !important;
+}
+
+#quote-print-temp-container {
+  display: none;
+}
+
+@media print {
+  /* Override any modal-induced overflow hidden or height limits on print */
+  html, body {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  
+  body.printing-quote-mode #quote-print-temp-container,
+  body.printing-quote-mode #quote-print-temp-container * {
+    visibility: visible !important;
+  }
+
+  body.printing-quote-mode #quote-print-temp-container {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff;
+    padding: 0;
+    margin: 0;
+  }
+}
+
+/* Custom scrollbar utility classes */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1; /* slate-300 */
+  border-radius: 99px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8; /* slate-400 */
+}
+
+/* Thin scrollbar for tables and lists */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+

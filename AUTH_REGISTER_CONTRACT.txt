@@ -1,0 +1,128 @@
+================================================================================
+ POST /auth/register  —  Organisation signup endpoint contract
+ Executive CRM (Digital Atelier / ARCHITECTURE WIP)
+================================================================================
+
+PURPOSE
+  Self-serve organisation onboarding. Creates a new organisation (tenant) and
+  its FIRST admin user in a single call, then returns auth tokens so the
+  frontend can log the admin straight into the dashboard (auto-login).
+
+  This is the backend counterpart to the frontend's local-first signup. Once
+  this endpoint is live, the frontend calls it first and only falls back to the
+  local-only path if the API is unreachable (dev without backend).
+
+  Source of conventions: FRONTEND_API.md §1-§2, BACKEND_SPEC.md §4 (auth/RBAC)
+  and §5.8 (org_profile).
+
+--------------------------------------------------------------------------------
+ ROUTE
+--------------------------------------------------------------------------------
+  POST /auth/register
+  Visibility: PUBLIC (no Authorization header — same as /auth/login, /refresh)
+
+--------------------------------------------------------------------------------
+ REQUEST BODY  (application/json)
+--------------------------------------------------------------------------------
+{
+  "organisation": {
+    "name":  "ARCHITECTURE WIP",      // REQUIRED. Trimmed. Display name.
+    "gstin": "33ABCDE1234F1Z5",        // OPTIONAL. 15 chars, upper-cased. "" allowed.
+    "city":  "Chennai",                // REQUIRED. Trimmed.
+    "state": "Tamil Nadu",             // OPTIONAL. "" allowed.
+    "phone": "+91 ..."                 // OPTIONAL. "" allowed.
+  },
+  "admin": {
+    "name":     "Admin Name",          // REQUIRED. Trimmed.
+    "email":    "admin@studio.com",    // REQUIRED. Lower-cased + trimmed server-side.
+    "password": "secret123"            // REQUIRED. Min 6 chars (frontend-validated).
+  }
+}
+
+  Notes for the backend:
+  - HASH the password (bcrypt/argon2). The frontend never hashes — it sends
+    plaintext over TLS, exactly like /auth/login.
+  - Normalise email to lowercase before uniqueness check and storage.
+  - The first admin's role MUST be "Admin" (see BACKEND_SPEC.md §4 role enum).
+  - Derive org `state_code` from `state` if you can (used later for GST
+    intra/inter-state split — BACKEND_SPEC.md §5.8 / §"Money").
+
+--------------------------------------------------------------------------------
+ SUCCESS RESPONSE  (201 Created)   — envelope per FRONTEND_API.md §1
+--------------------------------------------------------------------------------
+{
+  "status": true,
+  "data": {
+    "user": {
+      "id":    "<mongo/uuid id>",
+      "name":  "Admin Name",
+      "email": "admin@studio.com",
+      "role":  "Admin"
+    },
+    "accessToken":  "<JWT, ~15m>",     // same token shape as POST /auth/login
+    "refreshToken": "<JWT, ~30d>",
+    "org": {
+      "id":    "<org id>",
+      "name":  "ARCHITECTURE WIP",
+      "gstin": "33ABCDE1234F1Z5",
+      "city":  "Chennai",
+      "state": "Tamil Nadu",
+      "phone": "+91 ..."
+    }
+  }
+}
+
+  - The token pair MUST be identical in shape to /auth/login so the frontend's
+    existing token store (access_token / refresh_token / audience="staff") and
+    the 401→refresh→retry flow work with no changes.
+  - `org` is used by the frontend to seed the firm-wide org_profile (name,
+    gstin, city, state, phone) that flows onto BOQ / quote / invoice documents.
+
+--------------------------------------------------------------------------------
+ ERROR RESPONSES  — envelope { "status": false, "message": "..." }
+--------------------------------------------------------------------------------
+  409 Conflict   — email already registered, OR org name/GSTIN already taken.
+                   message e.g. "An account with this email already exists."
+                   (Frontend surfaces this verbatim; it does NOT fall back to
+                    local on a 409 — a real rejection must stop signup.)
+
+  422 Unprocessable — validation failed (missing required field, bad GSTIN
+                   format, password too short). message describes the field.
+
+  400 Bad Request — malformed JSON / missing body.
+
+  500 Internal   — unexpected; message is a generic safe string.
+
+  IMPORTANT (frontend fallback rule):
+    The frontend falls back to the LOCAL signup path ONLY when the request
+    never reaches the server (network/transport error — fetch rejects). ANY
+    JSON error envelope from the server (4xx/5xx) is surfaced to the user as-is
+    and does NOT trigger the local fallback.
+
+--------------------------------------------------------------------------------
+ SIDE EFFECTS THE BACKEND SHOULD PERFORM
+--------------------------------------------------------------------------------
+  1. Create the organisation/tenant row (org_profile seed — BACKEND_SPEC §5.8).
+  2. Create the first user with role="Admin", linked to that org.
+  3. Issue access + refresh tokens (audience "staff") for that user.
+  4. (Optional, recommended) seed per-org defaults: empty masters, default
+     GST 18%, default terms, etc. — so the new org isn't empty on first load.
+
+--------------------------------------------------------------------------------
+ CURL EXAMPLE
+--------------------------------------------------------------------------------
+  curl -X POST http://localhost:4000/api/auth/register \
+    -H "Content-Type: application/json" \
+    -d '{
+          "organisation": { "name": "ARCHITECTURE WIP", "gstin": "33ABCDE1234F1Z5", "city": "Chennai", "state": "Tamil Nadu", "phone": "" },
+          "admin": { "name": "Admin", "email": "admin@studio.com", "password": "secret123" }
+        }'
+
+--------------------------------------------------------------------------------
+ FRONTEND TOUCHPOINTS (already wired to this contract)
+--------------------------------------------------------------------------------
+  src/api/auth.js          registerRequest()  — calls POST /auth/register, stores tokens
+  src/auth/auth.js         registerStaff()    — backend-first, local fallback, seeds org_profile
+  src/auth/orgAccounts.js  registerOrganisation() — local fallback path (unchanged)
+  src/pages/auth/Signup.jsx onSubmit          — awaits registerStaff(), auto-navigates to /dashboard
+================================================================================

@@ -1,0 +1,131 @@
+====================================================================
+  DIGITAL ATELIER — DEALS KANBAN WORKFLOW
+  Project Execution Board for Active Client Projects
+====================================================================
+
+
+WHO USES THIS
+-------------
+Operations / Design Team (not sales)
+Goal: See all active projects at a glance and update progress
+      without navigating into individual client profiles.
+
+
+HOW A PROJECT ENTERS THE BOARD
+--------------------------------
+1. Sales team marks a lead as "Won" in the Leads page.
+2. Sales team clicks "Convert to Client" on the lead detail page.
+3. ConvertToClientForm opens — fills client info + confirmed
+   project value.
+4. System auto-generates 5 payment milestone stages.
+5. Client record is created → project card appears automatically
+   on the Deals Kanban board in Column 1 (Booking Token).
+
+No manual entry needed. Conversion triggers board appearance.
+
+
+KANBAN COLUMNS (5 Project Stages)
+-----------------------------------
+
+  [1]               [2]               [3]                  [4]                [5]
+  Booking Token  →  Design Sign-off →  Material Procurement → Work in Progress → Handover
+  20% + 18% GST     25% + 18% GST      25% + 18% GST          25% + 18% GST      5% + 18% GST
+
+Each column = one payment milestone stage.
+A project card sits in the column of its CURRENT active stage
+(the next unpaid milestone).
+
+
+WHAT EACH CARD SHOWS
+----------------------
+  ┌─────────────────────────────────┐
+  │ Robert Ben          BL-2024-089 │
+  │ Luxury Villa · Beverly Hills    │
+  │                                 │
+  │ Project Value:  ₹75L (ex. GST)  │
+  │ Stage Due:      ₹17.7L          │
+  │ Days in stage:  12 days   🟡    │
+  │                                 │
+  │ [View Profile]  [Mark as Paid]  │
+  └─────────────────────────────────┘
+
+Card urgency color:
+  Green  = 0–7 days in current stage
+  Yellow = 8–14 days in current stage
+  Red    = 15+ days in current stage (overdue follow-up)
+
+
+DRAG ACTION (How stage update works)
+--------------------------------------
+Design team drags a card from Column 2 → Column 3.
+
+What happens behind the scenes:
+  1. Milestone 2 (Design Sign-off) is marked as PAID.
+  2. Paid date is stamped with today's date.
+  3. Card moves to Column 3 (Material Procurement).
+  4. Client profile Payment Milestones tab updates automatically.
+  5. If all 5 milestones paid → card moves to COMPLETED section.
+  6. Client paymentStatus auto-updates to "completed".
+
+"Mark as Paid" button on the card does the same as dragging.
+
+
+COLUMN HEADER (What the team sees at top of each column)
+----------------------------------------------------------
+  Material Procurement
+  ─────────────────────
+  4 projects   ·   ₹1.2 Cr pending
+
+
+COMPLETED PROJECTS (Bottom section / separate row)
+----------------------------------------------------
+  All 5 milestones paid → project moves to a "Completed" swimlane
+  at the bottom of the board.
+  Shows: client name, total value collected, handover date.
+  Read-only. No further actions.
+
+
+WHAT THE BOARD DOES NOT DO
+----------------------------
+  ✗ Does not replace the Leads page (that's for sales pipeline)
+  ✗ Does not show unconverted leads
+  ✗ Does not manage new inquiries
+  ✗ Does not handle invoicing (future feature)
+
+
+SUMMARY: HOW BOTH PAGES WORK TOGETHER
+---------------------------------------
+
+  LEADS PAGE (Sales Team)
+  ├── New Inquiries    → qualification calls, follow-ups
+  ├── Nurturing        → proposal sent, negotiation
+  ├── Won Deals        → ready to convert
+  └── Dropped          → lost / on hold
+
+       ↓  "Convert to Client" triggers
+
+  DEALS KANBAN (Design / Operations Team)
+  ├── Booking Token        → contract signed, advance collected
+  ├── Design Sign-off      → designs approved
+  ├── Material Procurement → materials ordered
+  ├── Work in Progress     → execution on site
+  └── Handover             → final delivery, balance collected
+
+       ↓  All milestones paid
+
+  CLIENT PROFILE
+  └── paymentStatus → Completed
+      Full history of milestones, dates, amounts on record
+
+
+DATA STORED PER PROJECT (localStorage until API)
+--------------------------------------------------
+  newClientsData         → client record
+  clientMilestones_{ID}  → 5 milestone objects with:
+                           name, pct, gst, base, gstAmt, total,
+                           status (pending/paid), paidDate
+
+
+====================================================================
+  END OF WORKFLOW DOCUMENT
+====================================================================

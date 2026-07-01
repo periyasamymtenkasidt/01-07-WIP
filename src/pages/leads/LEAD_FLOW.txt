@@ -1,0 +1,127 @@
+================================================================================
+LEAD MODULE — DB-PER-TENANT REQUEST FLOW (reference implementation)
+================================================================================
+
+The Leads module is the canonical example of how a data module must be wired in
+the DB-per-tenant architecture. Every other module (clients, quotes, sites,
+design, masters, files) should mirror this exact shape. If a request writes to
+the correct firm database, it is because it follows the chain below.
+
+--------------------------------------------------------------------------------
+0. ONE-TIME: how a firm and its DB come to exist
+--------------------------------------------------------------------------------
+
+  scripts/provisionFirm.js  ->  FirmService.provision()
+    - allocates FRM-### id            (admin DB counter)
+    - reserves email in account directory  (admin DB, unique index)
+    - inserts firm registry row       (admin DB, carries `dbName`)
+    - opens tenant connection + seeds it -> materializes the physical firm DB
+    - creates the firm's first Admin user INSIDE the firm DB
+
+  Result:
+    - Admin DB (atelier_admin):  firm registry + global account directory
+    - Firm DB  (atelier_firm_<slug>):  that firm's leads, clients, users, etc.
+
+--------------------------------------------------------------------------------
+1. LOGIN  (POST /api/auth/login)  — credentials only, no firm in the request
+--------------------------------------------------------------------------------
+
+  auth.controller.login  ->  AuthService.login({ email, password })
+
+    a. normalize email
+    b. account directory lookup (admin DB):  email -> the ONE owning firm
+         miss -> fall back to scanning all active firms
+    c. open that firm's tenant connection (getTenantConnection)
+    d. verify password against the user row IN THAT FIRM'S DB
+    e. mint tokens embedding  firmId = firm.firm_id
+         staffTokens()  /  clientTokens()
+
+  Output: { accessToken, refreshToken }  — the JWT now carries the tenant claim.
+  From here on, NO further email->firm lookup is needed; the token IS the tenant.
+
+--------------------------------------------------------------------------------
+2. EVERY SUBSEQUENT REQUEST  (e.g. POST /api/leads)
+--------------------------------------------------------------------------------
+
+  Middleware chain (routes/index.js -> lead.routes.js):
+
+    authenticate            (shared/middleware/auth.js)
+      - verify access token, attach req.auth = { sub, audience, role, firmId, ... }
+
+    requireStaff
+      - reject non-staff audiences
+
+    resolveTenant           (tenancy/resolveTenant.js)   <-- THE KEY STEP
+      - firmId = req.auth.firmId          (straight from the JWT, no lookup by email)
+      - firm   = firmModel().findOne({ firm_id: firmId, status: 'active' })   (admin DB)
+      - req.firm = firm
+      - req.db   = getTenantConnection(firm)   <-- the firm's mongoose connection
+
+  If resolveTenant is MISSING from a router, req.db is undefined and the module
+  falls back to the default global connection (digital_atelier) -> data leaks
+  into the wrong/shared DB. This is the single most common wiring bug.
+
+--------------------------------------------------------------------------------
+3. CONTROLLER -> SERVICE -> MODEL  (the part that must use req.db)
+--------------------------------------------------------------------------------
+
+  lead.controller.createLead(req, res)
+    -> LeadService.create(req.db, req.body, req)      // pass req.db as first arg
+
+  LeadService.create(conn, body, req)
+    -> const Lead = leadModel(conn)                   // bind model to THIS conn
+    -> proposalId = await nextBusinessIdOn(conn, PREFIX.LEAD)
+    -> Lead.create({ ...body, proposalId, createdBy: req.auth.sub })
+    -> recordAuditOn(conn, { ... })                   // audit also on the firm DB
+
+  lead.model.js  (FACTORY pattern — required):
+    export const leadModel = (conn) =>
+      conn.models.Lead || conn.model('Lead', leadSchema);
+
+  Contrast — the BROKEN pattern used by not-yet-converted modules:
+    export const Lead = mongoose.model('Lead', leadSchema);  // binds to DEFAULT
+    conn                                                     // <- ignored entirely
+
+--------------------------------------------------------------------------------
+4. THE THREE RULES (what makes a module tenant-correct)
+--------------------------------------------------------------------------------
+
+  1. MODEL is a factory:   (conn) => conn.models.X || conn.model('X', schema)
+     — never  mongoose.model('X', schema)  for tenant data.
+
+  2. ROUTER attaches the tenant:   router.use(resolveTenant)
+
+  3. CONTROLLER/SERVICE thread req.db:   Service.fn(req.db, ...)  ->  xModel(conn)
+     — every model, id sequence, and audit call binds to that same conn.
+
+  Miss any one of the three and writes silently land in the default DB.
+
+--------------------------------------------------------------------------------
+5. FILE MAP (Leads)
+--------------------------------------------------------------------------------
+
+  src/routes/index.js .................. mounts /leads behind authenticate+requireStaff
+  src/modules/leads/lead.routes.js ..... router.use(resolveTenant) + route table
+  src/modules/leads/lead.controller.js . thin; passes req.db + req into the service
+  src/modules/leads/lead.service.js .... all logic; first arg is always `conn`
+  src/modules/leads/lead.model.js ...... leadModel(conn) factory
+  src/modules/leads/leadActivity.model.js  leadActivityModel(conn) factory
+
+  Supporting (tenancy):
+  src/tenancy/resolveTenant.js ......... JWT firmId -> req.firm + req.db
+  src/tenancy/connectionManager.js ..... getTenantConnection(firm) (lazy, cached)
+  src/tenancy/firm.model.js ............ firm registry (admin DB)
+  src/modules/auth/auth.service.js ..... login: email -> firm -> firmId in token
+
+--------------------------------------------------------------------------------
+6. QUICK VERIFY
+--------------------------------------------------------------------------------
+
+  - Log in as Firm A, create a lead -> row appears in atelier_firm_<A>.leads
+  - Log in as Firm B, create a lead -> row appears in atelier_firm_<B>.leads
+  - Neither appears in the default `digital_atelier` DB.
+
+  If a lead shows up in digital_atelier, one of the THREE RULES (section 4) is
+  broken for that route.
+
+================================================================================
