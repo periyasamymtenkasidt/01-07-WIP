@@ -4171,16 +4171,20 @@ const rateRowQww = (row) => {
 // One shared 9-column grid drives the whole sheet — the column header, the A/B
 // group bands, the editable item rows, and the C→F calculation cascade all line
 // up under the same template so it reads like the printed rate-analysis sheet.
-//  Sl · Description · Unit · Qty · Waste% · QWW · Rate · Amount · Rate/unit
+// Rate/unit sits right after Unit and holds the row's rate directly (the
+// separate Rate column was folded into it); the row-delete action gets its own
+// trailing column.
+//  Sl · Description · Unit · Rate/unit · Qty · Waste% · QWW · Amount · ×
 const RA_COLS =
-  "grid grid-cols-[24px_minmax(110px,1fr)_52px_60px_56px_60px_70px_84px_82px] gap-px items-stretch";
+  "grid grid-cols-[24px_minmax(110px,1fr)_52px_82px_60px_56px_60px_84px_40px] gap-px items-stretch";
 
 const raCellInput =
   "bg-white text-[11px] text-textcolor px-1.5 py-1.5 w-full h-full focus:outline-none focus:ring-1 focus:ring-select-blue/40 placeholder:text-text-subtle disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed";
 
 // A read-only money / number cell inside the sheet grid.
-const RaValueCell = ({ children, className = "", strong = false }) => (
+const RaValueCell = ({ children, className = "", strong = false, title }) => (
   <div
+    title={title}
     className={`flex items-center justify-end bg-white px-2 py-1.5 text-[11px] tabular-nums ${
       strong ? "font-bold text-textcolor" : "text-text-muted"
     } ${className}`}
@@ -4292,7 +4296,7 @@ const MaterialPickerCell = ({ row, disabled, materials, onChange, onSelect }) =>
 
 // Editable item row (material or contract). idx is the running Sl within block.
 // When `materials` is supplied, the Description cell becomes a Master picker.
-const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials }) => (
+const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOptions = [] }) => (
   <div className={`${RA_COLS} border-t border-bordergray/60`}>
     <div className="flex items-center justify-center bg-white text-[10px] font-semibold tabular-nums text-text-subtle">
       {idx + 1}
@@ -4325,13 +4329,32 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials }) => (
         className={raCellInput}
       />
     )}
-    <input
-      type="text"
+    <select
       value={row.unit || ""}
       onChange={(e) => onChange({ unit: e.target.value })}
       disabled={disabled}
-      placeholder="Unit"
-      className={raCellInput}
+      title="Unit"
+      className={`${raCellInput} cursor-pointer`}
+    >
+      {!row.unit && <option value="">Unit</option>}
+      {row.unit && !unitOptions.some((u) => u.code === row.unit) && (
+        <option value={row.unit}>{row.unit}</option>
+      )}
+      {unitOptions.map((u) => (
+        <option key={u.code} value={u.code}>
+          {u.label}
+        </option>
+      ))}
+    </select>
+    <input
+      type="number"
+      min="0"
+      step="0.01"
+      value={row.rate || 0}
+      onChange={(e) => onChange({ rate: Number(e.target.value) || 0 })}
+      disabled={disabled}
+      title="Rate per unit"
+      className={`${raCellInput} text-right`}
     />
     <input
       type="number"
@@ -4357,17 +4380,8 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials }) => (
     >
       {rateRowQww(row).toFixed(2)}
     </div>
-    <input
-      type="number"
-      min="0"
-      step="0.01"
-      value={row.rate || 0}
-      onChange={(e) => onChange({ rate: Number(e.target.value) || 0 })}
-      disabled={disabled}
-      className={`${raCellInput} text-right`}
-    />
     <RaValueCell strong>{formatAmount(rateRowAmount(row))}</RaValueCell>
-    <div className="flex items-center justify-end bg-white pr-1">
+    <div className="flex items-center justify-center bg-white">
       <button
         type="button"
         onClick={onRemove}
@@ -4381,14 +4395,14 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials }) => (
   </div>
 );
 
-// Group band header (A. Material Items / B. Contract Items) with the block
-// subtotal in the Amount column and the per-unit contribution at the far right.
-const RaGroupHeader = ({ letter, title, subtotal, ratePerUnit, unit, onAdd, disabled }) => (
+// Group band header (A. Material Items / B. Contract Items) — just the block
+// label and its Add action. The block total sits in the footer below its rows.
+const RaGroupHeader = ({ letter, title, onAdd, disabled }) => (
   <div className={`${RA_COLS} border-t border-bordergray bg-rose-50/70`}>
     <div className="flex items-center justify-center text-[10px] font-bold text-rose-700">
       {letter}
     </div>
-    <div className="col-span-5 flex items-center gap-2 px-1.5 py-1.5">
+    <div className="col-span-8 flex items-center gap-2 px-1.5 py-1.5">
       <span className="text-[10.5px] font-bold uppercase tracking-wide text-textcolor">
         {title}
       </span>
@@ -4401,12 +4415,20 @@ const RaGroupHeader = ({ letter, title, subtotal, ratePerUnit, unit, onAdd, disa
         <Plus size={10} /> Add
       </button>
     </div>
-    <RaValueCell strong className="bg-rose-50/70">
+  </div>
+);
+
+// Block subtotal row — the block's total Amount, shown below its item rows.
+// Rate/sqft is intentionally left blank (only per-row rates carry meaning).
+const RaGroupFooter = ({ label, subtotal }) => (
+  <div className={`${RA_COLS} border-t border-bordergray bg-rose-50/40`}>
+    <div className="col-span-7 flex items-center justify-end px-2 py-1.5 text-[10px] font-bold uppercase tracking-wide text-text-muted">
+      {label}
+    </div>
+    <RaValueCell strong className="bg-rose-50/40">
       {formatAmount(subtotal)}
     </RaValueCell>
-    <RaValueCell strong className="bg-rose-50/70 text-select-blue" title={`Rate per ${unit || "unit"}`}>
-      {formatAmount(ratePerUnit)}
-    </RaValueCell>
+    <div className="bg-rose-50/40" />
   </div>
 );
 
@@ -4426,7 +4448,7 @@ const RaCascadeRow = ({
     <div className={`flex items-center justify-center text-[10px] font-bold ${strong ? "text-emerald-800" : "text-text-muted"}`}>
       {letter}
     </div>
-    <div className="col-span-5 flex items-center gap-2 px-1.5 py-1.5">
+    <div className="col-span-6 flex items-center gap-2 px-1.5 py-1.5">
       <span className={`text-[11px] ${strong ? "font-bold text-textcolor" : "font-semibold text-text-muted"}`}>
         {label}
       </span>
@@ -4460,6 +4482,22 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
   const ro = disabled || !current.enabled;
   // Material Master catalog, read once — powers the Material Items picker.
   const materials = useMemo(() => listMaterials(), []);
+
+  // Unit dropdown options for the sheet rows: the standard BOQ units, plus any
+  // extra units actually used across the Item Master and Material Master so the
+  // list stays in sync with the masters instead of a fixed hard-coded set.
+  const unitOptions = useMemo(() => {
+    const seen = new Map(UNITS.map((u) => [u.code, u.label]));
+    for (const m of materials) {
+      const code = (m.unit || "").trim();
+      if (code && !seen.has(code)) seen.set(code, code);
+    }
+    for (const l of listLibrary()) {
+      const code = (l.unit || "").trim();
+      if (code && !seen.has(code)) seen.set(code, code);
+    }
+    return [...seen.entries()].map(([code, label]) => ({ code, label }));
+  }, [materials]);
 
   const applyRa = (values) => {
     const next = computeRateAnalysis({ ...current, ...values }, item.unit);
@@ -4547,13 +4585,27 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
               />
             </Field>
             <Field icon={<Ruler size={10} />} label="Unit">
-              <input
-                type="text"
-                value={current.unit || item.unit || ""}
-                onChange={(e) => applyRa({ unit: e.target.value })}
-                disabled={ro}
-                className={`${compactInput} w-24 disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-              />
+              {(() => {
+                const raUnit = current.unit || item.unit || "";
+                return (
+                  <select
+                    value={raUnit}
+                    onChange={(e) => applyRa({ unit: e.target.value })}
+                    disabled={ro}
+                    className={`${compactInput} w-24 cursor-pointer disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  >
+                    {!raUnit && <option value="">Unit</option>}
+                    {raUnit && !unitOptions.some((u) => u.code === raUnit) && (
+                      <option value={raUnit}>{raUnit}</option>
+                    )}
+                    {unitOptions.map((u) => (
+                      <option key={u.code} value={u.code}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </select>
+                );
+              })()}
             </Field>
           </div>
 
@@ -4565,23 +4617,20 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
                 <span className="flex items-center justify-center py-1.5">Sl</span>
                 <span className="flex items-center px-1.5 py-1.5">Description</span>
                 <span className="flex items-center px-1.5 py-1.5">Unit</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">Qty</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">Waste%</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">QWW</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">Rate</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">Amount</span>
                 <span className="flex items-center justify-end px-1.5 py-1.5">
                   Rate/{unitLabel}
                 </span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">Qty</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">Waste%</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">QWW</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">Amount</span>
+                <span className="py-1.5" />
               </div>
 
               {/* A — Material Items */}
               <RaGroupHeader
                 letter="A"
                 title="Material Items"
-                subtotal={current.subtotalMaterials}
-                ratePerUnit={current.materialRatePerUnit}
-                unit={unitLabel}
                 onAdd={() => addRow("materialItems")}
                 disabled={ro}
               />
@@ -4599,19 +4648,21 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
                     idx={idx}
                     disabled={ro}
                     materials={materials}
+                    unitOptions={unitOptions}
                     onChange={(values) => patchRow("materialItems", idx, values)}
                     onRemove={() => removeRow("materialItems", idx)}
                   />
                 ))
               )}
+              <RaGroupFooter
+                label="Material Items total"
+                subtotal={current.subtotalMaterials}
+              />
 
               {/* B — Contract Items */}
               <RaGroupHeader
                 letter="B"
                 title="Contract Items"
-                subtotal={current.subtotalContracts}
-                ratePerUnit={current.contractRatePerUnit}
-                unit={unitLabel}
                 onAdd={() => addRow("contractItems")}
                 disabled={ro}
               />
@@ -4628,11 +4679,16 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
                     row={row}
                     idx={idx}
                     disabled={ro}
+                    unitOptions={unitOptions}
                     onChange={(values) => patchRow("contractItems", idx, values)}
                     onRemove={() => removeRow("contractItems", idx)}
                   />
                 ))
               )}
+              <RaGroupFooter
+                label="Contract Items total"
+                subtotal={current.subtotalContracts}
+              />
 
               {/* Price Calculation band */}
               <div className={`${RA_COLS} border-t-2 border-bordergray bg-primary/5`}>

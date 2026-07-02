@@ -2,7 +2,7 @@
 //
 // When the survey is frozen via "Move to Design", we snapshot the site's
 // measurements + photos as an immutable "Site Basis" and open the design
-// pipeline (four stages). Everything BEFORE the freeze is as-is site truth;
+// pipeline. Everything BEFORE the freeze is as-is site truth;
 // everything after is the to-be proposal designed on top of that frozen basis.
 //
 // Stored per-site under `designFlow_<siteID>`, mirroring the other storage
@@ -48,7 +48,7 @@ const writeJson = (key, value) => {
   }
 };
 
-// The four design stages, in order. Each later runs the same
+// The design stages, in order. Each later runs the same
 // submit → approve → revise loop (built in the Design workspace). They're
 // created up front so the whole pipeline is visible the moment design starts.
 //
@@ -74,15 +74,6 @@ export const INTERIORS_PIPELINE = [
     label: "Working Drawings",
     question: "Approve the construction detail",
     deliverableTypes: ["2D Drawing", "Section", "Document"],
-  },
-  {
-    key: "FINAL_QUOTATION",
-    label: "Final Quotation",
-    question: "Approve the final quotation",
-    deliverableTypes: ["Quotation", "Document"],
-    // Rendered with the shared Proposal Form (QuoteModal) instead of file
-    // uploads — sending the quotation submits the stage for client approval.
-    isQuotation: true,
   },
 ];
 
@@ -203,8 +194,8 @@ const createBoqAuditEntry = ({
   revision: boq?.revision || 1,
 });
 
-// Backfill pipeline stages added after a flow was created (e.g. Final
-// Quotation) so existing design flows gain them without a manual migration.
+// Backfill pipeline stages added after a flow was created so existing design
+// flows gain them without a manual migration.
 // A newly inserted stage unlocks (DRAFTING) once every earlier stage is
 // approved, else stays LOCKED. Flows that already produced a BOQ are
 // grandfathered (the new stage is marked APPROVED) so finished projects
