@@ -1,8 +1,7 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Package } from "lucide-react";
+import { Package } from "lucide-react";
 import { listAllPurchaseOrders } from "../../../data/procurementStorage";
-import PoFormModal from "../PoFormModal";
 
 const fmtINR = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
@@ -21,7 +20,6 @@ const FILTERS = [
 const PurchaseOrders = () => {
   const navigate = useNavigate();
   const [version, setVersion] = useState(0);
-  const [modal, setModal] = useState(false);
   const [filter, setFilter] = useState("active");
   // version bumps force a localStorage re-read after creating a PO.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -51,12 +49,7 @@ const PurchaseOrders = () => {
             </button>
           ))}
         </div>
-        <button
-          onClick={() => setModal(true)}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-select-blue text-white text-[12px] font-semibold hover:bg-blue-950"
-        >
-          <Plus size={14} /> Create PO
-        </button>
+
       </div>
 
       <p className="text-[13px] text-text-muted mb-3">
@@ -118,11 +111,7 @@ const PurchaseOrders = () => {
         </table>
       </div>
 
-      <PoFormModal
-        open={modal}
-        onClose={() => setModal(false)}
-        onSaved={() => setVersion((v) => v + 1)}
-      />
+
     </div>
   );
 };

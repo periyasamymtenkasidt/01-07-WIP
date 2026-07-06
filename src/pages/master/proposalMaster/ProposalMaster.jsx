@@ -299,6 +299,9 @@ const ProposalMaster = () => {
   // When false, the editor is collapsed and only the property-type cards show;
   // clicking a type card opens the editor as a separate view for that type.
   const [typeEditorOpen, setTypeEditorOpen] = useState(false);
+  // Smart Estimator collapses to an accordion so it doesn't eat vertical space
+  // when the user isn't tuning allocations. Collapsed by default.
+  const [estimatorOpen, setEstimatorOpen] = useState(false);
 
   // Reset config tab + collapse the editor back to type selection when the
   // preset changes.
@@ -1393,7 +1396,17 @@ const ProposalMaster = () => {
               {activeConfig && (
                 <div className="relative mx-5 mb-5 bg-white rounded-2xl p-5 border border-bordergray shadow-sm space-y-4">
                   <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEstimatorOpen((o) => !o)}
+                      className="flex items-center gap-2 text-left"
+                      aria-expanded={estimatorOpen}
+                    >
+                      {estimatorOpen ? (
+                        <ChevronDown size={15} className="text-text-muted shrink-0" />
+                      ) : (
+                        <ChevronRight size={15} className="text-text-muted shrink-0" />
+                      )}
                       <div className="h-7 w-7 rounded-lg bg-select-blue/10 text-select-blue flex items-center justify-center">
                         <Sparkles size={13} />
                       </div>
@@ -1401,13 +1414,29 @@ const ProposalMaster = () => {
                         <h2 className="text-[13px] font-bold text-textcolor">Smart Estimator</h2>
                         <p className="text-[10.5px] text-text-muted">Formula-based quantity & rate calculation</p>
                       </div>
-                    </div>
+                    </button>
+                    <div className="flex items-center gap-3">
+                      {/* Allocation status stays visible even when collapsed so the
+                          "must equal 100%" warning isn't hidden by the accordion. */}
+                      {activeConfig.enableFormulaEstimator && !estimatorOpen && (
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10.5px] font-bold ${
+                            allocationSum === 100
+                              ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                              : "bg-amber-50 text-amber-700 border border-amber-200 animate-pulse"
+                          }`}
+                          title="Room allocation total"
+                        >
+                          {allocationSum}%
+                        </span>
+                      )}
                     <label className="flex items-center gap-2 cursor-pointer select-none">
                       <input
                         type="checkbox"
                         checked={!!activeConfig.enableFormulaEstimator}
                         onChange={(e) => {
                           const checked = e.target.checked;
+                          if (checked) setEstimatorOpen(true);
                           setConfigField((cfg) => {
                             const totalAreaVal = cfg.totalArea || parseBaseArea(cfg.sizeRange) || 1000;
                             const roomAllocations = getNormalizedAllocations(cfg.scopeItems, cfg.roomAllocations || {});
@@ -1431,9 +1460,10 @@ const ProposalMaster = () => {
                         Auto Calculations
                       </span>
                     </label>
+                    </div>
                   </div>
 
-                  {activeConfig.enableFormulaEstimator && (
+                  {estimatorOpen && activeConfig.enableFormulaEstimator && (
                     <div className="space-y-3 border-t border-bordergray pt-3">
                       {/* Compact read-only summary — no fake inputs */}
                       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px]">

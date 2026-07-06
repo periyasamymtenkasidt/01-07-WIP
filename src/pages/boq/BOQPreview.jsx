@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Ruler,
   Package,
+  Layers,
 } from "lucide-react";
 import {
   computeBoqTotals,
@@ -75,6 +76,15 @@ const mergeApproval = (approval = {}) => ({
 const formatINR = (n) =>
   `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
+// Drop bracketed/parenthetical notes from a material spec so the full core
+// description shows without the asides, e.g. "BWP 19mm (Century make)" → "BWP 19mm".
+const stripBrackets = (s) =>
+  String(s || "")
+    .replace(/[([{][^)\]}]*[)\]}]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .trim();
+
 const formatDate = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -83,6 +93,16 @@ const formatDate = (iso) => {
     month: "short",
     year: "numeric",
   });
+};
+
+// Status text colour for the document header — matches the BOQ lifecycle.
+const statusTextClass = (status = "") => {
+  const s = String(status).toLowerCase();
+  if (s.includes("approv") || s.includes("accept")) return "text-emerald-600";
+  if (s.includes("sent")) return "text-select-blue";
+  if (s.includes("reject")) return "text-red-600";
+  if (s.includes("procure") || s.includes("issued")) return "text-violet-600";
+  return "text-slate-900"; // draft & everything else
 };
 
 const BOQPreview = ({ boq, onClose }) => {
@@ -109,7 +129,7 @@ const BOQPreview = ({ boq, onClose }) => {
     (s, sec) => s + (sec.items?.length || 0),
     0,
   );
-  const [groupMode, setGroupMode] = useState("section");
+  const [groupMode, setGroupMode] = useState("room");
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-800/60 overflow-y-auto modal-no-print">
@@ -127,26 +147,35 @@ const BOQPreview = ({ boq, onClose }) => {
             <span className="text-[10.5px] text-text-muted ml-2">
               {boq.sections.length} sections · {itemCount} items
             </span>
-            <div className="flex items-center gap-0.5 bg-bg-soft border border-bordergray rounded-lg p-0.5 ml-2">
-              {[
-                { mode: "section", label: "Section" },
-                { mode: "room", label: "Room" },
-                { mode: "work", label: "Work" },
-              ].map(({ mode, label }) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setGroupMode(mode)}
-                  title={`Group by ${label}`}
-                  className={`px-2.5 py-1 rounded-md text-[10.5px] font-semibold transition-all ${
-                    groupMode === mode
-                      ? "bg-white text-textcolor shadow-sm"
-                      : "text-text-muted hover:text-textcolor"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="flex items-center gap-1.5 ml-3">
+              <span className="hidden md:inline text-[10px] font-semibold uppercase tracking-wider text-text-subtle">
+                Group by
+              </span>
+              <div className="flex items-center gap-0.5 bg-bg-soft border border-bordergray rounded-lg p-0.5">
+                {[
+                  { mode: "room", label: "Room", icon: <Building2 size={12} /> },
+                  { mode: "work", label: "Work", icon: <Package size={12} /> },
+                ].map(({ mode, label, icon }) => {
+                  const active = groupMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setGroupMode(mode)}
+                      title={`Group by ${label}`}
+                      aria-pressed={active}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold transition-all ${
+                        active
+                          ? "bg-select-blue text-white shadow-sm"
+                          : "text-text-muted hover:bg-white hover:text-textcolor"
+                      }`}
+                    >
+                      {icon}
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -195,7 +224,14 @@ const BOQPreview = ({ boq, onClose }) => {
 };
 
 // ── Document body — print-friendly markup, A4-friendly layout. ─────────────
-const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "section" }) => {
+const BOQDocument = ({
+  boq,
+  totals,
+  gstSplits,
+  company,
+  gst,
+  groupMode = "section",
+}) => {
   const approval = mergeApproval(boq.approval);
   const initials = (company.name || "")
     .split(/\s+/)
@@ -230,10 +266,14 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
       const map = {};
       for (const sec of boq.sections) {
         for (const item of sec.items || []) {
+          // Group by WORK TYPE: the work's own category/name first so the same
+          // work buckets together across rooms. Falling back to sec.category
+          // (the room) before the work name is what made this view collapse to
+          // the same grouping as Room/Section.
           const key =
             item.hierarchy?.workCategory ||
-            sec.category ||
             item.description ||
+            sec.category ||
             "Uncategorized";
           if (!map[key]) {
             map[key] = { id: `work_${key}`, name: key, items: [] };
@@ -299,7 +339,9 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
       {/* ── Title + client/project block ────────────────────────────────── */}
       <h2 className="text-[14px] font-bold text-textcolor mb-3">{boq.title}</h2>
       {compactJoin([
-        boq.hierarchy?.blockTower || boq.hierarchy?.block || boq.hierarchy?.tower,
+        boq.hierarchy?.blockTower ||
+          boq.hierarchy?.block ||
+          boq.hierarchy?.tower,
         boq.hierarchy?.floor,
         boq.hierarchy?.roomArea,
         boq.hierarchy?.workCategory,
@@ -309,7 +351,9 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
           Hierarchy:{" "}
           <span className="font-semibold text-textcolor">
             {compactJoin([
-              boq.hierarchy?.blockTower || boq.hierarchy?.block || boq.hierarchy?.tower,
+              boq.hierarchy?.blockTower ||
+                boq.hierarchy?.block ||
+                boq.hierarchy?.tower,
               boq.hierarchy?.floor,
               boq.hierarchy?.roomArea,
               boq.hierarchy?.workCategory,
@@ -393,7 +437,8 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
       {/* ── Sections + line items ───────────────────────────────────────── */}
       {groupMode !== "section" && (
         <p className="text-[9px] text-text-muted italic mb-3">
-          Items grouped {groupMode === "room" ? "by room / area" : "by work type"}
+          Items grouped{" "}
+          {groupMode === "room" ? "by room / area" : "by work type"}
         </p>
       )}
       {displaySections.map((section, sIdx) => {
@@ -439,7 +484,8 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
                       item.unit,
                     );
                     const effectiveRate =
-                      item.rateAnalysis?.enabled && item.rateAnalysis?.useFinalRate
+                      item.rateAnalysis?.enabled &&
+                      item.rateAnalysis?.useFinalRate
                         ? rateAnalysis.roundedFinalRate
                         : Number(item.rate) || 0;
                     const hierarchyText = compactJoin([
@@ -536,15 +582,19 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
                           )}
                           {item.rateAnalysis?.enabled && (
                             <p className="text-[8.5px] text-text-subtle mt-0.5">
-                              RA final rate: {formatINR(rateAnalysis.roundedFinalRate)}
+                              RA final rate:{" "}
+                              {formatINR(rateAnalysis.roundedFinalRate)}
                               {item.rateAnalysis?.useFinalRate && " used"}
                             </p>
                           )}
-                          {(item.vendorComparisons || []).some((v) => v.selected) && (
+                          {(item.vendorComparisons || []).some(
+                            (v) => v.selected,
+                          ) && (
                             <p className="text-[8.5px] text-text-subtle mt-0.5">
                               Vendor:{" "}
-                              {(item.vendorComparisons || []).find((v) => v.selected)
-                                ?.vendorName || "Selected"}
+                              {(item.vendorComparisons || []).find(
+                                (v) => v.selected,
+                              )?.vendorName || "Selected"}
                             </p>
                           )}
                           {groupMode !== "section" && item._from && (
@@ -686,7 +736,9 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
 
       {totals.totalGst > 0 && (
         <p className="text-[9px] text-text-subtle mt-1.5 text-right print-avoid-break">
-          {gst.interState ? "Inter-state supply — IGST applies" : "Intra-state supply — CGST + SGST apply"}
+          {gst.interState
+            ? "Inter-state supply — IGST applies"
+            : "Intra-state supply — CGST + SGST apply"}
           {gst.assumed && " (client state not on file — assumed intra-state)"}
         </p>
       )}
@@ -695,45 +747,6 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
         <span className="font-bold text-textcolor">Amount in words:</span>{" "}
         {inrToWords(totals.grandTotal)}
       </p>
-
-      {/* ── Payment milestones (standard 5-stage schedule) ──────────────── */}
-      {(boq.paymentTerms || []).length > 0 && (
-        <div className="mb-6 print-avoid-break">
-          <p className="text-[11px] font-bold text-textcolor mb-2 border-b border-bordergray pb-1">
-            Payment Schedule
-          </p>
-          <table className="w-full border-collapse text-[10.5px]">
-            <thead>
-              <tr className="text-[9px] font-bold uppercase tracking-wider text-text-muted border-b border-bordergray">
-                <th className="px-2 py-1.5 text-left w-10">Stage</th>
-                <th className="px-2 py-1.5 text-left">Milestone</th>
-                <th className="px-2 py-1.5 text-right w-16">%</th>
-                <th className="px-2 py-1.5 text-right w-28">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {boq.paymentTerms.map((m, idx) => {
-                const amt =
-                  (totals.grandTotal * (Number(m.percent) || 0)) / 100;
-                return (
-                  <tr key={idx} className="border-b border-bordergray">
-                    <td className="px-2 py-1.5 tabular-nums text-text-muted">
-                      {m.id ? `S${m.id}` : `${idx + 1}`}
-                    </td>
-                    <td className="px-2 py-1.5">{m.label || "—"}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">
-                      {m.percent || 0}%
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums font-semibold">
-                      {formatINR(amt)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
 
       {/* ── Bank details ─────────────────────────────────────────────────── */}
       {(company.bankName || company.bankAccount || company.upi) && (
@@ -744,27 +757,42 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
           <div className="grid grid-cols-2 gap-1 text-[10.5px] text-text-muted">
             {company.bankName && (
               <span>
-                Bank: <span className="text-textcolor font-semibold">{company.bankName}</span>
+                Bank:{" "}
+                <span className="text-textcolor font-semibold">
+                  {company.bankName}
+                </span>
               </span>
             )}
             {company.bankAccount && (
               <span>
-                A/C: <span className="text-textcolor font-semibold tabular-nums">{company.bankAccount}</span>
+                A/C:{" "}
+                <span className="text-textcolor font-semibold tabular-nums">
+                  {company.bankAccount}
+                </span>
               </span>
             )}
             {company.bankIfsc && (
               <span>
-                IFSC: <span className="text-textcolor font-semibold tabular-nums">{company.bankIfsc}</span>
+                IFSC:{" "}
+                <span className="text-textcolor font-semibold tabular-nums">
+                  {company.bankIfsc}
+                </span>
               </span>
             )}
             {company.bankBranch && (
               <span>
-                Branch: <span className="text-textcolor font-semibold">{company.bankBranch}</span>
+                Branch:{" "}
+                <span className="text-textcolor font-semibold">
+                  {company.bankBranch}
+                </span>
               </span>
             )}
             {company.upi && (
               <span>
-                UPI: <span className="text-textcolor font-semibold">{company.upi}</span>
+                UPI:{" "}
+                <span className="text-textcolor font-semibold">
+                  {company.upi}
+                </span>
               </span>
             )}
           </div>
@@ -895,9 +923,7 @@ const BOQDocument = ({ boq, totals, gstSplits, company, gst, groupMode = "sectio
                     <td className="py-1 pr-2 font-bold text-textcolor">
                       {entry.label}
                     </td>
-                    <td className="py-1 px-2 text-text-muted">
-                      {entry.actor}
-                    </td>
+                    <td className="py-1 px-2 text-text-muted">{entry.actor}</td>
                     <td className="py-1 px-2 text-text-muted">
                       Rev {entry.revision} · {entry.status}
                     </td>
@@ -983,7 +1009,7 @@ const measurementNetQty = (row, unit) => {
   return Math.max(0, qty * nos - deduction);
 };
 
-const MeasurementDocument = ({ boq, company }) => {
+const MeasurementDocument = ({ boq, company, embedded = false }) => {
   const initials = (company.name || "")
     .split(/\s+/)
     .filter(Boolean)
@@ -1016,7 +1042,10 @@ const MeasurementDocument = ({ boq, company }) => {
       for (const item of sec.items || []) {
         total++;
         const info = DIMENSIONAL_UNITS[item.unit];
-        if ((item.measurementRows || []).length > 0 || (item.dimensions?.enabled && info)) {
+        if (
+          (item.measurementRows || []).length > 0 ||
+          (item.dimensions?.enabled && info)
+        ) {
           measuredCount++;
           if (info?.kind === "area") sqftTotal += computeItemQty(item);
         }
@@ -1030,56 +1059,76 @@ const MeasurementDocument = ({ boq, company }) => {
   const grandMeasured = roomStats.reduce((s, r) => s + r.measuredCount, 0);
 
   return (
-    <div className="p-10 text-[11px] leading-relaxed">
-      {/* Header */}
-      <div className="border-b-2 border-select-blue pb-4 mb-5 flex items-start justify-between">
-        <div className="flex items-start gap-3">
-          {company.logoDataUrl ? (
-            <img
-              src={company.logoDataUrl}
-              alt={company.name}
-              className="h-12 w-12 rounded-md object-contain border border-bordergray"
-            />
-          ) : (
-            <div className="h-12 w-12 rounded-md bg-select-blue text-white flex items-center justify-center font-bold text-[20px]">
-              {initials || "—"}
+    <div
+      className={
+        embedded
+          ? "text-[11px] leading-relaxed"
+          : "p-10 text-[11px] leading-relaxed"
+      }
+    >
+      {!embedded && (
+        <>
+          {/* Header */}
+          <div className="border-b-2 border-select-blue pb-4 mb-5 flex items-start justify-between">
+            <div className="flex items-start gap-3">
+              {company.logoDataUrl ? (
+                <img
+                  src={company.logoDataUrl}
+                  alt={company.name}
+                  className="h-12 w-12 rounded-md object-contain border border-bordergray"
+                />
+              ) : (
+                <div className="h-12 w-12 rounded-md bg-select-blue text-white flex items-center justify-center font-bold text-[20px]">
+                  {initials || "—"}
+                </div>
+              )}
+              <div>
+                <h1 className="text-[18px] font-bold text-textcolor leading-tight">
+                  {company.name}
+                </h1>
+                <p className="text-[10px] text-text-muted">{company.tagline}</p>
+                <p className="text-[10px] text-text-muted mt-1">
+                  {company.address}
+                  {company.phone && ` · ${company.phone}`}
+                </p>
+                <p className="text-[10px] text-text-muted">
+                  {company.email}
+                  {company.gstin && ` · GSTIN: ${company.gstin}`}
+                </p>
+              </div>
             </div>
-          )}
-          <div>
-            <h1 className="text-[18px] font-bold text-textcolor leading-tight">{company.name}</h1>
-            <p className="text-[10px] text-text-muted">{company.tagline}</p>
-            <p className="text-[10px] text-text-muted mt-1">
-              {company.address}
-              {company.phone && ` · ${company.phone}`}
-            </p>
-            <p className="text-[10px] text-text-muted">
-              {company.email}
-              {company.gstin && ` · GSTIN: ${company.gstin}`}
-            </p>
+            <div className="text-right">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">
+                Measurement Sheet
+              </p>
+              <p className="text-[16px] font-bold text-select-blue tabular-nums mt-1">
+                {boq.id}
+              </p>
+              <p className="text-[10px] text-text-muted mt-0.5">
+                Rev {boq.revision || 1} ·{" "}
+                <span className="uppercase font-bold text-textcolor">
+                  {boq.status}
+                </span>
+              </p>
+              <p className="text-[10px] text-text-muted mt-0.5">
+                {formatDate(boq.updatedAt || boq.createdAt)}
+              </p>
+            </div>
           </div>
-        </div>
-        <div className="text-right">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">
-            Measurement Sheet
-          </p>
-          <p className="text-[16px] font-bold text-select-blue tabular-nums mt-1">{boq.id}</p>
-          <p className="text-[10px] text-text-muted mt-0.5">
-            Rev {boq.revision || 1} ·{" "}
-            <span className="uppercase font-bold text-textcolor">{boq.status}</span>
-          </p>
-          <p className="text-[10px] text-text-muted mt-0.5">
-            {formatDate(boq.updatedAt || boq.createdAt)}
-          </p>
-        </div>
-      </div>
 
-      {/* Project line */}
-      <h2 className="text-[14px] font-bold text-textcolor mb-1">{boq.title}</h2>
-      <p className="text-[10.5px] text-text-muted mb-5">
-        Client:{" "}
-        <span className="font-semibold text-textcolor">{boq.client?.name || "—"}</span>
-        {boq.project?.address && <> · {boq.project.address}</>}
-      </p>
+          {/* Project line */}
+          <h2 className="text-[14px] font-bold text-textcolor mb-1">
+            {boq.title}
+          </h2>
+          <p className="text-[10.5px] text-text-muted mb-5">
+            Client:{" "}
+            <span className="font-semibold text-textcolor">
+              {boq.client?.name || "—"}
+            </span>
+            {boq.project?.address && <> · {boq.project.address}</>}
+          </p>
+        </>
+      )}
 
       {/* Per-room measurement tables */}
       {roomGroups.map(({ label, sections }, rIdx) => {
@@ -1109,7 +1158,9 @@ const MeasurementDocument = ({ boq, company }) => {
                   <tr className="border-b border-bordergray bg-bg-soft text-[8px] font-bold uppercase tracking-wider text-text-muted">
                     <th className="px-1 py-1.5 text-left w-7">#</th>
                     <th className="px-1 py-1.5 text-left w-20">Location</th>
-                    <th className="px-1 py-1.5 text-left">Scope / Description</th>
+                    <th className="px-1 py-1.5 text-left">
+                      Scope / Description
+                    </th>
                     <th className="px-1 py-1.5 text-right w-10">Nos</th>
                     <th className="px-1 py-1.5 text-right w-10">L</th>
                     <th className="px-1 py-1.5 text-right w-10">B</th>
@@ -1119,7 +1170,9 @@ const MeasurementDocument = ({ boq, company }) => {
                     <th className="px-1 py-1.5 text-left w-10">Unit</th>
                     <th className="px-1 py-1.5 text-left w-16">Ref</th>
                     <th className="px-1 py-1.5 text-left w-16">By / Check</th>
-                    <th className="px-1 py-1.5 text-left w-16">Date / Remarks</th>
+                    <th className="px-1 py-1.5 text-left w-16">
+                      Date / Remarks
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1197,8 +1250,10 @@ const MeasurementDocument = ({ boq, company }) => {
                                     {row.drawingPhotoRef || "—"}
                                   </td>
                                   <td className="px-1 py-1.5 text-text-muted">
-                                    {compactJoin([row.measuredBy, row.checkedBy]) ||
-                                      "—"}
+                                    {compactJoin([
+                                      row.measuredBy,
+                                      row.checkedBy,
+                                    ]) || "—"}
                                   </td>
                                   <td className="px-1 py-1.5 text-text-muted">
                                     {compactJoin([
@@ -1224,7 +1279,9 @@ const MeasurementDocument = ({ boq, company }) => {
                               {item.hierarchy?.roomArea || label || "—"}
                             </td>
                             <td className="px-2 py-1.5">
-                              <p className="text-textcolor leading-snug">{item.description || "—"}</p>
+                              <p className="text-textcolor leading-snug">
+                                {item.description || "—"}
+                              </p>
                               {item.spec && (
                                 <p className="text-[9px] text-text-subtle italic mt-0.5 leading-snug">
                                   {item.spec}
@@ -1238,7 +1295,9 @@ const MeasurementDocument = ({ boq, company }) => {
                               {hasDims ? fmtDim(d.length) : "—"}
                             </td>
                             <td className="px-2 py-1.5 text-right tabular-nums text-text-muted">
-                              {hasDims && !isLength ? fmtDim(d.breadth ?? d.width) : "—"}
+                              {hasDims && !isLength
+                                ? fmtDim(d.breadth ?? d.width)
+                                : "—"}
                             </td>
                             <td className="px-2 py-1.5 text-right tabular-nums text-text-muted">
                               {hasDims && !isLength ? fmtDim(d.height) : "—"}
@@ -1291,8 +1350,12 @@ const MeasurementDocument = ({ boq, company }) => {
               return (
                 <tr key={label} className="border-b border-bordergray">
                   <td className="px-1.5 py-1.5 font-semibold">{label}</td>
-                  <td className="px-1.5 py-1.5 text-right tabular-nums">{s.total}</td>
-                  <td className="px-1.5 py-1.5 text-right tabular-nums">{s.measuredCount}</td>
+                  <td className="px-1.5 py-1.5 text-right tabular-nums">
+                    {s.total}
+                  </td>
+                  <td className="px-1.5 py-1.5 text-right tabular-nums">
+                    {s.measuredCount}
+                  </td>
                   <td className="px-1.5 py-1.5 text-right tabular-nums">
                     {s.sqftTotal > 0 ? fmtQty(s.sqftTotal) : "—"}
                   </td>
@@ -1301,8 +1364,12 @@ const MeasurementDocument = ({ boq, company }) => {
             })}
             <tr className="border-t-2 border-textcolor font-bold">
               <td className="px-1.5 py-1.5">Total</td>
-              <td className="px-1.5 py-1.5 text-right tabular-nums">{grandItems}</td>
-              <td className="px-1.5 py-1.5 text-right tabular-nums">{grandMeasured}</td>
+              <td className="px-1.5 py-1.5 text-right tabular-nums">
+                {grandItems}
+              </td>
+              <td className="px-1.5 py-1.5 text-right tabular-nums">
+                {grandMeasured}
+              </td>
               <td className="px-1.5 py-1.5 text-right tabular-nums">
                 {grandSqft > 0 ? fmtQty(grandSqft) : "—"}
               </td>
@@ -1312,15 +1379,17 @@ const MeasurementDocument = ({ boq, company }) => {
       </div>
 
       {/* Footer */}
-      <div className="mt-10 pt-4 border-t border-bordergray text-center text-[9px] text-text-subtle print-avoid-break">
-        <p>
-          For internal reference and quantity verification only. Rates and commercial
-          totals are in the accompanying Bill of Quantities.
-        </p>
-        <p className="mt-1">
-          {company.name} · Generated {formatDate(new Date().toISOString())}
-        </p>
-      </div>
+      {!embedded && (
+        <div className="mt-10 pt-4 border-t border-bordergray text-center text-[9px] text-text-subtle print-avoid-break">
+          <p>
+            For internal reference and quantity verification only. Rates and
+            commercial totals are in the accompanying Bill of Quantities.
+          </p>
+          <p className="mt-1">
+            {company.name} · Generated {formatDate(new Date().toISOString())}
+          </p>
+        </div>
+      )}
     </div>
   );
 };
@@ -1339,7 +1408,9 @@ export const MeasurementSheetPreview = ({ boq, onClose }) => {
         <div className="px-5 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Ruler size={16} className="text-select-blue" />
-            <h2 className="text-[14px] font-bold text-textcolor">Measurement Sheet</h2>
+            <h2 className="text-[14px] font-bold text-textcolor">
+              Measurement Sheet
+            </h2>
             <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-select-blue/10 px-2 py-0.5 rounded border border-select-blue/20">
               {boq.id}
             </span>
@@ -1454,7 +1525,9 @@ const MaterialDocument = ({ boq, company }) => {
             </div>
           )}
           <div>
-            <h1 className="text-[18px] font-bold text-textcolor leading-tight">{company.name}</h1>
+            <h1 className="text-[18px] font-bold text-textcolor leading-tight">
+              {company.name}
+            </h1>
             <p className="text-[10px] text-text-muted">{company.tagline}</p>
             <p className="text-[10px] text-text-muted mt-1">
               {company.address}
@@ -1470,10 +1543,14 @@ const MaterialDocument = ({ boq, company }) => {
           <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">
             Material Sheet
           </p>
-          <p className="text-[16px] font-bold text-select-blue tabular-nums mt-1">{boq.id}</p>
+          <p className="text-[16px] font-bold text-select-blue tabular-nums mt-1">
+            {boq.id}
+          </p>
           <p className="text-[10px] text-text-muted mt-0.5">
             Rev {boq.revision || 1} -{" "}
-            <span className="uppercase font-bold text-textcolor">{boq.status}</span>
+            <span className="uppercase font-bold text-textcolor">
+              {boq.status}
+            </span>
           </p>
           <p className="text-[10px] text-text-muted mt-0.5">
             {formatDate(boq.updatedAt || boq.createdAt)}
@@ -1484,7 +1561,9 @@ const MaterialDocument = ({ boq, company }) => {
       <h2 className="text-[14px] font-bold text-textcolor mb-1">{boq.title}</h2>
       <p className="text-[10.5px] text-text-muted mb-5">
         Client:{" "}
-        <span className="font-semibold text-textcolor">{boq.client?.name || "-"}</span>
+        <span className="font-semibold text-textcolor">
+          {boq.client?.name || "-"}
+        </span>
         {boq.project?.address && <> - {boq.project.address}</>}
       </p>
 
@@ -1493,13 +1572,17 @@ const MaterialDocument = ({ boq, company }) => {
           <p className="text-[9px] uppercase tracking-wider text-text-muted font-bold">
             Unique Materials
           </p>
-          <p className="text-[16px] font-bold text-textcolor tabular-nums">{takeoff.length}</p>
+          <p className="text-[16px] font-bold text-textcolor tabular-nums">
+            {takeoff.length}
+          </p>
         </div>
         <div className="border border-bordergray rounded-md px-3 py-2">
           <p className="text-[9px] uppercase tracking-wider text-text-muted font-bold">
             Material References
           </p>
-          <p className="text-[16px] font-bold text-textcolor tabular-nums">{totalReferences}</p>
+          <p className="text-[16px] font-bold text-textcolor tabular-nums">
+            {totalReferences}
+          </p>
         </div>
         <div className="border border-bordergray rounded-md px-3 py-2">
           <p className="text-[9px] uppercase tracking-wider text-text-muted font-bold">
@@ -1540,14 +1623,25 @@ const MaterialDocument = ({ boq, company }) => {
             </thead>
             <tbody>
               {takeoff.map((row, idx) => (
-                <tr key={`${row.name}-${row.spec}-${idx}`} className="border-b border-bordergray/60 align-top">
-                  <td className="px-2 py-1.5 tabular-nums text-text-muted">{idx + 1}</td>
-                  <td className="px-2 py-1.5 font-semibold text-textcolor">{row.name || "-"}</td>
-                  <td className="px-2 py-1.5 text-text-muted">{row.spec || "-"}</td>
+                <tr
+                  key={`${row.name}-${row.spec}-${idx}`}
+                  className="border-b border-bordergray/60 align-top"
+                >
+                  <td className="px-2 py-1.5 tabular-nums text-text-muted">
+                    {idx + 1}
+                  </td>
+                  <td className="px-2 py-1.5 font-semibold text-textcolor">
+                    {row.name || "-"}
+                  </td>
+                  <td className="px-2 py-1.5 text-text-muted">
+                    {row.spec || "-"}
+                  </td>
                   <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-textcolor">
                     {fmtQty(Number(row.estimatedQty) || 0)}
                   </td>
-                  <td className="px-2 py-1.5 text-text-muted">{unitLabelOf(row.unit)}</td>
+                  <td className="px-2 py-1.5 text-text-muted">
+                    {unitLabelOf(row.unit)}
+                  </td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-text-muted">
                     {Number(row.rate) > 0 ? formatINR(row.rate) : "-"}
                   </td>
@@ -1588,27 +1682,46 @@ const MaterialDocument = ({ boq, company }) => {
             </thead>
             <tbody>
               {detailRows.map((row, idx) => (
-                <tr key={`${row.room}-${row.item}-${row.name}-${idx}`} className="border-b border-bordergray">
-                  <td className="px-1.5 py-1.5 tabular-nums text-text-muted">{idx + 1}</td>
+                <tr
+                  key={`${row.room}-${row.item}-${row.name}-${idx}`}
+                  className="border-b border-bordergray"
+                >
+                  <td className="px-1.5 py-1.5 tabular-nums text-text-muted">
+                    {idx + 1}
+                  </td>
                   <td className="px-1.5 py-1.5 font-semibold">{row.room}</td>
                   <td className="px-1.5 py-1.5 text-textcolor">{row.item}</td>
                   <td className="px-1.5 py-1.5">
-                    <p className="font-semibold text-textcolor">{row.name || "-"}</p>
-                    {row.spec && <p className="text-[8.5px] text-text-subtle">{row.spec}</p>}
+                    <p className="font-semibold text-textcolor">
+                      {row.name || "-"}
+                    </p>
+                    {row.spec && (
+                      <p className="text-[8.5px] text-text-subtle">
+                        {row.spec}
+                      </p>
+                    )}
                   </td>
                   <td className="px-1.5 py-1.5 text-right tabular-nums">
                     {fmtQty(row.itemQty)}
-                    <span className="text-text-subtle"> {unitLabelOf(row.itemUnit)}</span>
+                    <span className="text-text-subtle">
+                      {" "}
+                      {unitLabelOf(row.itemUnit)}
+                    </span>
                   </td>
                   <td className="px-1.5 py-1.5 text-right tabular-nums">
                     {fmtQty(row.perUnitQty)}
                   </td>
                   <td className="px-1.5 py-1.5 text-right tabular-nums">
-                    {Number(row.wastagePct) > 0 ? `${fmtQty(row.wastagePct)}%` : "-"}
+                    {Number(row.wastagePct) > 0
+                      ? `${fmtQty(row.wastagePct)}%`
+                      : "-"}
                   </td>
                   <td className="px-1.5 py-1.5 text-right tabular-nums font-semibold text-textcolor">
                     {fmtQty(row.qty)}
-                    <span className="text-text-subtle"> {unitLabelOf(row.unit)}</span>
+                    <span className="text-text-subtle">
+                      {" "}
+                      {unitLabelOf(row.unit)}
+                    </span>
                   </td>
                   <td className="px-1.5 py-1.5 text-right tabular-nums">
                     {row.rate > 0 ? formatINR(row.rate) : "-"}
@@ -1653,7 +1766,9 @@ export const MaterialSheetPreview = ({ boq, onClose }) => {
         <div className="px-5 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Package size={16} className="text-select-blue" />
-            <h2 className="text-[14px] font-bold text-textcolor">Material Sheet</h2>
+            <h2 className="text-[14px] font-bold text-textcolor">
+              Material Sheet
+            </h2>
             <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-select-blue/10 px-2 py-0.5 rounded border border-select-blue/20">
               {boq.id}
             </span>
@@ -1692,6 +1807,723 @@ export const MaterialSheetPreview = ({ boq, onClose }) => {
       <div className="py-8 px-4 flex justify-center">
         <div className="boq-print-area bg-white shadow-xl w-full max-w-[210mm] text-textcolor">
           <MaterialDocument boq={boq} company={company} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Section banner inside the Master Sheet — numbered, structured wayfinding.
+const MasterSection = ({ n, title, note }) => (
+  <div className="flex items-center justify-between bg-select-blue text-white px-4 py-2 mt-8 mb-4 print-avoid-break">
+    <p className="text-[13px] font-bold tracking-wide">
+      {n}. {title}
+    </p>
+    {note && <p className="text-[10px] text-white/70">{note}</p>}
+  </div>
+);
+
+// Source line items — a nested breakdown: Room → Scope of Work → its materials.
+// Each room is a primary banner (like the Site Measurement sheet), each scope is
+// a sub-header carrying its BOQ qty, and the materials sit under their scope.
+const SourceLineItemsTable = ({ boq }) => {
+  const rows = buildMaterialDetailRows(boq);
+  if (rows.length === 0) {
+    return (
+      <p className="text-[10.5px] text-text-muted italic px-3 py-3 border border-bordergray">
+        No material line details.
+      </p>
+    );
+  }
+  // Group room → scope (work item) → materials, preserving first-seen order.
+  const rooms = [];
+  const roomMap = {};
+  for (const r of rows) {
+    const roomKey = r.room || "General";
+    if (!roomMap[roomKey]) {
+      roomMap[roomKey] = { label: roomKey, scopeMap: {}, scopes: [] };
+      rooms.push(roomMap[roomKey]);
+    }
+    const room = roomMap[roomKey];
+    const scopeKey = r.item || "—";
+    if (!room.scopeMap[scopeKey]) {
+      room.scopeMap[scopeKey] = {
+        scope: scopeKey,
+        itemQty: r.itemQty,
+        itemUnit: r.itemUnit,
+        materials: [],
+      };
+      room.scopes.push(room.scopeMap[scopeKey]);
+    }
+    room.scopeMap[scopeKey].materials.push(r);
+  }
+
+  return (
+    <>
+      {rooms.map((room, rIdx) => (
+        <div key={room.label} className="mb-6 print-avoid-break">
+          {/* Room */}
+          <div className="flex items-center justify-between bg-primary px-4 py-2.5">
+            <p className="text-[13px] font-bold text-white tracking-wide">
+              {String(rIdx + 1).padStart(2, "0")}. {room.label}
+            </p>
+            <p className="text-[10px] text-white/70">
+              {room.scopes.length} scope{room.scopes.length !== 1 ? "s" : ""}
+            </p>
+          </div>
+          <table className="w-full border-collapse text-[9px] border border-t-0 border-bordergray">
+            <thead>
+              <tr className="border-b border-bordergray bg-bg-soft text-[8px] font-bold uppercase tracking-wider text-text-muted">
+                <th className="px-1 py-1.5 text-left w-7">#</th>
+                <th className="px-1 py-1.5 text-left">Material</th>
+                <th className="px-1 py-1.5 text-right w-14">Per Unit</th>
+                <th className="px-1 py-1.5 text-right w-12">Waste</th>
+                <th className="px-1 py-1.5 text-right w-16">Takeoff</th>
+                <th className="px-1 py-1.5 text-right w-16">Rate</th>
+                <th className="px-1 py-1.5 text-right w-20">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {room.scopes.map((sc, sIdx) => (
+                <Fragment key={`${sc.scope}-${sIdx}`}>
+                  {/* Scope of work */}
+                  <tr className="bg-active-bg/60 border-b border-bordergray">
+                    <td colSpan={7} className="px-2 py-1.5">
+                      <span className="text-[9.5px] font-bold text-select-blue">
+                        {String(sIdx + 1)}. {sc.scope}
+                      </span>
+                      <span className="text-[8.5px] text-text-muted ml-2 tabular-nums">
+                        {fmtQty(sc.itemQty)} {unitLabelOf(sc.itemUnit)}
+                      </span>
+                    </td>
+                  </tr>
+                  {/* Related materials */}
+                  {sc.materials.map((row, idx) => (
+                    <tr
+                      key={`${row.name}-${idx}`}
+                      className="border-b border-bordergray/60 align-top hover:bg-bg-soft/30"
+                    >
+                      <td className="px-1 py-1.5 pl-3 tabular-nums text-text-muted">
+                        {idx + 1}
+                      </td>
+                      <td className="px-1 py-1.5">
+                        <p className="font-semibold text-textcolor leading-snug">
+                          {row.name || "—"}
+                        </p>
+                        {row.spec && (
+                          <p className="text-[8.5px] text-text-subtle mt-0.5 leading-snug">
+                            {row.spec}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-1 py-1.5 text-right tabular-nums text-text-muted">
+                        {fmtQty(row.perUnitQty)}
+                      </td>
+                      <td className="px-1 py-1.5 text-right tabular-nums text-text-muted">
+                        {Number(row.wastagePct) > 0
+                          ? `${fmtQty(row.wastagePct)}%`
+                          : "—"}
+                      </td>
+                      <td className="px-1 py-1.5 text-right tabular-nums font-semibold text-textcolor">
+                        {fmtQty(row.qty)}
+                        <span className="text-text-subtle">
+                          {" "}
+                          {unitLabelOf(row.unit)}
+                        </span>
+                      </td>
+                      <td className="px-1 py-1.5 text-right tabular-nums text-text-muted">
+                        {row.rate > 0 ? formatINR(row.rate) : "—"}
+                      </td>
+                      <td className="px-1 py-1.5 text-right tabular-nums font-semibold text-textcolor">
+                        {row.amount > 0 ? formatINR(row.amount) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </>
+  );
+};
+
+// Master Sheet — ONE internal, structured document: the per-item source line
+// items (Room → Scope → materials) followed by a financial summary (% + amount)
+// and the approval & acceptance block, under a single header.
+const MasterDocument = ({ boq, company }) => {
+  const initials = (company.name || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase();
+
+  const totals = computeBoqTotals(boq);
+  const gst = resolveGstTreatment(boq);
+  const approval = boq.approval || {};
+
+  const gstSplits = Object.entries(totals.gstByRate || {})
+    .filter(([, v]) => v > 0)
+    .map(([rate, amt]) => ({
+      rate: Number(rate),
+      amount: amt,
+      igst: amt,
+      cgst: amt / 2,
+      sgst: amt / 2,
+    }));
+
+  const rightTableRows = [
+    {
+      label: "Basic Total (ex-GST)",
+      value: formatINR(totals.taxable),
+    },
+  ];
+
+  if (totals.boqDiscountAmt > 0) {
+    rightTableRows.push({
+      label: "BOQ Discount",
+      value: `- ${formatINR(totals.boqDiscountAmt)}`,
+    });
+  }
+
+  if (totals.contingencyAmt > 0) {
+    rightTableRows.push({
+      label: `Contingency (${totals.contingencyPercent}%)`,
+      value: formatINR(totals.contingencyAmt),
+    });
+  }
+
+  gstSplits.forEach((g) => {
+    if (gst.interState) {
+      rightTableRows.push({
+        label: `IGST @ ${g.rate}%`,
+        value: formatINR(g.igst),
+      });
+    } else {
+      rightTableRows.push({
+        label: `CGST @ ${g.rate / 2}%`,
+        value: formatINR(g.cgst),
+      });
+      rightTableRows.push({
+        label: `SGST @ ${g.rate / 2}%`,
+        value: formatINR(g.sgst),
+      });
+    }
+  });
+
+  rightTableRows.push({
+    label: "Total GST",
+    value: formatINR(totals.totalGst),
+  });
+
+  if (Number(totals.roundOff || 0) !== 0) {
+    rightTableRows.push({
+      label: "Round-off",
+      value: formatINR(totals.roundOff),
+    });
+  }
+
+  return (
+    <div className="p-10 text-[11px] leading-relaxed bg-white">
+      {/* Premium Header */}
+      <div className="flex items-start justify-between pb-5 mb-6 border-b-2 border-select-blue">
+        <div className="flex items-start gap-4">
+          {company.logoDataUrl ? (
+            <img
+              src={company.logoDataUrl}
+              alt={company.name}
+              className="h-14 w-14 rounded-2xl object-contain border border-slate-100 shadow-sm"
+            />
+          ) : (
+            <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-primary to-select-blue text-white flex items-center justify-center font-black text-[19px] shadow-md ring-1 ring-white/10">
+              {initials || "—"}
+            </div>
+          )}
+          <div>
+            <h1 className="text-[19px] font-black text-slate-900 leading-tight tracking-tight">
+              {company.name}
+            </h1>
+            <p className="text-[9.5px] text-slate-500 font-semibold tracking-[0.08em] uppercase mt-1">
+              {company.tagline}
+            </p>
+            <div className="flex flex-col gap-1 mt-2.5 text-[9.5px] text-slate-500 font-medium">
+              {company.address && (
+                <span className="flex items-center gap-1.5">
+                  <MapPin size={11} className="text-slate-400" /> {company.address}
+                </span>
+              )}
+              {company.email && (
+                <span className="flex items-center gap-1.5">
+                  <Mail size={11} className="text-slate-400" /> {company.email}
+                  {company.phone && (
+                    <>
+                      <span className="text-slate-300">·</span>
+                      <Phone size={11} className="text-slate-400" /> {company.phone}
+                    </>
+                  )}
+                </span>
+              )}
+              {company.gstin && (
+                <span className="text-slate-600 font-semibold">
+                  GSTIN {company.gstin}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-2 shrink-0">
+          <div className="bg-gradient-to-br from-primary to-select-blue text-white rounded-xl px-5 py-3 shadow-md text-right min-w-[190px]">
+            <p className="text-[8px] font-bold uppercase tracking-[0.22em] text-active-bg/90">
+              Master Sheet
+            </p>
+            <p className="text-[16px] font-black tracking-tight mt-1 tabular-nums">
+              {boq.id}
+            </p>
+          </div>
+          <p className="text-[10.5px] font-bold text-slate-700">
+            Rev {boq.revision || 1} ·{" "}
+            <span className={`uppercase ${statusTextClass(boq.status)}`}>
+              {boq.status}
+            </span>
+          </p>
+          <p className="flex items-center gap-1 text-[9.5px] text-slate-400 font-medium">
+            <Calendar size={10} /> {formatDate(boq.updatedAt || boq.createdAt)}
+          </p>
+        </div>
+      </div>
+
+      {/* Title */}
+      <div className="mb-4">
+        <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-slate-400">
+          Bill of Quantities
+        </p>
+        <h2 className="text-[17px] font-black text-slate-900 mt-0.5">
+          {boq.client?.name || boq.title || "—"}
+        </h2>
+      </div>
+
+      {/* Client/Project Details side-by-side */}
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-4 shadow-xs">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-select-blue mb-2">
+            Client Details
+          </p>
+          <p className="text-[13px] font-extrabold text-slate-900">
+            {boq.client?.name || "—"}
+          </p>
+          <div className="mt-1.5 space-y-1 text-[10px] text-slate-500 font-medium">
+            {boq.client?.phone && (
+              <p className="flex items-center gap-1.5">
+                <Phone size={10} className="text-slate-400" /> {boq.client.phone}
+              </p>
+            )}
+            {boq.client?.email && (
+              <p className="flex items-center gap-1.5">
+                <Mail size={10} className="text-slate-400" /> {boq.client.email}
+              </p>
+            )}
+            {boq.client?.address && (
+              <p className="flex items-center gap-1.5">
+                <MapPin size={10} className="text-slate-400" /> {boq.client.address}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-4 shadow-xs">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-select-blue mb-2">
+            Project Details
+          </p>
+          <p className="text-[13px] font-extrabold text-slate-900">
+            {boq.project?.name || boq.title || "—"}
+          </p>
+          <div className="mt-1.5 space-y-1 text-[10px] text-slate-500 font-medium">
+            {boq.project?.address && (
+              <p className="flex items-center gap-1.5">
+                <MapPin size={10} className="text-slate-400" /> {boq.project.address}
+              </p>
+            )}
+            {boq.validity && (
+              <p className="flex items-center gap-1.5">
+                <Calendar size={10} className="text-slate-400" /> Validity: {boq.validity}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Sections and Items */}
+      {boq.sections.map((section, sIdx) => {
+        const sectionTotal = (section.items || []).reduce(
+          (s, it) => s + computeItemAmount(it).net,
+          0,
+        );
+        return (
+          <div key={section.id} className="mb-6 print-avoid-break">
+            <div className="flex items-center justify-between rounded-t-lg bg-gradient-to-r from-primary to-select-blue px-4 py-2.5 text-white text-[11px] font-bold uppercase tracking-wider">
+              <span className="truncate">
+                {String(sIdx + 1).padStart(2, "0")}. {section.name}
+              </span>
+              <span className="tabular-nums shrink-0">
+                {formatINR(sectionTotal)}
+              </span>
+            </div>
+            <table className="w-full table-fixed border-collapse text-[9.5px] border border-t-0 border-slate-200 rounded-b-lg overflow-hidden shadow-xs">
+              <colgroup>
+                <col className="w-9" />
+                <col />
+                <col className="w-[68px]" />
+                <col className="w-[74px]" />
+                <col className="w-[46px]" />
+                <col className="w-[74px]" />
+                <col className="w-[78px]" />
+                <col className="w-[50px]" />
+                <col className="w-[70px]" />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-[8px] font-bold uppercase tracking-wider text-slate-500">
+                  <th className="px-2 py-2 text-left">#</th>
+                  <th className="px-2 py-2 text-left">Scope of Work / Material</th>
+                  <th className="px-2 py-2 text-left">Measurement</th>
+                  <th className="px-2 py-2 text-right">Quantity</th>
+                  <th className="px-2 py-2 text-right">Wastage</th>
+                  <th className="px-2 py-2 text-right">QWW</th>
+                  <th className="px-2 py-2 text-right">Rate/Unit</th>
+                  <th className="px-2 py-2 text-right">Rate</th>
+                  <th className="px-2 py-2 text-right">Basic Amt</th>
+                </tr>
+              </thead>
+              <tbody>
+                {section.items.map((item, iIdx) => {
+                  const qty = computeItemQty(item);
+                  const rateAnalysis = computeRateAnalysis(
+                    item?.rateAnalysis,
+                    item?.unit,
+                  );
+                  const effectiveRate =
+                    item?.rateAnalysis?.enabled &&
+                    item?.rateAnalysis?.useFinalRate
+                      ? rateAnalysis.roundedFinalRate
+                      : Number(item.rate) || 0;
+                  const basicAmt = computeItemAmount(item).net;
+                  const mats = item.materials?.length > 0 ? item.materials : [];
+
+                  return (
+                    <Fragment key={item.id}>
+                      {/* Sub-category header row = the scope of work */}
+                      <tr className="align-top border-t border-slate-200 bg-slate-50/70">
+                        <td className="px-2 py-2 text-slate-500 tabular-nums font-semibold">
+                          {sIdx + 1}.{iIdx + 1}
+                        </td>
+                        <td className="px-2 py-2">
+                          <p className="font-bold text-slate-800 leading-snug break-words">
+                            {item.description || "—"}
+                          </p>
+                          {item.spec && (
+                            <p className="text-[8.5px] text-slate-400 italic mt-0.5 leading-snug break-words">
+                              {item.spec}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          <span className="tabular-nums font-semibold text-slate-700 whitespace-nowrap">
+                            {qty.toFixed(2).replace(/\.00$/, "")}{" "}
+                            <span className="text-slate-400 font-normal text-[8.5px]">
+                              {unitLabelOf(item.unit)}
+                            </span>
+                          </span>
+                        </td>
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-500 font-medium">
+                          {formatINR(effectiveRate)}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-800 font-bold">
+                          {formatINR(basicAmt)}
+                        </td>
+                      </tr>
+
+                      {/* Material lines for this scope, indented beneath it */}
+                      {mats.length === 0 ? (
+                        <tr className="align-top border-b border-slate-100">
+                          <td />
+                          <td className="px-2 pb-2 pl-6 text-[8.5px] italic text-slate-300">
+                            No materials listed
+                          </td>
+                          <td colSpan={7} />
+                        </tr>
+                      ) : (
+                        mats.map((mat, mIdx) => {
+                          const takeoff = computeMaterialTakeoff(item, mat);
+                          const baseQty = takeoff.itemQty * takeoff.perUnitQty;
+                          const isLast = mIdx === mats.length - 1;
+                          const matUnit = unitLabelOf(takeoff.unit || item.unit);
+                          return (
+                            <tr
+                              key={`${item.id}-m${mIdx}`}
+                              className={`align-top ${isLast ? "border-b border-slate-100" : ""}`}
+                            >
+                              <td />
+                              <td
+                                className={`px-2 pl-6 ${mIdx === 0 ? "pt-1.5" : "pt-0.5"} ${isLast ? "pb-2" : "pb-0.5"}`}
+                              >
+                                <div
+                                  className="flex items-start gap-1.5 font-medium text-slate-700 leading-snug"
+                                  title={`${mat.name}${
+                                    mat.spec || mat.description
+                                      ? ` — ${mat.spec || mat.description}`
+                                      : ""
+                                  }`}
+                                >
+                                  <span className="text-slate-300 shrink-0 leading-none mt-[3px]">
+                                    •
+                                  </span>
+                                  <span className="break-words">
+                                    {mat.name}
+                                    {stripBrackets(mat.spec || mat.description) && (
+                                      <span className="text-slate-400 italic font-normal">
+                                        {" — "}
+                                        {stripBrackets(mat.spec || mat.description)}
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              </td>
+                              <td />
+                              <td
+                                className={`px-2 text-right tabular-nums text-slate-600 font-medium ${mIdx === 0 ? "pt-1.5" : "pt-0.5"} ${isLast ? "pb-2" : "pb-0.5"}`}
+                              >
+                                <span className="whitespace-nowrap">
+                                  {baseQty.toFixed(2)}{" "}
+                                  <span className="text-slate-400 text-[8.5px] font-normal">
+                                    {matUnit}
+                                  </span>
+                                </span>
+                              </td>
+                              <td
+                                className={`px-2 text-right tabular-nums text-slate-500 ${mIdx === 0 ? "pt-1.5" : "pt-0.5"} ${isLast ? "pb-2" : "pb-0.5"}`}
+                              >
+                                {takeoff.wastagePct ? `${takeoff.wastagePct}%` : "—"}
+                              </td>
+                              <td
+                                className={`px-2 text-right ${mIdx === 0 ? "pt-1.5" : "pt-0.5"} ${isLast ? "pb-2" : "pb-0.5"}`}
+                              >
+                                <span className="text-select-blue font-semibold tabular-nums whitespace-nowrap">
+                                  {takeoff.takeoffQty.toFixed(2)}{" "}
+                                  <span className="text-select-blue/60 text-[8.5px] font-normal">
+                                    {matUnit}
+                                  </span>
+                                </span>
+                              </td>
+                              <td
+                                className={`px-2 text-right tabular-nums text-slate-600 ${mIdx === 0 ? "pt-1.5" : "pt-0.5"} ${isLast ? "pb-2" : "pb-0.5"}`}
+                              >
+                                {takeoff.rate ? (
+                                  <span className="whitespace-nowrap">
+                                    {formatINR(takeoff.rate)}
+                                    <span className="text-slate-400 text-[8.5px] font-normal">
+                                      /{matUnit}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-300">—</span>
+                                )}
+                              </td>
+                              <td colSpan={2} />
+                            </tr>
+                          );
+                        })
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+
+      {/* Financial Summary */}
+      <div className="flex items-center gap-2 mb-4 border-b border-select-blue pb-2 mt-8 print-avoid-break">
+        <div className="h-5 w-5 rounded-full bg-select-blue text-white flex items-center justify-center text-[10px] font-bold">
+          ₹
+        </div>
+        <h3 className="text-[12px] font-bold text-slate-800 uppercase tracking-wider">
+          Financial Summary
+        </h3>
+      </div>
+
+      <div className="flex justify-end mt-4 print-avoid-break">
+        <div className="w-[330px] border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+          {rightTableRows.map((row, idx) => (
+            <div
+              key={idx}
+              className="flex justify-between items-center px-4 py-2 border-b border-slate-100 text-[10.5px]"
+            >
+              <span className="text-slate-500 font-medium">{row.label}</span>
+              <span className="text-slate-800 font-semibold tabular-nums">
+                {row.value}
+              </span>
+            </div>
+          ))}
+          <div className="flex justify-between items-center px-4 py-3 bg-gradient-to-r from-primary to-select-blue text-white">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-active-bg">
+              Grand Total
+            </span>
+            <span className="text-[15px] font-black tabular-nums">
+              {formatINR(totals.grandTotal)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {totals.totalGst > 0 && (
+        <p className="text-[9px] text-slate-400 text-right mt-1.5 font-medium italic">
+          {gst.interState
+            ? "Inter-state supply — IGST applies"
+            : "Intra-state supply — CGST + SGST apply"}
+          {gst.assumed && " (client state not on file — assumed intra-state)"}
+        </p>
+      )}
+
+      <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-2.5 print-avoid-break">
+        <p className="text-[11px] text-slate-600 font-medium">
+          <span className="text-[8.5px] font-bold uppercase tracking-widest text-slate-400">
+            Amount in words
+          </span>
+          <br />
+          <span className="font-semibold text-slate-800 capitalize">
+            {inrToWords(totals.grandTotal)}
+          </span>
+        </p>
+      </div>
+
+      {/* Approval & acceptance */}
+      <div className="mt-8 pt-2 print-avoid-break">
+        <div className="text-[12px] font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2 uppercase tracking-wider">
+          Approval &amp; Acceptance
+        </div>
+        <div className="grid grid-cols-4 gap-6">
+          <MasterSignatureBox
+            title="Prepared by"
+            name={approval.preparedBy}
+            date={approval.preparedAt}
+          />
+          <MasterSignatureBox
+            title="Reviewed by"
+            name={approval.reviewedBy}
+            date={approval.reviewedAt}
+          />
+          <MasterSignatureBox
+            title="Approved by"
+            name={approval.approvedBy || "Authorized Signatory"}
+            date={approval.approvedAt}
+          />
+          <MasterSignatureBox
+            title="Client acceptance"
+            name={approval.clientAcceptedBy || boq.client?.name}
+            date={approval.clientAcceptedAt}
+          />
+        </div>
+        {approval.remarks && (
+          <p className="mt-4 rounded border border-slate-100 bg-slate-50/50 px-3 py-2 text-[9.5px] text-slate-500">
+            <span className="font-bold text-slate-700">Approval remarks:</span>{" "}
+            {approval.remarks}
+          </p>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="border-t border-slate-200 mt-12 pt-4 flex justify-between items-start text-[9.5px] text-slate-400 font-medium print-avoid-break">
+        <div className="flex flex-col gap-0.5">
+          <p className="font-bold text-slate-700 uppercase">{company.name}</p>
+          <p className="flex items-center gap-1">✉ {company.email}</p>
+          <p className="flex items-center gap-1">📍 {company.address}</p>
+        </div>
+        <div className="text-right flex flex-col gap-0.5">
+          <p>This is a computer-generated document.</p>
+          <p className="font-semibold text-slate-500">
+            {boq.id} · Rev {boq.revision || 1}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MasterSignatureBox = ({ title, name, date }) => (
+  <div className="flex flex-col justify-between h-24">
+    <p className="text-[10px] text-slate-400 font-medium">{title}</p>
+    <div className="border-t border-slate-400 pt-1.5">
+      <p className="text-[10px] font-bold text-slate-800">
+        {name || "___________________"}
+      </p>
+      <p className="text-[8.5px] text-slate-400 mt-0.5 font-medium">
+        Date: {date ? formatDate(date) : "________________"}
+      </p>
+    </div>
+  </div>
+);
+
+// Master Sheet overlay — one internal, structured sheet (summary + materials +
+// measurements). Same shell as the other sheet previews. Never client-facing.
+export const MasterSheetPreview = ({ boq, onClose }) => {
+  const company = useMemo(() => resolveCompany(boq), [boq]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-800/60 overflow-y-auto modal-no-print">
+      {/* Toolbar */}
+      <div className="sticky top-0 z-10 bg-white border-b border-bordergray shadow-sm">
+        <div className="px-5 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Layers size={16} className="text-select-blue" />
+            <h2 className="text-[14px] font-bold text-textcolor">
+              Master Sheet
+            </h2>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-select-blue/10 px-2 py-0.5 rounded border border-select-blue/20">
+              {boq.id}
+            </span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+              Internal
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
+              title="Save as PDF via print dialog"
+            >
+              <Download size={12} /> Save as PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[11.5px] font-semibold shadow-md hover:scale-[1.02] transition-all"
+            >
+              <Printer size={12} /> Print
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"
+              title="Close"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Document */}
+      <div className="py-8 px-4 flex justify-center">
+        <div className="boq-print-area bg-white shadow-xl w-full max-w-[210mm] text-textcolor">
+          <MasterDocument boq={boq} company={company} />
         </div>
       </div>
     </div>

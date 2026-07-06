@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
   FileText,
@@ -64,6 +65,7 @@ const BOQList = () => {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [showSitePicker, setShowSitePicker] = useState(false);
+  const [siteQuery, setSiteQuery] = useState("");
 
   const refresh = () => setItems(listBoqs());
 
@@ -74,10 +76,27 @@ const BOQList = () => {
       .map((s) => {
         const flow = getDesignFlow(s.siteID);
         if (!flow?.siteBasis) return null;
-        return { siteID: s.siteID, name: s.clientName || s.siteID, boqId: flow.boqId || null };
+        const b = flow.siteBasis;
+        return {
+          siteID: s.siteID,
+          name: s.clientName || s.siteID,
+          boqId: flow.boqId || null,
+          measured: Number(b.measured) || 0,
+          total: Number(b.total) || 0,
+          totalSqft: Number(b.totalSqft) || 0,
+        };
       })
       .filter(Boolean);
   }, []);
+
+  const siteQ = siteQuery.trim().toLowerCase();
+  const filteredSites = siteQ
+    ? frozenSites.filter(
+        (s) =>
+          s.name.toLowerCase().includes(siteQ) ||
+          s.siteID.toLowerCase().includes(siteQ),
+      )
+    : frozenSites;
 
   const handleFromSurvey = (siteID) => {
     const flow = getDesignFlow(siteID);
@@ -90,6 +109,10 @@ const BOQList = () => {
     if (boqId) {
       refresh();
       navigate(`/boq/${boqId}`);
+    } else {
+      alert(
+        "Couldn't generate the BOQ. This usually means browser storage is full — remove some old BOQs or sites to free space, then try again.",
+      );
     }
     setShowSitePicker(false);
   };
@@ -188,7 +211,10 @@ const BOQList = () => {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowSitePicker(true)}
+              onClick={() => {
+                setSiteQuery("");
+                setShowSitePicker(true);
+              }}
               className="flex items-center gap-1.5 px-4 py-2 border border-bordergray bg-white text-text-muted rounded-lg text-[12px] font-semibold hover:bg-bg-soft transition-all"
             >
               <Ruler size={13} /> From Survey
@@ -202,47 +228,125 @@ const BOQList = () => {
             </button>
           </div>
 
-          {/* Site picker modal */}
-          {showSitePicker && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={() => setShowSitePicker(false)}>
-              <div className="bg-white rounded-2xl shadow-2xl border border-bordergray w-full max-w-sm mx-4 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center justify-between px-5 py-4 border-b border-bordergray">
-                  <div>
-                    <p className="text-[14px] font-bold text-textcolor">Generate BOQ from Survey</p>
-                    <p className="text-[11.5px] text-text-muted mt-0.5">Select a site with a frozen survey</p>
+          {/* Site picker modal — portaled to <body> so it escapes the page
+              header's backdrop-blur containing block and the sticky app header. */}
+          {showSitePicker &&
+            createPortal(
+            <div
+              className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4"
+              onClick={() => setShowSitePicker(false)}
+            >
+              <div
+                className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-bordergray bg-white shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Header */}
+                <div className="flex items-start justify-between gap-3 border-b border-bordergray px-5 py-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-select-blue/10 text-select-blue">
+                      <Ruler size={16} />
+                    </div>
+                    <div>
+                      <p className="text-[14px] font-bold text-textcolor">
+                        Generate BOQ from Survey
+                      </p>
+                      <p className="mt-0.5 text-[11.5px] text-text-muted">
+                        Pick a site with a frozen survey to build its BOQ
+                      </p>
+                    </div>
                   </div>
-                  <button type="button" onClick={() => setShowSitePicker(false)} className="rounded-lg p-1.5 text-text-subtle hover:bg-bg-soft">
+                  <button
+                    type="button"
+                    onClick={() => setShowSitePicker(false)}
+                    className="rounded-lg p-1.5 text-text-subtle hover:bg-bg-soft"
+                  >
                     <X size={15} />
                   </button>
                 </div>
-                <div className="px-3 py-3 max-h-72 overflow-y-auto">
-                  {frozenSites.length === 0 ? (
-                    <p className="py-8 text-center text-[12.5px] text-text-subtle">No sites with frozen surveys found.</p>
+
+                {/* Search — only when the list is long enough to warrant it */}
+                {frozenSites.length > 4 && (
+                  <div className="px-4 pt-3">
+                    <div className="relative">
+                      <Search
+                        size={13}
+                        className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle"
+                      />
+                      <input
+                        value={siteQuery}
+                        onChange={(e) => setSiteQuery(e.target.value)}
+                        placeholder="Search site or ID…"
+                        className="w-full rounded-lg border border-bordergray bg-white py-2 pl-8 pr-3 text-[12px] focus:border-select-blue focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* List */}
+                <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 scroll-hidden-bar">
+                  {filteredSites.length === 0 ? (
+                    <div className="py-10 text-center">
+                      <div className="mx-auto mb-2 flex h-11 w-11 items-center justify-center rounded-full bg-bg-soft text-text-subtle">
+                        <Ruler size={18} />
+                      </div>
+                      <p className="text-[12.5px] font-semibold text-textcolor">
+                        {siteQuery ? "No matching sites" : "No frozen surveys found"}
+                      </p>
+                      <p className="mx-auto mt-0.5 max-w-[16rem] text-[11.5px] text-text-subtle">
+                        {siteQuery
+                          ? "Try a different name or site ID."
+                          : "Freeze a site survey in Site Visit to generate its BOQ."}
+                      </p>
+                    </div>
                   ) : (
-                    <div className="space-y-1">
-                      {frozenSites.map((s) => (
+                    <div className="space-y-1.5">
+                      {filteredSites.map((s) => (
                         <button
                           key={s.siteID}
                           type="button"
                           onClick={() => handleFromSurvey(s.siteID)}
-                          className="w-full flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-left hover:bg-active-bg transition-colors"
+                          className="group flex w-full items-center gap-3 rounded-xl border border-bordergray bg-white px-3 py-2.5 text-left transition-all hover:border-select-blue/40 hover:bg-active-bg/40"
                         >
-                          <div>
-                            <p className="text-[13px] font-semibold text-textcolor">{s.name}</p>
-                            <p className="text-[11px] text-text-muted">{s.siteID}</p>
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-select-blue/10 text-[12px] font-bold uppercase text-select-blue">
+                            {s.name.slice(0, 2)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-[13px] font-semibold text-textcolor">
+                              {s.name}
+                            </p>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[10.5px] text-text-muted">
+                              <span className="font-mono">{s.siteID}</span>
+                              {s.total > 0 && (
+                                <span>· {s.measured}/{s.total} measured</span>
+                              )}
+                              {s.totalSqft > 0 && (
+                                <span>
+                                  · {s.totalSqft.toLocaleString("en-IN")} sqft
+                                </span>
+                              )}
+                            </div>
                           </div>
                           {s.boqId ? (
-                            <span className="text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 border border-emerald-200 shrink-0">Open BOQ</span>
+                            <span className="flex shrink-0 items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10.5px] font-bold text-emerald-700">
+                              <FileText size={11} /> Open BOQ
+                            </span>
                           ) : (
-                            <span className="text-[10px] font-bold rounded-full bg-blue-50 text-select-blue px-2 py-0.5 border border-blue-200 shrink-0">Generate</span>
+                            <span className="flex shrink-0 items-center gap-1 rounded-lg border border-select-blue/20 bg-select-blue/10 px-2.5 py-1 text-[10.5px] font-bold text-select-blue">
+                              <Plus size={11} /> Generate
+                            </span>
                           )}
+                          <ChevronRight
+                            size={15}
+                            className="shrink-0 text-text-subtle transition-colors group-hover:text-select-blue"
+                          />
                         </button>
                       ))}
                     </div>
                   )}
                 </div>
               </div>
-            </div>
+            </div>,
+            document.body,
           )}
         </div>
 

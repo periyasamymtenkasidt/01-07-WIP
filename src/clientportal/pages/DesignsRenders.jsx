@@ -2,6 +2,14 @@ import React, { useState, useEffect } from "react";
 import { getFile, storeFile } from "../../utils/fileStorage";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import PortalStageApproval from "../pages/PortalStageApproval";
+import DesignFlowGallery from "../pages/DesignFlowGallery";
+import {
+  getDesignFlow,
+  getPipeline,
+  stageRevisionsUsed,
+  revisionBilling,
+  getRevisionPolicy,
+} from "../../data/designFlowStorage";
 import { 
   CheckCircle2, 
   Clock, 
@@ -167,7 +175,6 @@ const DesignsRenders = () => {
     }
   };
 
-  const [activeTab, setActiveTab] = useState("all"); // all, 2d, 3d, approved
   
   // Modal states
   const [selectedDrawing, setSelectedDrawing] = useState(null); // Lightbox
@@ -277,65 +284,6 @@ const DesignsRenders = () => {
       milestone: revisionMilestone
     });
     setShowPaymentModal(true);
-  };
-
-  // Filter drawings visible to client
-  const visibleDrawings = drawings.filter(d => d.visibleToClient !== false);
-
-  // Filtered lists for tabs
-  const drawings2D = visibleDrawings.filter(d => d.category === "2D Drawings");
-  const drawings3D = visibleDrawings.filter(d => d.category === "3D Drawings");
-  const approvedDrawings = visibleDrawings.filter(d => d.status === "Approved");
-
-  const getFilteredDrawings = () => {
-    switch (activeTab) {
-      case "2d": return drawings2D;
-      case "3d": return drawings3D;
-      case "approved": return approvedDrawings;
-      default: return visibleDrawings;
-    }
-  };
-
-  // Determine stage progress indicators
-  const STAGES = [
-    { label: "Default Design", key: "default-design" },
-    { label: "Redesign", key: "redesign" },
-    { label: "2D/3D Drawings", key: "drawings" },
-    { label: "Client Approval", key: "approval" }
-  ];
-
-  const getStageStatus = (stageLabel) => {
-    if (site.approvalStatus === "Approved") return "Completed";
-    
-    // Default Design Stage
-    if (stageLabel === "Default Design") {
-      return site.designStatus === "Completed" || site.designStatus === "In Progress" ? "Completed" : "In Progress";
-    }
-    
-    // Redesign Stage
-    if (stageLabel === "Redesign") {
-      const hasRevisions = revisions.length > 0;
-      if (!hasRevisions) return "Pending";
-      const allResolved = revisions.every(r => r.status === "Completed");
-      return allResolved ? "Completed" : "In Progress";
-    }
-    
-    // Drawings Stage
-    if (stageLabel === "2D/3D Drawings") {
-      const allApproved = drawings2D.length > 0 && drawings2D.every(d => d.status === "Approved");
-      if (allApproved) return "Completed";
-      if (drawings.length > 0) return "In Progress";
-      return "Pending";
-    }
-    
-    // Client Approval Stage
-    if (stageLabel === "Client Approval") {
-      if (site.approvalStatus === "Approved") return "Completed";
-      if (site.approvalStatus === "Sent" || site.approvalStatus === "Viewed") return "In Progress";
-      return "Pending";
-    }
-
-    return "Pending";
   };
 
   // Deliverable action review handlers
@@ -782,39 +730,6 @@ const DesignsRenders = () => {
       {/* Staged design sign-off (only for sites taken through the survey freeze) */}
       <PortalStageApproval site={site} clientName={client?.clientName} />
 
-      {/* Stepper overview */}
-      <div className="bg-white rounded-[20px] border border-slate-100 p-4 shadow-sm shrink-0">
-        <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3">Workspace Design Stages</h4>
-        <div className="flex flex-wrap md:flex-nowrap items-center justify-between gap-4">
-          {STAGES.map((st, idx) => {
-            const status = getStageStatus(st.label);
-            const isCompleted = status === "Completed";
-            const isInProgress = status === "In Progress";
-            
-            return (
-              <div key={st.key} className="flex items-center flex-1 min-w-[130px] last:flex-none">
-                <div className="flex items-center gap-2">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                    isCompleted ? "bg-emerald-500 text-white" : isInProgress ? "bg-purple text-white ring-4 ring-purple/15" : "bg-slate-100 text-slate-400"
-                  }`}>
-                    {isCompleted ? "✓" : idx + 1}
-                  </div>
-                  <div>
-                    <span className={`text-xs font-bold block ${isCompleted ? "text-emerald-600" : isInProgress ? "text-purple" : "text-slate-400"}`}>
-                      {st.label}
-                    </span>
-                    <span className="text-[9px] font-semibold text-gray-400 uppercase leading-none">{status}</span>
-                  </div>
-                </div>
-                {idx < STAGES.length - 1 && (
-                  <div className="hidden md:block flex-1 h-0.5 bg-slate-100 mx-4"></div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Conditional Client Approval Center */}
       {(site.approvalStatus === "Sent" || site.approvalStatus === "Viewed" || site.approvalStatus === "Approved" || (site.approvalStatus === "Pending" && site.approvalHistory && site.approvalHistory.length > 0)) && (
         <div className="bg-gradient-to-br from-indigo-50/40 via-purple-50/10 to-transparent border border-indigo-100/70 rounded-[20px] p-6 shadow-sm shrink-0">
@@ -921,404 +836,249 @@ const DesignsRenders = () => {
         </div>
       )}
 
-      {/* Main Tabbed Grid deliverables & reviews */}
-      <div className="flex-1 min-h-0 flex flex-col space-y-4">
-        
-        {/* Navigation categories */}
-        <div className="flex justify-between items-center border-b border-gray-150 pb-2 shrink-0 flex-wrap gap-2">
-          <div className="flex gap-1.5">
-            {[
-              { id: "all", label: "All Files" },
-              { id: "2d", label: "2D Drawings" },
-              { id: "3d", label: "3D Renders" },
-              { id: "approved", label: "Approved Files" }
-            ].map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                  activeTab === tab.id 
-                    ? "bg-purple text-white" 
-                    : "text-gray-500 hover:bg-slate-100"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+      {/* Design deliverables gallery — mapped to the design flow's per-stage files */}
+      <DesignFlowGallery site={site} />
 
-          <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-            {getFilteredDrawings().length} deliverables visible
-          </span>
-        </div>
+      {/* Revision Logs Section — per design phase, free + paid */}
+      {(() => {
+        const flow = site?.siteID ? getDesignFlow(site.siteID) : null;
+        const pipeline = flow ? getPipeline(flow.track) : [];
+        const policy = flow ? getRevisionPolicy(flow) : { freeRevisions: 5, feePerRevision: 5000 };
+        const FREE_COUNT = policy.freeRevisions;
+        const fmtFee = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
-        {/* Deliverables Grid */}
-        <div className="w-full py-2">
-          {getFilteredDrawings().length === 0 ? (
-            <div className="text-center py-12 border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
-              <p className="text-xs font-bold text-slate-400">No deliverables found under this filter.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {getFilteredDrawings().map((d) => {
-                const is3D = d.category === "3D Drawings";
-                const drawingUrl = localUrls[d.id] || d.fileUrl;
-                return (
-                  <div 
-                    key={d.id} 
-                    className="border border-bordergray/60 rounded-[20px] overflow-hidden shadow-xs hover:shadow-md transition-all bg-white flex flex-col group text-left"
-                  >
-                    {/* Visual aspect preview */}
-                    <div className="relative aspect-video overflow-hidden bg-slate-100">
-                      <img 
-                        src={drawingUrl || "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80"} 
-                        alt={d.name} 
-                        className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500" 
-                      />
-                      
-                      {/* Top labels */}
-                      <div className="absolute top-2.5 left-2.5 flex gap-1.5">
-                        <span className="px-2 py-0.5 text-[9px] uppercase font-extrabold bg-slate-950/80 text-white rounded-md tracking-wider">
-                          {d.category === "3D Drawings" ? "3D Render" : "2D CAD"}
-                        </span>
-                      </div>
+        const phaseData = flow ? flow.stages.map((stage) => {
+          const pipelineEntry = pipeline.find(p => p.key === stage.key);
+          const label = pipelineEntry?.label || stage.key;
+          const billing = revisionBilling(flow, stage);
+          const allRevisions = (stage.approvals || []).filter(a => a.decision === "REVISION").reverse();
+          const freeRevisions = allRevisions.filter((_, i) => i < FREE_COUNT);
+          const paidRevisions = allRevisions.filter((_, i) => i >= FREE_COUNT);
 
-                      {/* Status Badges */}
-                      <div className="absolute top-2.5 right-2.5">
-                        <span className={`px-2 py-0.5 text-[9px] uppercase font-bold rounded-md border ${
-                          d.status === "Approved" 
-                            ? "bg-emerald-500 border-emerald-600 text-white" 
-                            : d.status === "Rejected"
-                              ? "bg-rose-500 border-rose-600 text-white"
-                              : d.status === "Under Review" 
-                                ? "bg-amber-500 border-amber-600 text-white animate-pulse" 
-                                : "bg-slate-700 border-slate-800 text-white"
-                        }`}>
-                          {d.status}
-                        </span>
-                      </div>
+          return {
+            key: stage.key,
+            label,
+            reviewState: stage.reviewState,
+            round: stage.round,
+            totalUsed: billing.used,
+            freeUsed: Math.min(billing.used, FREE_COUNT),
+            freeLeft: billing.freeLeft,
+            freeRevisions,
+            paidRevisions,
+            paidTotal: paidRevisions.reduce((s, r) => s + (Number(r.fee) || 0), 0),
+          };
+        }) : [];
 
-                      {/* Hover Overlay triggers Maximize */}
-                      <button 
-                        onClick={() => setSelectedDrawing({ ...d, fileUrl: drawingUrl })}
-                        className="absolute inset-0 bg-slate-900/30 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white cursor-pointer"
-                        title="View Full Screen"
-                      >
-                        <Maximize2 size={24} className="scale-75 group-hover:scale-100 transition-transform" />
-                      </button>
+        const totalFreeUsed = phaseData.reduce((s, p) => s + p.freeUsed, 0);
+        const totalPaidCount = phaseData.reduce((s, p) => s + p.paidRevisions.length, 0);
+        const totalPaidAmount = phaseData.reduce((s, p) => s + p.paidTotal, 0);
+
+        return (
+          <div className="pt-4 border-t border-slate-150 shrink-0">
+            <div className="bg-white border border-slate-200/80 rounded-[20px] overflow-hidden shadow-xs">
+              {/* Header */}
+              <div className="bg-gradient-to-r from-slate-50 to-transparent px-6 py-4 border-b border-slate-100">
+                <div className="flex justify-between items-start flex-wrap gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 bg-purple/10 rounded-xl flex items-center justify-center text-purple shrink-0">
+                      <Clock size={15} />
                     </div>
+                    <div>
+                      <h4 className="text-xs font-extrabold text-darkgray uppercase tracking-wider">Revision Logs</h4>
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        {phaseData.length > 0
+                          ? `${phaseData.length} design phase${phaseData.length === 1 ? "" : "s"} · ${FREE_COUNT} free revisions per phase`
+                          : "Track all design revision requests and their status"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+                      Free: {totalFreeUsed} / {phaseData.length * FREE_COUNT}
+                    </span>
+                    {totalPaidCount > 0 && (
+                      <span className="text-[10px] font-bold text-purple bg-purple/5 border border-purple/20 px-2.5 py-1 rounded-full">
+                        Paid: {totalPaidCount} · {fmtFee(totalPaidAmount)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
 
-                    {/* Metadata Card Info */}
-                    <div className="p-4 flex-1 flex flex-col justify-between space-y-4">
-                      <div>
-                        <h4 className="text-xs font-bold text-darkgray leading-tight group-hover:text-purple transition-colors break-words whitespace-normal">
-                          {d.name}
-                        </h4>
-                        
-                        <div className="grid grid-cols-2 gap-2 mt-2.5 text-[10px] text-gray-400 font-semibold border-b border-slate-100 pb-2.5">
-                          <div>
-                            <span className="block text-[8px] uppercase tracking-wider text-slate-400">Version</span>
-                            <span className="text-slate-600 font-bold">{d.version || "V1"}</span>
+              {/* Body */}
+              <div className="p-5">
+                {phaseData.length === 0 ? (
+                  <div className="py-10 text-center">
+                    <Clock size={28} className="mx-auto mb-3 text-slate-200" />
+                    <p className="text-[11px] font-semibold text-gray-400">No design phases started yet.</p>
+                    <p className="text-[10px] text-gray-300 mt-1">Revision logs will appear when the design pipeline is initiated.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {phaseData.map((phase) => (
+                      <div key={phase.key} className="border border-slate-100 rounded-2xl overflow-hidden">
+
+                        {/* Phase title bar */}
+                        <div className="px-4 py-3 bg-slate-50/60 flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2.5">
+                            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                              phase.reviewState === "APPROVED" ? "bg-emerald-500" :
+                              phase.reviewState === "AWAITING_CLIENT" ? "bg-purple animate-pulse" :
+                              phase.reviewState === "DRAFTING" || phase.reviewState === "REVISION_REQUESTED" || phase.reviewState === "INTERNAL_REVIEW" ? "bg-blue-500" :
+                              "bg-slate-300"
+                            }`} />
+                            <h5 className="text-[11px] font-extrabold text-slate-800 uppercase tracking-wider">{phase.label}</h5>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+                              phase.reviewState === "APPROVED"
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                : phase.reviewState === "LOCKED"
+                                  ? "bg-slate-50 border-slate-200 text-slate-400"
+                                  : "bg-purple/5 border-purple/20 text-purple"
+                            }`}>
+                              {phase.reviewState === "APPROVED" ? "Approved" :
+                               phase.reviewState === "LOCKED" ? "Locked" :
+                               phase.reviewState === "AWAITING_CLIENT" ? "Awaiting Review" :
+                               phase.reviewState === "REVISION_REQUESTED" ? "Changes Requested" :
+                               phase.reviewState === "INTERNAL_REVIEW" ? "Internal Review" :
+                               `Round ${phase.round}`}
+                            </span>
                           </div>
-                          <div>
-                            <span className="block text-[8px] uppercase tracking-wider text-slate-400">Size</span>
-                            <span className="text-slate-600 font-bold">{d.fileSize || "1.2 MB"}</span>
+                          <div className="flex items-center gap-3">
+                            {/* Free usage mini bar */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9px] font-bold text-slate-400">{phase.freeUsed}/{FREE_COUNT} free</span>
+                              <div className="w-16 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-emerald-500 rounded-full transition-all"
+                                  style={{ width: `${(phase.freeUsed / FREE_COUNT) * 100}%` }}
+                                />
+                              </div>
+                            </div>
+                            {phase.paidRevisions.length > 0 && (
+                              <span className="text-[9px] font-bold text-purple">{phase.paidRevisions.length} paid</span>
+                            )}
                           </div>
                         </div>
 
-                        <p className="text-[10px] text-gray-400 font-semibold mt-2 flex items-center gap-1">
-                          <Clock size={11} />
-                          Uploaded: {d.uploadDate || "12.06.2026"}
-                        </p>
-                      </div>
+                        {/* Scrollable Container for Revision Logs (Max 3 visible items) */}
+                        <div className="max-h-[146px] overflow-y-auto scroll-hidden-bar">
+                          {/* Free revision rows */}
+                          <div className="divide-y divide-slate-100">
+                            {Array.from({ length: FREE_COUNT }, (_, i) => {
+                              const rev = phase.freeRevisions[i] || null;
+                              const slotNum = i + 1;
+                              return (
+                                <div
+                                  key={slotNum}
+                                  className={`flex items-center gap-3 px-4 py-2.5 transition-colors ${
+                                    rev ? "bg-white" : "bg-slate-50/30"
+                                  }`}
+                                >
+                                  {/* Slot indicator */}
+                                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-[10px] font-extrabold ${
+                                    rev
+                                      ? "bg-emerald-100 text-emerald-700"
+                                      : "bg-slate-100 text-slate-350"
+                                  }`}>
+                                    {slotNum}
+                                  </div>
 
-                      {/* Action buttons */}
-                      <div className="flex justify-between items-center border-t border-slate-100 pt-3">
-                        <button 
-                          onClick={() => openFeedbackModal(d)}
-                          className="text-[11px] font-bold text-slate-500 hover:text-purple flex items-center gap-1.5 transition-colors cursor-pointer"
-                        >
-                          <MessageSquare size={12} />
-                          Review Asset
-                        </button>
+                                  {/* Content */}
+                                  <div className="flex-1 min-w-0">
+                                    {rev ? (
+                                      <div>
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span className="text-[10px] font-bold text-slate-700">Revision V{slotNum}</span>
+                                          <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100 uppercase">Free</span>
+                                          {rev.by && <span className="text-[9px] text-slate-400">by {rev.by}</span>}
+                                        </div>
+                                        {rev.comment && (
+                                          <p className="text-[9px] text-slate-400 mt-0.5 truncate" title={rev.comment}>
+                                            {rev.comment}
+                                          </p>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-300 font-semibold">Available — Free revision</span>
+                                    )}
+                                  </div>
 
-                        <a 
-                          href={drawingUrl || "#"} 
-                          download={d.name}
-                          target="_blank" 
-                          rel="noreferrer" 
-                          onClick={(e) => {
-                            if (!drawingUrl) {
-                              e.preventDefault();
-                              alert("Draft files have no download attachment yet.");
-                            }
-                          }}
-                          className="text-[11px] font-bold text-purple hover:text-dark-blue flex items-center gap-1 transition-colors"
-                        >
-                          <Download size={12} />
-                          Download
-                        </a>
-                      </div>
+                                  {/* Right side — date or status */}
+                                  <div className="shrink-0 text-right">
+                                    {rev ? (
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-[9px] text-slate-400">{rev.at ? rev.at.split(" ")[0] : ""}</span>
+                                        <CheckCircle2 size={12} className="text-emerald-500" />
+                                      </div>
+                                    ) : (
+                                      <div className="w-3 h-3 rounded-full border-2 border-dashed border-slate-200" />
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
 
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
+                          {/* Paid revisions section */}
+                          {phase.paidRevisions.length > 0 && (
+                            <>
+                              <div className="px-4 py-2 bg-purple/5 border-t border-purple/10">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-extrabold text-purple uppercase tracking-wider">
+                                    Paid Revisions ({phase.paidRevisions.length})
+                                  </span>
+                                  <span className="text-[9px] font-bold text-purple">
+                                    Total: {fmtFee(phase.paidTotal)}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="divide-y divide-purple/10 bg-purple/[0.02]">
+                                {phase.paidRevisions.map((rev, i) => {
+                                  const paidNum = FREE_COUNT + i + 1;
+                                  return (
+                                    <div key={i} className="flex items-center gap-3 px-4 py-2.5">
+                                      {/* Slot indicator */}
+                                      <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-[10px] font-extrabold bg-purple/10 text-purple">
+                                        {paidNum}
+                                      </div>
 
-      {/* Two-Column split for Discussions and Revision History */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 pt-4 border-t border-slate-150 shrink-0">
-        
-        {/* Left Column: Revision History log (5/12 width) */}
-        <div className="lg:col-span-5 space-y-4 text-left">
-          <div className="border-b border-slate-100 pb-2 flex justify-between items-center">
-            <h4 className="text-xs font-bold text-darkgray uppercase tracking-wider flex items-center gap-2">
-              <Clock size={13} className="text-slate-400" />
-              Revision Logs
-            </h4>
-            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-2.5 py-0.5 rounded-full">
-              Free Revisions: {freeRevisionsUsed} / {portalSettings.freeRevisionLimit} Used
-            </span>
-          </div>
+                                      {/* Content */}
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span className="text-[10px] font-bold text-slate-700">Revision V{paidNum}</span>
+                                          <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-purple/10 text-purple border border-purple/20 uppercase">
+                                            {fmtFee(rev.fee || policy.feePerRevision)}
+                                          </span>
+                                          {rev.by && <span className="text-[9px] text-slate-400">by {rev.by}</span>}
+                                        </div>
+                                        {rev.comment && (
+                                          <p className="text-[9px] text-slate-400 mt-0.5 truncate" title={rev.comment}>
+                                            {rev.comment}
+                                          </p>
+                                        )}
+                                      </div>
 
-          {revisions.length === 0 ? (
-            <div className="p-4 bg-slate-50 border border-slate-100 rounded-[20px] text-center">
-              <p className="text-[11px] font-semibold text-gray-400">No revisions logged for this design yet.</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto border border-slate-100 rounded-xl">
-              <table className="w-full text-left text-[11px] text-darkgray">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-gray-400 font-bold uppercase tracking-wider text-[9px]">
-                    <th className="p-2.5">No.</th>
-                    <th className="p-2.5">Type</th>
-                    <th className="p-2.5">Status</th>
-                    <th className="p-2.5">Payment</th>
-                    <th className="p-2.5 text-right">Amt</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-medium">
-                  {revisions.map((rev, idx) => {
-                    const revNum = getRevisionNumberValue(rev.revisionNumber) || idx + 1;
-                    const isPaid = rev.isPaid || revNum > portalSettings.freeRevisionLimit;
-                    const typeLabel = isPaid ? "Paid" : "Free";
-                    const amtLabel = isPaid ? formatAmount(rev.amount || 5000) : "₹0";
-                    const payStatus = rev.paymentStatus || (isPaid ? "Paid" : "N/A");
-                    
-                    return (
-                      <tr key={rev.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="p-2.5 font-extrabold text-slate-800">
-                          {rev.revisionNumber || `V${idx + 1}`}
-                        </td>
-                        <td className="p-2.5">
-                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${isPaid ? "bg-purple/10 text-purple border border-purple/20" : "bg-emerald-50 text-emerald-700 border border-emerald-100"}`}>
-                            {typeLabel}
-                          </span>
-                        </td>
-                        <td className="p-2.5 font-semibold">
-                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
-                            rev.status === "Completed" 
-                              ? "bg-emerald-50 text-emerald-700" 
-                              : rev.status === "In Progress"
-                                ? "bg-blue-50 text-blue-700"
-                                : rev.status === "Awaiting Payment"
-                                  ? "bg-rose-50 text-rose-700"
-                                  : "bg-amber-50 text-amber-750"
-                          }`}>
-                            {rev.status}
-                          </span>
-                        </td>
-                        <td className="p-2.5 text-gray-500">
-                          {rev.status === "Awaiting Payment" ? (
-                            <button
-                              onClick={() => handlePayForRevisionLater(rev)}
-                              className="px-2 py-0.5 bg-rose-500 hover:bg-rose-600 text-white rounded text-[9px] font-bold cursor-pointer transition-colors shadow-xs"
-                            >
-                              Pay Now
-                            </button>
-                          ) : (
-                            <span className="text-[10px]">{payStatus}</span>
+                                      {/* Right side */}
+                                      <div className="shrink-0 flex items-center gap-1.5">
+                                        <span className="text-[9px] text-slate-400">{rev.at ? rev.at.split(" ")[0] : ""}</span>
+                                        <CheckCircle2 size={12} className="text-purple" />
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
                           )}
-                        </td>
-                        <td className="p-2.5 text-slate-700 font-extrabold text-right">{amtLabel}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {/* Right Column: Design Workspace Discussion (7/12 width) */}
-        <div className="lg:col-span-7 flex flex-col border border-slate-200/80 rounded-[20px] overflow-hidden bg-white shadow-xs">
-          {/* Chat Header */}
-          <div className="bg-slate-50 p-3 border-b border-slate-150 flex justify-between items-center shrink-0">
-            <div className="flex items-center gap-2">
-              <MessageSquare size={15} className="text-purple" />
-              <span className="text-xs font-bold text-slate-700">Design Discussions</span>
-            </div>
-            
-            {/* Quick Tagging Buttons */}
-            <div className="flex gap-1">
-              <button 
-                onClick={() => handleMentionClick("Priya S. (Designer)")}
-                className="text-[9px] font-bold bg-white hover:bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded text-slate-600 flex items-center gap-0.5 cursor-pointer"
-              >
-                <AtSign size={8} /> Designer
-              </button>
-              <button 
-                onClick={() => handleMentionClick("Vijay K. (Coordinator)")}
-                className="text-[9px] font-bold bg-white hover:bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded text-slate-600 flex items-center gap-0.5 cursor-pointer"
-              >
-                <AtSign size={8} /> Coordinator
-              </button>
-            </div>
-          </div>
-
-          {/* Chat message history log */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/20 text-xs">
-            {discussions.length === 0 ? (
-              <p className="text-center text-gray-400 py-20 italic">No messages sent yet. Leave a design comment below.</p>
-            ) : (
-              discussions.map((msg) => {
-                const isClient = msg.author === "Client";
-                return (
-                  <div key={msg.id} className="space-y-1">
-                    <div className={`flex flex-col ${isClient ? "items-end" : "items-start"}`}>
-                      {/* Message Bubble wrapper */}
-                      <div className={`max-w-[85%] rounded-2xl p-3 shadow-xs border ${
-                        isClient 
-                          ? "bg-purple text-white border-purple-600 rounded-br-none" 
-                          : "bg-white text-slate-800 border-slate-200 rounded-bl-none"
-                      }`}>
-                        
-                        {/* Author line */}
-                        <div className="flex justify-between items-center gap-4 mb-1 border-b border-white/20 pb-0.5">
-                          <span className="font-extrabold uppercase text-[9px] opacity-80">{msg.author}</span>
-                          <span className="text-[8px] opacity-70">{msg.timestamp}</span>
                         </div>
-
-                        {/* Text */}
-                        <p className="leading-relaxed whitespace-pre-wrap font-medium">{msg.text}</p>
-
-                        {/* Attachments inside bubble */}
-                        {msg.attachments && msg.attachments.length > 0 && (
-                          <div className="mt-2 space-y-1 border-t border-white/20 pt-1.5">
-                            {msg.attachments.map((file, fidx) => (
-                              <a 
-                                key={fidx} 
-                                href={localUrls[file.id] || file.url} 
-                                target="_blank" 
-                                rel="noreferrer" 
-                                className="flex items-center gap-1 text-[9px] font-bold hover:underline truncate"
-                              >
-                                <Paperclip size={9} />
-                                {file.name} ({file.size})
-                              </a>
-                            ))}
-                          </div>
-                        )}
                       </div>
-                      
-                      {/* Reply Button link */}
-                      {!msg.replyTo && (
-                        <button
-                          onClick={() => setReplyToId(msg.id)}
-                          className="text-[9px] font-extrabold text-purple hover:underline mt-0.5 block pr-1"
-                        >
-                          Reply
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Nested replies */}
-                    {renderReplies(msg.id)}
+                    ))}
                   </div>
-                );
-              })
-            )}
+                )}
+              </div>
+            </div>
           </div>
-
-          {/* Reply alert bar */}
-          {replyToId && (
-            <div className="bg-amber-50 px-3 py-1 text-[10px] text-amber-700 font-bold border-t border-amber-100 flex justify-between items-center shrink-0">
-              <span className="flex items-center gap-1">
-                <CornerDownRight size={10} />
-                Replying to message...
-              </span>
-              <button 
-                onClick={() => setReplyToId(null)}
-                className="text-amber-500 hover:text-amber-800"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-
-          {/* Form input controls */}
-          <form onSubmit={handleSendDiscussion} className="p-3 border-t border-slate-150 bg-white shrink-0 space-y-2">
-            
-            {/* Attachment list previews */}
-            {chatAttachments.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pb-2">
-                {chatAttachments.map((file, idx) => (
-                  <div key={idx} className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md text-[10px] font-bold text-slate-700">
-                    <span className="truncate max-w-[100px]">{file.name}</span>
-                    <button 
-                      type="button" 
-                      onClick={() => setChatAttachments(prev => prev.filter((_, i) => i !== idx))}
-                      className="text-slate-400 hover:text-slate-600"
-                    >
-                      <X size={10} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              {/* File upload attachment */}
-              <div className="relative">
-                <input 
-                  type="file" 
-                  id="chat-attach-file" 
-                  onChange={handleFileUpload} 
-                  className="hidden" 
-                />
-                <label 
-                  htmlFor="chat-attach-file" 
-                  className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-500 border border-slate-200 cursor-pointer transition-colors"
-                  title="Attach File"
-                >
-                  <Paperclip size={16} />
-                </label>
-              </div>
-
-              {/* Text input */}
-              <input
-                type="text"
-                placeholder="Type your design feedback or comment here..."
-                value={chatText}
-                onChange={(e) => setChatText(e.target.value)}
-                className="flex-1 text-xs border border-slate-200 rounded-xl px-3 bg-white focus:outline-none focus:border-purple font-medium"
-              />
-
-              {/* Submit */}
-              <button
-                type="submit"
-                className="w-9 h-9 flex items-center justify-center rounded-xl bg-purple hover:bg-dark-blue text-white shadow-sm transition-colors cursor-pointer"
-              >
-                <Send size={14} />
-              </button>
-            </div>
-          </form>
-        </div>
-
-      </div>
+        );
+      })()}
 
       {/* LIGHTBOX MODAL: FULL SCREEN DELIVERABLE VIEW */}
       {selectedDrawing && (

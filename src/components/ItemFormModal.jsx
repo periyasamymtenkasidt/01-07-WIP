@@ -1443,7 +1443,11 @@ const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items
-      .filter((it) => it.id !== excludeId)
+      // Only exclude the item being edited when there's actually an id to
+      // exclude. Without this guard, opening the picker for a new (id-less) item
+      // makes excludeId `undefined`, which drops every library item that also
+      // lacks an id (`undefined !== undefined` is false) — emptying the list.
+      .filter((it) => !excludeId || it.id !== excludeId)
       .filter((it) => {
         if (!q) return true;
         return (
@@ -1519,13 +1523,13 @@ const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) 
               No items match
             </p>
           ) : (
-            filtered.map((it) => {
+            filtered.map((it, i) => {
               const unitLabel =
                 UNITS.find((u) => u.code === it.unit)?.label || it.unit;
               const isSelected = selectedIds.has(it.id);
               return (
                 <button
-                  key={it.id}
+                  key={it.id || `${it.description}-${i}`}
                   type="button"
                   onClick={() => handleItemClick(it)}
                   className={`w-full text-left rounded-lg border px-3 py-2 transition-all flex items-center gap-3 cursor-pointer ${

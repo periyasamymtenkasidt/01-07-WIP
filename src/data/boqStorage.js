@@ -5,6 +5,13 @@
 import { getConfigForType } from "./QuotePresets";
 import { PAYMENT_MILESTONES } from "./MilestoneConfig";
 import { getOrgProfile } from "./orgProfile";
+import { listLibrary } from "./itemLibrary";
+import { listMaterials } from "./materialLibrary";
+import {
+  recipeBuildupForRateAnalysis,
+  recipeToMaterials,
+  materialsById,
+} from "./rateBuildup";
 
 const INDEX_KEY = "boq_index";
 const ITEM_KEY = (id) => `boq_${id}`;
@@ -185,7 +192,7 @@ export const seedRateAnalysisFromMaterials = (
   existing,
   materials = [],
   unit = "",
-  { force = false } = {},
+  { force = false, buildup = null } = {},
 ) => {
   // Idempotent by default: keep the estimator's rows. `force` (used on BOQ
   // (re)generation) re-seeds straight from the proposal so quantities and rates
@@ -193,11 +200,28 @@ export const seedRateAnalysisFromMaterials = (
   if (!force && existing?.materialItems?.length > 0) return existing;
   const rows = materialsToRateAnalysisRows(materials);
   if (rows.length === 0) return existing || blankRateAnalysis(unit);
+  // Carry the Item Master rate build-up's commercial loadings (labour, overhead%,
+  // margin%) onto the seeded rate analysis so it mirrors the proposal build-up
+  // instead of starting at zero. Only applied on the first seed / forced re-seed;
+  // never overrides values the estimator has already tuned.
+  const buildupSeed = buildup
+    ? {
+        labourRate: Number(buildup.labourRate) || 0,
+        overheadPercent: Number(buildup.overheadPercent) || 0,
+        marginPercent: Number(buildup.marginPercent) || 0,
+      }
+    : {};
   return {
     ...blankRateAnalysis(unit),
     ...(existing || {}),
+    ...buildupSeed,
     enabled: true,
-    useFinalRate: false,
+    // When the build-up's margin/overhead/labour are mapped in, the BOQ line is
+    // driven by the rate analysis's rateBeforeMargin ÷ (1 − margin%) formula. The
+    // Item Master build-up now uses the same margin-on-selling-price formula, so
+    // the seeded final rate matches the build-up rate exactly (1:1 map).
+    // Without a build-up, the rate analysis stays opt-in (build-up rate stands).
+    useFinalRate: !!buildup,
     raQuantity: 1,
     materialItems: rows,
     source: "proposal",
@@ -835,13 +859,64 @@ const normalizeRateAnalysis = (rateAnalysis = {}, unit = "") => ({
 const resolveSeededRateAnalysis = (item = {}) => {
   const unit = item.unit || "nos";
   let ra = normalizeRateAnalysis(item.rateAnalysis, unit);
-  const materials = Array.isArray(item.materials) ? item.materials : [];
-  if (!ra.materialsSeeded && (ra.materialItems || []).length === 0 && materials.length > 0) {
-    ra = normalizeRateAnalysis(
-      seedRateAnalysisFromMaterials(ra, materials, unit),
-      unit,
-    );
+
+  // Resolve the linked Item Master recipe — the source of truth for material
+  // quantities/wastage AND the labour/overhead%/margin% loadings. Match by
+  // masterId first, then by description (rows added from the library may not
+  // carry a masterId), and finally fall back to a recipe carried on the item.
+  const norm = (s) => (s || "").trim().toLowerCase();
+  const library =
+    item.masterId || item.description ? listLibrary() : [];
+  const lib =
+    (item.masterId ? library.find((l) => l.id === item.masterId) : null) ||
+    (item.description
+      ? library.find((l) => norm(l.description) === norm(item.description))
+      : null) ||
+    null;
+  const recipes = lib?.recipes || item.recipes || null;
+  // Prefer the item's explicit grade, else the library item's default grade,
+  // else the first grade that actually exists — so a grade-key mismatch never
+  // silently drops the build-up loadings.
+  const grade =
+    item.grade || item.defaultGrade || lib?.defaultGrade || "economy";
+  const recipe =
+    recipes?.[grade] ||
+    (lib?.defaultGrade ? recipes?.[lib.defaultGrade] : null) ||
+    (recipes ? Object.values(recipes)[0] : null) ||
+    null;
+  const buildup = recipe ? recipeBuildupForRateAnalysis(recipe) : null;
+
+  // Seed material rows once (first normalize / empty rate analysis), preferring
+  // the recipe's per-unit materials over the copy carried on the item.
+  if (!ra.materialsSeeded && (ra.materialItems || []).length === 0) {
+    let materials = Array.isArray(item.materials) ? item.materials : [];
+    if (recipe && materials.length === 0) {
+      materials = recipeToMaterials(recipe, materialsById(listMaterials()));
+    }
+    if (materials.length > 0) {
+      ra = normalizeRateAnalysis(
+        seedRateAnalysisFromMaterials(ra, materials, unit, { buildup }),
+        unit,
+      );
+    }
   }
+
+  // The build-up is authoritative for labour/overhead%/margin% — they are no
+  // longer editable in the BOQ, so mirror them from the recipe on EVERY read.
+  // This is what makes already-seeded items (seeded before this mapping, or
+  // whose build-up later changed) pick up the current build-up values instead
+  // of staying at 0. Drives the line via the ÷(1 − margin%) final rate.
+  if (buildup) {
+    ra = {
+      ...ra,
+      enabled: true,
+      useFinalRate: true,
+      labourRate: buildup.labourRate,
+      overheadPercent: buildup.overheadPercent,
+      marginPercent: buildup.marginPercent,
+    };
+  }
+
   return computeRateAnalysis(ra, unit);
 };
 
@@ -948,12 +1023,90 @@ export const getBoq = (id) => {
   }
 };
 
+const isQuotaError = (e) =>
+  !!e &&
+  (e.name === "QuotaExceededError" ||
+    e.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    e.code === 22 ||
+    e.code === 1014);
+
+// Reclaim localStorage by dropping the heaviest dead weight: base64 survey
+// photos embedded in measurement maps and frozen design-flow snapshots. Those
+// images are for viewing only (originals also live in IndexedDB) and are never
+// needed to (re)generate a BOQ, so stripping them is safe. Returns true if it
+// freed anything.
+const reclaimStorageSpace = () => {
+  // Drop only the heavy inline base64/data-URI images — the actual bloat. Keep
+  // small `{ fileId }` references, which point to real uploads in IndexedDB and
+  // cost almost nothing, so photo galleries survive the cleanup.
+  const isHeavyImage = (img) =>
+    typeof img === "string" && img.startsWith("data:");
+  const stripImages = (node) => {
+    if (Array.isArray(node)) return node.map(stripImages);
+    if (node && typeof node === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(node)) {
+        out[k] =
+          k === "images" && Array.isArray(v)
+            ? v.filter((img) => !isHeavyImage(img))
+            : stripImages(v);
+      }
+      return out;
+    }
+    return node;
+  };
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && (k.startsWith("siteMeasurements_") || k.startsWith("designFlow_"))) {
+      keys.push(k);
+    }
+  }
+  let freed = false;
+  for (const k of keys) {
+    try {
+      const raw = localStorage.getItem(k);
+      if (!raw || !raw.includes('"images"')) continue;
+      const stripped = JSON.stringify(stripImages(JSON.parse(raw)));
+      if (stripped.length < raw.length) {
+        localStorage.setItem(k, stripped);
+        freed = true;
+      }
+    } catch {
+      // Skip malformed entries — best-effort cleanup only.
+    }
+  }
+  return freed;
+};
+
+// Quota-safe write: on a full store, reclaim base64 photo dead weight and retry
+// once before surfacing a clear, actionable error instead of a raw quota throw.
+const writeBoqItem = (key, payload) => {
+  try {
+    localStorage.setItem(key, payload);
+    return;
+  } catch (e) {
+    if (!isQuotaError(e)) throw e;
+  }
+  reclaimStorageSpace();
+  try {
+    localStorage.setItem(key, payload);
+  } catch (e) {
+    if (isQuotaError(e)) {
+      throw new Error(
+        "Browser storage is full. Old survey photos were cleared but there still isn't room to save this BOQ — remove some old BOQs or sites and try again.",
+      );
+    }
+    throw e;
+  }
+};
+
 export const saveBoq = (boq) => {
   const next = {
     ...normalizeBoq(boq),
     updatedAt: new Date().toISOString(),
   };
-  localStorage.setItem(ITEM_KEY(next.id), JSON.stringify(next));
+  writeBoqItem(ITEM_KEY(next.id), JSON.stringify(next));
   // Update index
   const idx = listBoqs();
   const existing = idx.find((b) => b.id === next.id);
@@ -1096,11 +1249,21 @@ export const createBoq = ({
                 ? Number(scope.rate)
                 : Number(scope.amount) || 0,
             materials: scope.materials || [],
-            // Pre-fill the rate build-up from the proposal's materials.
+            // Carry the scope's recipe + grade so a later read-time re-seed can
+            // still recover the build-up commercials if needed.
+            recipes: scope.recipes || null,
+            grade: scope.grade || null,
+            // Pre-fill the rate build-up from the proposal's materials, and
+            // auto-map the recipe's labour/overhead/margin onto the rate analysis.
             rateAnalysis: seedRateAnalysisFromMaterials(
               null,
               scope.materials || [],
               Number(scope.rate) > 0 ? scope.unit || "nos" : "ls",
+              {
+                buildup: recipeBuildupForRateAnalysis(
+                  scope.recipes?.[scope.grade || cfg.grade || "economy"],
+                ),
+              },
             ),
           },
         ],

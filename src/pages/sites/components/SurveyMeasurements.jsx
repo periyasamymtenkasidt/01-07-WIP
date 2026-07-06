@@ -21,6 +21,8 @@ import {
   areasForSite,
   getSurveyMeasureState,
   getSurveyVsProposalVariance,
+  approveSurveyVariance,
+  clearSurveyVarianceApproval,
   generateAppSurveyData,
   readCustomItems,
   writeCustomItems,
@@ -79,6 +81,15 @@ const SurveyMeasurements = ({ site, onExpandPhoto }) => {
   const [designFlow, setDesignFlow] = useState(() => getDesignFlow(siteID));
   const [confirmOpen, setConfirmOpen] = useState(false);
   const designStarted = !!designFlow;
+
+  // Over-tolerance survey variance sign-off (see A2/B1). The modal captures who
+  // approved it and why; refreshTick forces a re-read after approve/revoke since
+  // the variance is derived from localStorage on each render.
+  const [varianceModal, setVarianceModal] = useState(false);
+  const [approvalBy, setApprovalBy] = useState("Principal Architect");
+  const [approvalReason, setApprovalReason] = useState("");
+  const [, setRefreshTick] = useState(0);
+  const refresh = () => setRefreshTick((t) => t + 1);
 
   // No survey work can begin until a Site Incharge (supervisor) is assigned.
   const supervisorAssigned = !!(site.supervisor && String(site.supervisor).trim());
@@ -234,8 +245,32 @@ const SurveyMeasurements = ({ site, onExpandPhoto }) => {
   );
   const photosComplete = totalWorks > 0 && worksWithPhotos === totalWorks;
   const variance = getSurveyVsProposalVariance(site);
-  const varianceOk = !variance.amountOverLimit;
-  const canMoveToDesign = state.complete && photosComplete && varianceOk;
+  const varianceOk = !variance.amountOverLimit; // within tolerance, no sign-off needed
+  const varianceApproved = variance.approvalValid; // over, but signed off
+  const varianceBlocks = variance.blocksDesign; // over AND not (validly) approved
+  const canMoveToDesign = state.complete && photosComplete && !varianceBlocks;
+
+  // Compact ₹ / % formatters for the variance messaging (C).
+  const inr = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
+  const pct = (n) => `${n >= 0 ? "+" : "−"}${Math.abs(Number(n) || 0).toFixed(1)}%`;
+
+  const submitVarianceApproval = () => {
+    if (!approvalReason.trim()) return;
+    approveSurveyVariance(siteID, {
+      by: approvalBy,
+      reason: approvalReason.trim(),
+      forDifference: variance.amountDifference,
+    });
+    setVarianceModal(false);
+    setApprovalReason("");
+    refresh();
+    window.dispatchEvent(new Event("siteDataChanged"));
+  };
+  const revokeVarianceApproval = () => {
+    clearSurveyVarianceApproval(siteID);
+    refresh();
+    window.dispatchEvent(new Event("siteDataChanged"));
+  };
 
   const moveToDesign = () => {
     if (surveyLocked) return;
@@ -328,11 +363,39 @@ const SurveyMeasurements = ({ site, onExpandPhoto }) => {
               <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">
                 <FiCheckCircle size={12} /> Matches proposal
               </span>
-            ) : (
+            ) : varianceApproved ? (
+              designStarted ? (
+                <span
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200"
+                  title={`Approved by ${variance.approval?.by}${variance.approval?.reason ? ` — ${variance.approval.reason}` : ""}`}
+                >
+                  <FiCheckCircle size={12} /> Variance approved · {inr(variance.amountDifference)} over
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setVarianceModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-colors"
+                  title="View or revoke the variance sign-off"
+                >
+                  <FiCheckCircle size={12} /> Variance approved · {inr(variance.amountDifference)} over
+                </button>
+              )
+            ) : designStarted ? (
               <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-red-50 text-red-600 border border-red-200">
                 <FiAlertTriangle size={12} />
-                Amount exceeds proposal + ₹15,000
+                {inr(variance.amountDifference)} ({pct(variance.amountIncreasePct)}) over proposal
               </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setVarianceModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 transition-colors"
+                title="Measured total is over the proposal tolerance — review & approve to proceed"
+              >
+                <FiAlertTriangle size={12} />
+                {inr(variance.amountDifference)} ({pct(variance.amountIncreasePct)}) over · Needs approval
+              </button>
             ))}
           {designStarted ? (
             <div className="flex items-center gap-2">
@@ -707,11 +770,13 @@ const SurveyMeasurements = ({ site, onExpandPhoto }) => {
               />
               {variance.quotedAmount > 0 && (
                 <ChecklistRow
-                  ok={!variance.amountOverLimit}
+                  ok={!variance.blocksDesign}
                   label={
-                    variance.amountOverLimit
-                      ? `Measured total is ₹${variance.amountDifference.toLocaleString("en-IN", { maximumFractionDigits: 0 })} above the proposal — maximum allowed increase is ₹${variance.maxVarianceAmount.toLocaleString("en-IN")}`
-                      : `Measured total is allowed (difference ${variance.amountDifference >= 0 ? "+" : "−"}₹${Math.abs(variance.amountDifference).toLocaleString("en-IN", { maximumFractionDigits: 0 })}; increases up to ₹${variance.maxVarianceAmount.toLocaleString("en-IN")} are permitted)`
+                    varianceApproved
+                      ? `Variance approved by ${variance.approval?.by} — ${inr(variance.amountDifference)} (${pct(variance.amountIncreasePct)}) over proposal`
+                      : variance.blocksDesign
+                        ? `Measured total is ${inr(variance.amountDifference)} (${pct(variance.amountIncreasePct)}) over proposal — needs sign-off (allowed without approval: up to ${inr(variance.maxVarianceAmount)})`
+                        : `Within proposal tolerance (${pct(variance.amountIncreasePct)}, ${inr(variance.amountDifference)}; up to ${inr(variance.maxVarianceAmount)} allowed)`
                   }
                 />
               )}
@@ -746,6 +811,140 @@ const SurveyMeasurements = ({ site, onExpandPhoto }) => {
                 Freeze &amp; Start Design <FiArrowRight size={13} />
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Survey variance sign-off modal (over-tolerance approval / revoke) */}
+      {varianceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h4 className="text-[16px] font-bold text-darkgray">
+                  {varianceApproved ? "Variance sign-off" : "Approve survey variance"}
+                </h4>
+                <p className="mt-1 text-[12px] text-text-muted">
+                  {varianceApproved
+                    ? "This over-tolerance survey has been signed off."
+                    : "The measured survey is over the proposal tolerance. A senior sign-off lets Design proceed with an auditable reason."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVarianceModal(false)}
+                className="rounded-lg p-1 text-text-muted hover:bg-bg-soft"
+              >
+                <FiX size={16} />
+              </button>
+            </div>
+
+            {/* Figures — real amounts, no internal threshold leaked. */}
+            <div className="grid grid-cols-2 gap-2 rounded-xl border border-bg-soft bg-palewhite/50 p-3 text-[12px]">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-text-subtle">Proposal</p>
+                <p className="font-bold text-darkgray tabular-nums">{inr(variance.quotedAmount)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-text-subtle">Measured (incl. GST)</p>
+                <p className="font-bold text-darkgray tabular-nums">{inr(variance.measuredAmount)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-text-subtle">Over proposal</p>
+                <p className="font-bold text-red-600 tabular-nums">
+                  {inr(variance.amountDifference)} ({pct(variance.amountIncreasePct)})
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-text-subtle">
+                  Allowed w/o approval
+                </p>
+                <p className="font-bold text-darkgray tabular-nums">
+                  {inr(variance.maxVarianceAmount)}{" "}
+                  <span className="font-medium text-text-subtle">({variance.variancePct}% / floor)</span>
+                </p>
+              </div>
+            </div>
+
+            {varianceApproved ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[12px] text-amber-800">
+                  <p>
+                    Signed off by <strong>{variance.approval?.by}</strong>
+                    {variance.approval?.at
+                      ? ` on ${new Date(variance.approval.at).toLocaleDateString("en-IN")}`
+                      : ""}
+                    .
+                  </p>
+                  {variance.approval?.reason && (
+                    <p className="mt-1 italic">“{variance.approval.reason}”</p>
+                  )}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVarianceModal(false)}
+                    className="rounded-lg px-4 py-2 text-[12px] font-semibold text-grey hover:bg-bg-soft"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      revokeVarianceApproval();
+                      setVarianceModal(false);
+                    }}
+                    className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-[12px] font-bold text-red-600 hover:bg-red-100"
+                  >
+                    Revoke approval
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-bold text-text-subtle">
+                    Approved by
+                  </span>
+                  <select
+                    value={approvalBy}
+                    onChange={(e) => setApprovalBy(e.target.value)}
+                    className="w-full rounded-lg border border-bordergray bg-white px-3 py-2 text-[12px] focus:outline-none focus:border-select-blue"
+                  >
+                    <option>Principal Architect</option>
+                    <option>Senior Architect</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-bold text-text-subtle">
+                    Reason for accepting the overage
+                  </span>
+                  <textarea
+                    value={approvalReason}
+                    onChange={(e) => setApprovalReason(e.target.value)}
+                    rows={3}
+                    placeholder="e.g. Client added false ceiling in two rooms after site visit — increase agreed."
+                    className="w-full resize-none rounded-lg border border-bordergray bg-white px-3 py-2 text-[12px] focus:outline-none focus:border-select-blue"
+                  />
+                </label>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVarianceModal(false)}
+                    className="rounded-lg px-4 py-2 text-[12px] font-semibold text-grey hover:bg-bg-soft"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitVarianceApproval}
+                    disabled={!approvalReason.trim()}
+                    className="flex items-center gap-1.5 rounded-lg bg-linear-to-br from-violet-600 to-violet-800 px-4 py-2 text-[12px] font-bold text-white shadow-sm hover:shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <FiCheckCircle size={13} /> Approve variance
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

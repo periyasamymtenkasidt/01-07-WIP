@@ -1,9 +1,8 @@
 import { useState, useMemo } from "react";
-import { FileBox, ArrowRight, Send } from "lucide-react";
+import { FileBox, Send } from "lucide-react";
 import { listBoqs, getBoq } from "../../../data/boqStorage";
 import { buildTakeoffFromBoq } from "../../../data/procurementStorage";
 import { getContractByClient } from "../../../data/contractStorage";
-import PoFormModal from "../PoFormModal";
 import RfqFormModal from "../RfqFormModal";
 
 // Material take-off: pick a BOQ, roll up every material it references into a
@@ -16,7 +15,7 @@ const takeoffKey = (t) => `${t.materialId || ""}|${t.name}|${t.spec || ""}`;
 const Takeoff = () => {
   const boqs = listBoqs();
   const [boqId, setBoqId] = useState(boqs[0]?.id || "");
-  const [modal, setModal] = useState(false);
+
   const [rfqModal, setRfqModal] = useState(false);
   // Tracked as exclusions rather than inclusions so a freshly loaded take-off
   // defaults to "everything selected" without needing an effect to seed it —
@@ -54,14 +53,7 @@ const Takeoff = () => {
     return cid ? getContractByClient(cid)?.id || "" : "";
   }, [boq]);
 
-  const poLines = selectedTakeoff.map((t) => ({
-    name: t.name,
-    spec: t.spec,
-    qty: Math.round(t.estimatedQty) || 1,
-    unit: t.unit,
-    rate: 0,
-    materialId: t.materialId,
-  }));
+
 
   const rfqLines = selectedTakeoff.map((t) => ({
     name: t.name,
@@ -101,13 +93,7 @@ const Takeoff = () => {
             >
               Send RFQ <Send size={13} />
             </button>
-            <button
-              disabled={selectedTakeoff.length === 0}
-              onClick={() => setModal(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-select-blue text-white text-[12px] font-semibold hover:bg-blue-950 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Create PO from selection <ArrowRight size={14} />
-            </button>
+
           </div>
         )}
       </div>
@@ -178,12 +164,7 @@ const Takeoff = () => {
         </div>
       )}
 
-      <PoFormModal
-        open={modal}
-        onClose={() => setModal(false)}
-        initialLines={poLines}
-        initialContractId={contractId}
-      />
+
 
       <RfqFormModal
         open={rfqModal}

@@ -40,6 +40,7 @@ import {
   History,
   List,
   MapPin,
+  Loader2,
 } from "lucide-react";
 import {
   createBoq,
@@ -55,9 +56,8 @@ import {
   validateBoqForSend,
   blankItem,
   blankSection,
-  blankMeasurementRow,
   blankRateAnalysisRow,
-  blankVendorComparison,
+  seedRateAnalysisFromMaterials,
   DIMENSIONAL_UNITS,
   DEFAULT_BOQ_APPROVAL,
   BOQ_TYPES,
@@ -67,8 +67,14 @@ import {
   EXECUTION_BY,
 } from "../../data/boqStorage";
 import { getOrgProfile } from "../../data/orgProfile";
-import { PAYMENT_MILESTONES } from "../../data/MilestoneConfig";
 import { getPresetKeys } from "../../data/QuotePresets";
+import {
+  createFinalQuoteFromBoq,
+  sendFinalQuote,
+  validateFinalQuote,
+} from "../../data/finalQuoteStorage";
+import Modal from "../../components/Modal";
+import QuotePreview from "../../components/QuotePreview";
 import { UNITS, HSN_SUGGESTIONS } from "../../data/boqUnits";
 import { getAllClients, clientToBoqFields } from "../../data/clientStorage";
 import {
@@ -80,6 +86,7 @@ import { listMaterials } from "../../data/materialLibrary";
 import BOQPreview, {
   MaterialSheetPreview,
   MeasurementSheetPreview,
+  MasterSheetPreview,
 } from "./BOQPreview";
 import { formatAmount } from "../../utils/formatAmount";
 import ItemFormModal from "../../components/ItemFormModal";
@@ -106,6 +113,7 @@ import {
   computeRecipe,
   materialsById as mkMatById,
   recipeToMaterials,
+  recipeBuildupForRateAnalysis,
   defaultWastageFor,
 } from "../../data/rateBuildup";
 import { getDesignFlow, buildBoq } from "../../data/designFlowStorage";
@@ -118,7 +126,6 @@ const inputBase =
 const compactInput =
   "bg-white border border-bordergray text-[11.5px] text-textcolor rounded-md px-2 py-1.5 w-full focus:outline-none focus:border-select-blue focus:ring-1 focus:ring-select-blue/20 placeholder:text-text-subtle";
 
-const unitLabelOf = (code) => UNITS.find((u) => u.code === code)?.label || code || "";
 
 const STATUS_STYLES = {
   draft: {
@@ -251,7 +258,6 @@ const BOQEditor = () => {
   const [sendValidation, setSendValidation] = useState(null);
   const [showSeedPicker, setShowSeedPicker] = useState(false);
   const [showSurveyPicker, setShowSurveyPicker] = useState(false);
-  const [libraryPickerSection, setLibraryPickerSection] = useState(null);
   const [showSectionPicker, setShowSectionPicker] = useState(false);
   // Section id currently adding a line item through the full Item Form modal.
   const [itemFormSection, setItemFormSection] = useState(null);
@@ -259,6 +265,17 @@ const BOQEditor = () => {
   const [editingItem, setEditingItem] = useState(null);
   const [itemSearch, setItemSearch] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  // Prebuilt final-quote object awaiting admin review in the preview modal, and
+  // whether a publish is in flight. The quote is built once, previewed, then
+  // published as the very same object (no second quote id).
+  const [finalQuotePreview, setFinalQuotePreview] = useState(null);
+  const [publishingFinalQuote, setPublishingFinalQuote] = useState(false);
+  // Session dismissal for the two header advisories (locked-status + stale
+  // survey). Reset on reload; the banners reappear if their condition still
+  // holds next visit.
+  const [showLockNotice, setShowLockNotice] = useState(true);
+  const [showSurveyStaleNotice, setShowSurveyStaleNotice] = useState(true);
+  const [showMasterSheet, setShowMasterSheet] = useState(false);
   const [showMeasurementSheet, setShowMeasurementSheet] = useState(false);
   const [showMaterialSheet, setShowMaterialSheet] = useState(false);
   const [viewingSnapshot, setViewingSnapshot] = useState(null);
@@ -267,6 +284,11 @@ const BOQEditor = () => {
   // Items inserted from the library are compact-by-default; user can expand
   // any of them to override rate / HSN / GST. Tracked by item id.
   const [expandedLinked, setExpandedLinked] = useState({});
+  // Editor body view: "scope" (sections + line items) | "rate" (consolidated
+  // rate-analysis worksheet across every item). Rate analysis is no longer only
+  // an inline per-item panel — it gets its own tab for building up & validating
+  // all unit rates together before the BOQ is finalized.
+  const [editorTab, setEditorTab] = useState("scope");
 
   // Load or create
   useEffect(() => {
@@ -322,6 +344,20 @@ const BOQEditor = () => {
 
   const canEditBoq = (record = boq) => !isLockedStatus(record?.status);
   const canEditSignoff = (record = boq) => !isSignoffLockedStatus(record?.status);
+
+  // Client-approval gate: once a final quote has been published to the client
+  // (record.finalQuote), the BOQ can't advance to the commit steps (tender /
+  // signed / procurement) until the client accepts it in the portal
+  // (record.clientRequest.type === "accepted"). BOQs that never published a
+  // final quote are not gated, so the offline / legacy flow keeps working.
+  const isClientApprovalPending = (record = boq) =>
+    !!record?.finalQuote && record?.clientRequest?.type !== "accepted";
+  const showClientApprovalToast = () =>
+    showToast(
+      "The client hasn't approved the final quote yet — you can't proceed until they accept it in the portal.",
+      "info",
+    );
+
   const showLockedToast = () =>
     showToast("Create a revision before editing this issued BOQ.", "info");
   const showSignoffLockedToast = () =>
@@ -432,6 +468,28 @@ const BOQEditor = () => {
     showToast("Section duplicated", "success");
   };
 
+  // Seed a form-added item's rate analysis straight from its Item Master
+  // build-up recipe — materials + per-unit qty + wastage + labour/overhead%/
+  // margin% — so a manually added library item shows the same rate analysis a
+  // generated one does. Keeps an already-worked rate analysis (existing material
+  // rows) untouched, and no-ops for free-text items with no recipe.
+  const seedItemRateAnalysis = (form, base) => {
+    const existing = base.rateAnalysis;
+    if (existing?.materialItems?.length) return existing;
+    const lib = form.masterId
+      ? listLibrary().find((l) => l.id === form.masterId)
+      : null;
+    const recipe = lib?.recipes?.[lib.defaultGrade || "economy"] || null;
+    if (!recipe) return existing || {};
+    const matById = mkMatById(listMaterials());
+    return seedRateAnalysisFromMaterials(
+      existing,
+      recipeToMaterials(recipe, matById),
+      form.unit || lib.unit || "nos",
+      { buildup: recipeBuildupForRateAnalysis(recipe) },
+    );
+  };
+
   // Convert the form's flat shape into the BOQ line-item shape (with the
   // nested dimensions object). Shared by both add and edit flows.
   const formToBoqItem = (form, base = {}) => {
@@ -458,7 +516,7 @@ const BOQEditor = () => {
       },
       materials: form.materials ? form.materials.map((m) => ({ ...m })) : [],
       measurementRows: base.measurementRows || [],
-      rateAnalysis: base.rateAnalysis || {},
+      rateAnalysis: seedItemRateAnalysis(form, base),
       vendorComparisons: base.vendorComparisons || [],
     };
   };
@@ -557,31 +615,6 @@ const BOQEditor = () => {
     setShowSectionPicker(false);
     showToast(
       `${label} section added with ${libItems.length} item${libItems.length === 1 ? "" : "s"}`,
-      "success",
-    );
-  };
-
-  const insertLibraryItems = (sid, libItems) => {
-    if (!canEditBoq()) {
-      showLockedToast();
-      return;
-    }
-    const newItems = libItems.map((lib) => ({
-      ...blankItem(),
-      ...libraryToItem(lib),
-      source: "manual",
-      isVariation: !!boq.siteID,
-    }));
-    setBoq((prev) => ({
-      ...prev,
-      sections: prev.sections.map((s) =>
-        s.id === sid ? { ...s, items: [...(s.items || []), ...newItems] } : s,
-      ),
-    }));
-    libItems.forEach((lib) => incrementUsage(lib.id));
-    setExpanded((p) => ({ ...p, [sid]: true }));
-    showToast(
-      `Inserted ${libItems.length} item${libItems.length === 1 ? "" : "s"} from library`,
       "success",
     );
   };
@@ -747,6 +780,10 @@ const BOQEditor = () => {
   };
 
   const handleSign = () => {
+    if (isClientApprovalPending()) {
+      showClientApprovalToast();
+      return;
+    }
     updateInternal((prev) => {
       const approval = mergeApproval(prev.approval);
       const now = new Date().toISOString();
@@ -770,7 +807,68 @@ const BOQEditor = () => {
     showToast("BOQ marked as signed", "success");
   };
 
+  // Generate the client-facing FINAL QUOTE from this approved BOQ and publish it
+  // to the client portal (writes into the shared quotes_<parentId> store). The
+  // BOQ is the internal cost build-up; this is the priced document the client
+  // actually receives. Gated on the BOQ clearing its send-readiness blocks and a
+  // client being linked (validateFinalQuote covers both).
+  const handleGenerateFinalQuote = () => {
+    const { blocks } = validateFinalQuote(boq);
+    if (blocks.length > 0) {
+      showToast(blocks[0], "error");
+      return;
+    }
+    // Build the quote once and show the admin the full rendered document for
+    // review. The same object is what gets published on confirm — no second
+    // quote id is generated.
+    setFinalQuotePreview(createFinalQuoteFromBoq(boq));
+  };
+
+  // Publish the reviewed quote to the client portal. Runs only after the admin
+  // has seen the preview and confirmed in the modal.
+  const confirmPublishFinalQuote = () => {
+    if (!finalQuotePreview || publishingFinalQuote) return;
+    setPublishingFinalQuote(true);
+    const res = sendFinalQuote(boq, finalQuotePreview);
+    setPublishingFinalQuote(false);
+    if (!res.ok) {
+      showToast(res.error || "Could not generate the final quote.", "error");
+      return;
+    }
+    // Stamp the generated quote onto the BOQ + audit trail so the link is
+    // traceable. Metadata only — it doesn't touch scope, so it's safe even on a
+    // locked/approved BOQ.
+    updateInternal((prev) => ({
+      finalQuote: {
+        quoteId: res.quote.quoteId,
+        generatedAt: res.quote.sentAt,
+        grandTotal: res.quote.grandTotal,
+        parentId: res.parentId,
+      },
+      auditTrail: appendAuditTrail(prev, {
+        action: "final_quote_generated",
+        label: "Final Quote Generated",
+        actor: mergeApproval(prev.approval).approvedBy || "User",
+        details: `Client quote ${res.quote.quoteId} published to the client portal.`,
+      }),
+    }));
+    setFinalQuotePreview(null);
+    showToast(`Final quote ${res.quote.quoteId} published to client`, "success");
+  };
+
+  // Dismiss the in-BOQ client-response banner (mark the notification handled).
+  // The record itself stays in the audit trail / approval signoff.
+  const acknowledgeClientRequest = () => {
+    updateInternal((prev) => ({
+      clientRequest: { ...(prev.clientRequest || {}), acknowledged: true },
+    }));
+  };
+
   const handleIssueForTender = () => {
+    if (isClientApprovalPending()) {
+      showClientApprovalToast();
+      return;
+    }
     setConfirmDialog({
       title: "Issue for tender?",
       message: `${boq.id} will be locked and marked as issued for vendor tendering.`,
@@ -796,6 +894,10 @@ const BOQEditor = () => {
   };
 
   const handleIssueForProcurement = () => {
+    if (isClientApprovalPending()) {
+      showClientApprovalToast();
+      return;
+    }
     const materialCount = countMaterials(boq);
     if (materialCount === 0) {
       showToast("Add BOQ materials before issuing for procurement.", "info");
@@ -1092,7 +1194,6 @@ const BOQEditor = () => {
         setConfirmDialog(null);
         setSendValidation(null);
         setShowPreview(false);
-        setLibraryPickerSection(null);
         setShowSeedPicker(false);
         setShowHeaderMenu(false);
       }
@@ -1103,6 +1204,21 @@ const BOQEditor = () => {
   }, [boq]);
 
   const totals = useMemo(() => (boq ? computeBoqTotals(boq) : null), [boq]);
+
+  // Average Margin % and PCE % across every item that carries an enabled rate
+  // build-up — a quick read on the commercial loading applied across the BOQ.
+  const raAverages = useMemo(() => {
+    const items = (boq?.sections || []).flatMap((s) => s.items || []);
+    const withRa = items.filter((it) => it.rateAnalysis?.enabled);
+    if (withRa.length === 0) return { marginPct: 0, pcePct: 0, count: 0 };
+    const sum = (key) =>
+      withRa.reduce((s, it) => s + (Number(it.rateAnalysis?.[key]) || 0), 0);
+    return {
+      marginPct: sum("marginPercent") / withRa.length,
+      pcePct: sum("pcePercent") / withRa.length,
+      count: withRa.length,
+    };
+  }, [boq]);
 
   const roomBreakdown = useMemo(() => {
     if (!boq?.sections?.length) return [];
@@ -1174,6 +1290,15 @@ const BOQEditor = () => {
   const isLocked = isLockedStatus(boq.status);
   const approval = mergeApproval(boq.approval);
   const isSignoffLocked = isSignoffLockedStatus(boq.status);
+  // A final quote is out with the client but not yet accepted — the commit
+  // steps (tender / signed / procurement) are gated on their approval.
+  const awaitingClient = isClientApprovalPending();
+  const gatedBtn = awaitingClient
+    ? "opacity-50 cursor-not-allowed"
+    : "";
+  const gateTitle = awaitingClient
+    ? "Waiting for client approval of the final quote"
+    : undefined;
 
   return (
     <div className="bg-overallbg font-sans h-full overflow-hidden flex flex-col">
@@ -1220,6 +1345,14 @@ const BOQEditor = () => {
           <div className="flex items-center gap-2 flex-wrap justify-end">
             <button
               type="button"
+              onClick={() => setShowMasterSheet(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
+              title="View internal master sheet (materials, measurements, amount & margin)"
+            >
+              <Layers size={12} /> Master Sheet
+            </button>
+            <button
+              type="button"
               onClick={() => setShowMeasurementSheet(true)}
               className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
               title="View measurement sheet"
@@ -1260,19 +1393,35 @@ const BOQEditor = () => {
                 <CheckCircle2 size={12} /> Mark Approved
               </button>
             )}
+            {["approved", "issued_for_tender", "signed", "issued_for_procurement"].includes(
+              boq.status,
+            ) && (
+              <button
+                type="button"
+                onClick={handleGenerateFinalQuote}
+                className="flex items-center gap-1.5 px-3 py-2 bg-teal-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-teal-600 transition-all shadow-sm"
+                title="Generate the client-facing final quote from this BOQ and publish it to the client portal"
+              >
+                <Wallet size={12} /> Final Quote
+              </button>
+            )}
             {boq.status === "approved" && (
               <>
                 <button
                   type="button"
                   onClick={handleIssueForTender}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-amber-600 transition-all shadow-sm"
+                  disabled={awaitingClient}
+                  title={gateTitle}
+                  className={`flex items-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-amber-600 transition-all shadow-sm ${gatedBtn}`}
                 >
                   <Send size={12} /> Issue for Tender
                 </button>
                 <button
                   type="button"
                   onClick={handleSign}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm"
+                  disabled={awaitingClient}
+                  title={gateTitle}
+                  className={`flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm ${gatedBtn}`}
                 >
                   <ShieldCheck size={12} /> Mark Signed
                 </button>
@@ -1282,7 +1431,9 @@ const BOQEditor = () => {
               <button
                 type="button"
                 onClick={handleSign}
-                className="flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm"
+                disabled={awaitingClient}
+                title={gateTitle}
+                className={`flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm ${gatedBtn}`}
               >
                 <ShieldCheck size={12} /> Mark Signed
               </button>
@@ -1291,7 +1442,9 @@ const BOQEditor = () => {
               <button
                 type="button"
                 onClick={handleIssueForProcurement}
-                className="flex items-center gap-1.5 px-3 py-2 bg-indigo-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-indigo-600 transition-all shadow-sm"
+                disabled={awaitingClient}
+                title={gateTitle}
+                className={`flex items-center gap-1.5 px-3 py-2 bg-indigo-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-indigo-600 transition-all shadow-sm ${gatedBtn}`}
               >
                 <PackageCheck size={12} /> Issue Procurement
               </button>
@@ -1394,7 +1547,7 @@ const BOQEditor = () => {
           </div>
         </div>
 
-        {isLocked && (
+        {isLocked && showLockNotice && (
           <div className="px-6 pb-3">
             <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
               <div className="flex items-start gap-2">
@@ -1432,6 +1585,15 @@ const BOQEditor = () => {
                   )}
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowLockNotice(false)}
+                className="ml-auto shrink-0 -mr-0.5 -mt-0.5 rounded-md p-1 text-amber-500 hover:bg-amber-100 hover:text-amber-700 transition-colors"
+                title="Dismiss"
+                aria-label="Dismiss notice"
+              >
+                <X size={14} />
+              </button>
             </div>
           </div>
         )}
@@ -1452,7 +1614,63 @@ const BOQEditor = () => {
       </div>
 
       <div className="px-6 py-5 flex-1 min-h-0 overflow-y-auto lg:overflow-hidden flex flex-col scroll-hidden-bar">
-        {boq.surveyStale && (
+        {boq.clientRequest && !boq.clientRequest.acknowledged && (
+          <div
+            className={`mb-4 flex items-start gap-2.5 rounded-xl border px-4 py-3 text-[12px] ${
+              boq.clientRequest.type === "accepted"
+                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                : "border-amber-300 bg-amber-50 text-amber-900"
+            }`}
+          >
+            {boq.clientRequest.type === "accepted" ? (
+              <CheckCircle2 size={15} className="mt-0.5 shrink-0" />
+            ) : (
+              <Info size={15} className="mt-0.5 shrink-0" />
+            )}
+            <div className="min-w-0">
+              <p className="font-semibold">
+                {boq.clientRequest.type === "accepted"
+                  ? "Client accepted the quote"
+                  : "Client requested changes"}
+                {boq.clientRequest.quoteId ? ` · ${boq.clientRequest.quoteId}` : ""}
+              </p>
+              <p className="mt-0.5 leading-relaxed">
+                <span className="font-semibold">
+                  {boq.clientRequest.by || "Client"}
+                </span>
+                {boq.clientRequest.type === "accepted"
+                  ? " accepted this quote in the portal."
+                  : " requested changes in the portal."}
+                {boq.clientRequest.at &&
+                  ` (${new Date(boq.clientRequest.at).toLocaleString("en-IN", {
+                    day: "2-digit",
+                    month: "short",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })})`}
+              </p>
+              {boq.clientRequest.type === "changes_requested" &&
+                boq.clientRequest.comment && (
+                  <p className="mt-1.5 rounded-lg bg-white/60 border border-amber-200 px-2.5 py-1.5 italic">
+                    “{boq.clientRequest.comment}”
+                  </p>
+                )}
+            </div>
+            <button
+              type="button"
+              onClick={acknowledgeClientRequest}
+              className={`ml-auto shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+                boq.clientRequest.type === "accepted"
+                  ? "text-emerald-700 hover:bg-emerald-100"
+                  : "text-amber-800 hover:bg-amber-100"
+              }`}
+              title="Dismiss this notification"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+        {boq.surveyStale && showSurveyStaleNotice && (
           <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12px] text-amber-800">
             <AlertTriangle size={15} className="mt-0.5 shrink-0" />
             <span>
@@ -1460,6 +1678,15 @@ const BOQEditor = () => {
               Treat these quantities as stale until the survey is frozen and the
               BOQ is regenerated.
             </span>
+            <button
+              type="button"
+              onClick={() => setShowSurveyStaleNotice(false)}
+              className="ml-auto shrink-0 -mr-1 -mt-1 rounded-md p-1 text-amber-500 hover:bg-amber-100 hover:text-amber-700 transition-colors"
+              title="Dismiss"
+              aria-label="Dismiss notice"
+            >
+              <X size={14} />
+            </button>
           </div>
         )}
         {boq.siteID && Number.isFinite(Number(boq.quotedTotal)) && (
@@ -1491,6 +1718,28 @@ const BOQEditor = () => {
             />
           </div>
         )}
+        {/* ── Editor tabs: Scope of Work | Rate Analysis ─────────────────── */}
+        <div className="mb-4 flex items-center gap-1 border-b border-bordergray">
+          {[
+            { key: "scope", label: "Scope of Work", icon: <Layers size={13} /> },
+            { key: "rate", label: "Rate Analysis", icon: <Calculator size={13} /> },
+          ].map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setEditorTab(t.key)}
+              className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors ${
+                editorTab === t.key
+                  ? "border-select-blue text-select-blue"
+                  : "border-transparent text-text-muted hover:text-textcolor"
+              }`}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
+
+        {editorTab === "scope" && (
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
           {/* ── Left: Sections + line items ─────────────────────────────── */}
           <main className="space-y-5 min-w-0 lg:overflow-y-auto lg:pr-2 lg:pb-6 scroll-hidden-bar">
@@ -1607,39 +1856,6 @@ const BOQEditor = () => {
                     className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
                   />
                 </Field>
-                <div className="sm:col-span-2 lg:col-span-4 rounded-xl border border-bordergray bg-bg-soft/40 p-3">
-                  <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-text-muted">
-                    <Layers size={11} className="text-select-blue" />
-                    Project hierarchy
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
-                    {[
-                      ["block", "Block"],
-                      ["tower", "Tower"],
-                      ["floor", "Floor"],
-                      ["roomArea", "Room / Area"],
-                      ["workCategory", "Work Category"],
-                      ["subCategory", "Sub-category"],
-                    ].map(([key, label]) => (
-                      <input
-                        key={key}
-                        type="text"
-                        value={boq.hierarchy?.[key] || ""}
-                        onChange={(e) =>
-                          update({
-                            hierarchy: {
-                              ...(boq.hierarchy || {}),
-                              [key]: e.target.value,
-                            },
-                          })
-                        }
-                        disabled={isLocked}
-                        placeholder={label}
-                        className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                      />
-                    ))}
-                  </div>
-                </div>
                 {(boq.client?.phone ||
                   boq.client?.email ||
                   boq.project?.address) && (
@@ -2190,22 +2406,6 @@ const BOQEditor = () => {
                             >
                               <Plus size={12} /> Add Line Item
                             </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                isLocked
-                                  ? handleCreateRevision()
-                                  : setLibraryPickerSection(section.id)
-                              }
-                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-text-muted hover:text-select-blue hover:bg-white border border-bordergray transition-all"
-                              title={
-                                isLocked
-                                  ? "Create a revision to insert from the library"
-                                  : "Insert from Item Master library"
-                              }
-                            >
-                              <BookOpen size={11} /> Insert from Library
-                            </button>
                           </div>
                           {section.items.length === 0 && (
                             <span className="text-[10.5px] text-text-subtle">
@@ -2235,51 +2435,6 @@ const BOQEditor = () => {
 
           {/* ── Right: Summary, terms, notes ────────────────────────────── */}
           <aside className="space-y-5 lg:overflow-y-auto lg:pr-1 lg:pb-6 scroll-hidden-bar">
-
-            {/* Room Breakdown */}
-            {roomBreakdown.length > 0 && (
-              <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-                <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-violet-50 to-white">
-                  <Layers size={13} className="text-violet-600" />
-                  <h3 className="text-[12px] font-bold text-textcolor">Room Breakdown</h3>
-                  <span className="ml-auto text-[10px] text-text-subtle font-medium">{roomBreakdown.length} rooms</span>
-                </div>
-                <div className="p-3 space-y-1">
-                  {roomBreakdown.map((room) => {
-                    const pct = totals.taxable > 0 ? (room.net / totals.taxable) * 100 : 0;
-                    const c = roomColor(room.category);
-                    return (
-                      <button
-                        key={room.category}
-                        type="button"
-                        onClick={() => scrollToSection(room.sectionIds[0])}
-                        className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-bg-soft transition-colors"
-                      >
-                        <div className="flex items-center justify-between gap-2 mb-1.5">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className={`h-2 w-2 shrink-0 rounded-full ${c.dot}`} />
-                            <span className="text-[12px] font-semibold text-textcolor truncate">{room.category}</span>
-                            <span className="text-[10px] text-text-subtle shrink-0">{room.itemCount}</span>
-                          </div>
-                          <span className="text-[12px] font-bold text-textcolor tabular-nums shrink-0">
-                            {formatAmount(room.net)}
-                          </span>
-                        </div>
-                        <div className="h-1 w-full rounded-full bg-bg-soft overflow-hidden">
-                          <div className={`h-full rounded-full transition-all ${c.bar}`} style={{ width: `${Math.min(100, pct)}%` }} />
-                        </div>
-                      </button>
-                    );
-                  })}
-                  {roomBreakdown.length > 1 && (
-                    <div className="mt-2 flex items-center justify-between border-t border-bordergray pt-2.5 px-3">
-                      <span className="text-[10.5px] font-bold text-text-muted uppercase tracking-wide">Total (pre-GST)</span>
-                      <span className="text-[13px] font-bold text-textcolor tabular-nums">{formatAmount(totals.taxable)}</span>
-                    </div>
-                  )}
-                </div>
-              </section>
-            )}
 
             {/* Totals */}
             <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
@@ -2384,6 +2539,26 @@ const BOQEditor = () => {
                     value={formatAmount(totals.baseForGst)}
                   />
                 )}
+
+                {/* Average commercial loading across items with a rate build-up */}
+                <div className="border-t border-bordergray pt-2 mt-2 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-text-muted flex items-center gap-1">
+                      <Percent size={11} /> Avg Margin %
+                    </span>
+                    <span className="font-semibold text-textcolor tabular-nums">
+                      {raAverages.count > 0 ? `${raAverages.marginPct.toFixed(1)}%` : "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-text-muted flex items-center gap-1">
+                      <Percent size={11} /> Avg PCE %
+                    </span>
+                    <span className="font-semibold text-textcolor tabular-nums">
+                      {raAverages.count > 0 ? `${raAverages.pcePct.toFixed(1)}%` : "—"}
+                    </span>
+                  </div>
+                </div>
 
                 <div className="border-t border-bordergray pt-2 mt-2 space-y-2">
                   <div className="flex items-center justify-between gap-2">
@@ -2538,137 +2713,50 @@ const BOQEditor = () => {
               </div>
             </section>
 
-            {/* Payment milestones */}
-            <CollapsiblePanel
-              title="Payment Milestones"
-              icon={<Calendar size={13} className="text-select-blue" />}
-              meta="5-stage standard"
-              actions={
-                <>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      update({
-                        paymentTerms: PAYMENT_MILESTONES.map((m) => ({
-                          id: m.id,
-                          label: m.name,
-                          percent: m.pct,
-                        })),
-                      })
-                    }
-                    disabled={isLocked}
-                    className="flex items-center gap-1 text-[11px] font-semibold text-text-muted hover:text-select-blue"
-                    title="Reset to standard 5-stage milestone schedule"
-                  >
-                    <RotateCcw size={11} /> Reset
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      update({
-                        paymentTerms: [
-                          ...(boq.paymentTerms || []),
-                          { label: "", percent: 0 },
-                        ],
-                      })
-                    }
-                    disabled={isLocked}
-                    className="flex items-center gap-1 text-[11px] font-semibold text-select-blue hover:text-primary"
-                  >
-                    <Plus size={11} /> Add
-                  </button>
-                </>
-              }
-            >
-              <div className="p-3 space-y-2">
-                {(boq.paymentTerms || []).map((m, idx) => {
-                  const amt =
-                    (totals.grandTotal * (Number(m.percent) || 0)) / 100;
-                  return (
-                    <div
-                      key={idx}
-                      className="grid grid-cols-[1fr_60px_24px] gap-2 items-center"
-                    >
-                      <input
-                        type="text"
-                        value={m.label}
-                        onChange={(e) =>
-                          update({
-                            paymentTerms: boq.paymentTerms.map((p, i) =>
-                              i === idx ? { ...p, label: e.target.value } : p,
-                            ),
-                          })
-                        }
-                        disabled={isLocked}
-                        placeholder="On signing"
-                        className={compactInput}
-                      />
-                      <div className="relative">
-                        <input
-                          type="number"
-                          value={m.percent}
-                          onChange={(e) =>
-                            update({
-                              paymentTerms: boq.paymentTerms.map((p, i) =>
-                                i === idx
-                                  ? {
-                                      ...p,
-                                      percent: Number(e.target.value) || 0,
-                                    }
-                                  : p,
-                              ),
-                          })
-                        }
-                          disabled={isLocked}
-                          className={`${compactInput} text-right pr-5`}
-                        />
-                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-text-subtle">
-                          %
-                        </span>
-                      </div>
+            {/* Room Breakdown */}
+            {roomBreakdown.length > 0 && (
+              <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
+                <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-violet-50 to-white">
+                  <Layers size={13} className="text-violet-600" />
+                  <h3 className="text-[12px] font-bold text-textcolor">Room Breakdown</h3>
+                  <span className="ml-auto text-[10px] text-text-subtle font-medium">{roomBreakdown.length} rooms</span>
+                </div>
+                <div className="p-3 space-y-1">
+                  {roomBreakdown.map((room) => {
+                    const pct = totals.taxable > 0 ? (room.net / totals.taxable) * 100 : 0;
+                    const c = roomColor(room.category);
+                    return (
                       <button
+                        key={room.category}
                         type="button"
-                        onClick={() =>
-                          update({
-                            paymentTerms: boq.paymentTerms.filter(
-                              (_, i) => i !== idx,
-                            ),
-                          })
-                        }
-                        disabled={isLocked}
-                        className="h-7 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
+                        onClick={() => scrollToSection(room.sectionIds[0])}
+                        className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-bg-soft transition-colors"
                       >
-                        <Trash2 size={11} />
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className={`h-2 w-2 shrink-0 rounded-full ${c.dot}`} />
+                            <span className="text-[12px] font-semibold text-textcolor truncate">{room.category}</span>
+                            <span className="text-[10px] text-text-subtle shrink-0">{room.itemCount}</span>
+                          </div>
+                          <span className="text-[12px] font-bold text-textcolor tabular-nums shrink-0">
+                            {formatAmount(room.net)}
+                          </span>
+                        </div>
+                        <div className="h-1 w-full rounded-full bg-bg-soft overflow-hidden">
+                          <div className={`h-full rounded-full transition-all ${c.bar}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                        </div>
                       </button>
-                      <p className="col-span-3 text-[9.5px] text-text-subtle tabular-nums -mt-1">
-                        ≈ {formatAmount(Math.round(amt))}
-                      </p>
+                    );
+                  })}
+                  {roomBreakdown.length > 1 && (
+                    <div className="mt-2 flex items-center justify-between border-t border-bordergray pt-2.5 px-3">
+                      <span className="text-[10.5px] font-bold text-text-muted uppercase tracking-wide">Total (pre-GST)</span>
+                      <span className="text-[13px] font-bold text-textcolor tabular-nums">{formatAmount(totals.taxable)}</span>
                     </div>
-                  );
-                })}
-                {(boq.paymentTerms || []).length > 0 && (
-                  <div className="pt-1 border-t border-bordergray flex justify-between text-[10.5px]">
-                    <span className="text-text-muted">Total %</span>
-                    <span
-                      className={`font-bold tabular-nums ${
-                        boq.paymentTerms.reduce(
-                          (s, m) => s + (Number(m.percent) || 0),
-                          0,
-                        ) === 100
-                          ? "text-emerald-600"
-                          : "text-orange-500"
-                      }`}
-                    >
-                      {boq.paymentTerms.reduce(
-                        (s, m) => s + (Number(m.percent) || 0),
-                        0,
-                      )}
-                      %
-                    </span>
-                  </div>
-                )}
-              </div>
-            </CollapsiblePanel>
+                  )}
+                </div>
+              </section>
+            )}
 
             {/* Notes */}
             <CollapsiblePanel
@@ -2803,6 +2891,15 @@ const BOQEditor = () => {
 
           </aside>
         </div>
+        )}
+
+        {editorTab === "rate" && (
+          <RateAnalysisTab
+            boq={boq}
+            disabled={isLocked}
+            onUpdateItem={updateItem}
+          />
+        )}
       </div>
 
       {/* Toast */}
@@ -2851,17 +2948,6 @@ const BOQEditor = () => {
         />
       )}
 
-      {/* Item Master picker modal */}
-      {libraryPickerSection && (
-        <LibraryPicker
-          onClose={() => setLibraryPickerSection(null)}
-          onInsert={(items) => {
-            insertLibraryItems(libraryPickerSection, items);
-            setLibraryPickerSection(null);
-          }}
-        />
-      )}
-
       {/* Section template picker */}
       {showSectionPicker && (
         <SectionTemplatePicker
@@ -2871,6 +2957,14 @@ const BOQEditor = () => {
             addSection();
           }}
           onAddFromCategory={addSectionFromCategory}
+        />
+      )}
+
+      {/* Master sheet overlay — internal consolidated pack */}
+      {showMasterSheet && (
+        <MasterSheetPreview
+          boq={boq}
+          onClose={() => setShowMasterSheet(false)}
         />
       )}
 
@@ -2901,6 +2995,57 @@ const BOQEditor = () => {
       {/* Print preview overlay */}
       {showPreview && (
         <BOQPreview boq={boq} onClose={() => setShowPreview(false)} />
+      )}
+
+      {/* Final-quote review — admin previews the client-facing document and
+          confirms before it is published to the client portal. */}
+      {finalQuotePreview && (
+        <Modal
+          title="Final Quote"
+          subtitle={`Review ${finalQuotePreview.quoteId} for ${finalQuotePreview.recipientName || "the client"} before publishing it to the client portal.`}
+          onClose={
+            publishingFinalQuote ? undefined : () => setFinalQuotePreview(null)
+          }
+          maxWidth="max-w-[820px]"
+          footer={
+            <div className="flex flex-wrap justify-between items-center gap-3">
+              <p className="text-[11px] text-text-muted max-w-[46ch]">
+                Publishing makes this quote visible to the client and records it
+                against {boq.id} (Rev {boq.revision}).
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setFinalQuotePreview(null)}
+                  disabled={publishingFinalQuote}
+                  className="px-5 py-2.5 rounded-lg border border-bordergray text-sm font-medium text-text-muted hover:bg-bg-soft transition-all disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmPublishFinalQuote}
+                  disabled={publishingFinalQuote}
+                  className="min-w-[190px] flex items-center justify-center gap-2 px-7 py-2.5 rounded-lg bg-teal-500 text-white text-sm font-medium hover:bg-teal-600 shadow-sm transition-all disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  {publishingFinalQuote ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" /> Publishing…
+                    </>
+                  ) : (
+                    <>
+                      <Wallet size={14} /> Publish to Client
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          }
+        >
+          <div className="rounded-xl border border-bordergray bg-white p-6 shadow-sm">
+            <QuotePreview quote={finalQuotePreview} />
+          </div>
+        </Modal>
       )}
 
       {/* Full Item Form modal — opened by "Add Line Item" in any section */}
@@ -3455,16 +3600,6 @@ const ItemDetailsRow = ({ item, onUpdate, disabled = false }) => {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-          <Field icon={<Layers size={11} />} label="Block / Tower">
-            <input
-              type="text"
-              value={hierarchy.blockTower || hierarchy.block || hierarchy.tower || ""}
-              onChange={(e) => patchHierarchy({ blockTower: e.target.value })}
-              disabled={disabled}
-              placeholder="Block A / Tower 1"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
           <Field icon={<Building2 size={11} />} label="Floor">
             <input
               type="text"
@@ -3524,19 +3659,6 @@ const ItemDetailsRow = ({ item, onUpdate, disabled = false }) => {
                 className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
               />
             </div>
-          </Field>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-          <Field icon={<Hash size={11} />} label="Specification Code">
-            <input
-              type="text"
-              value={details.specificationCode || ""}
-              onChange={(e) => patchDetails({ specificationCode: e.target.value })}
-              disabled={disabled}
-              placeholder="SPEC-CARP-001"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
           </Field>
           <Field icon={<Package size={11} />} label="Brand / Make / Model">
             <input
@@ -3630,9 +3752,10 @@ const ItemDetailsRow = ({ item, onUpdate, disabled = false }) => {
             />
           </Field>
         </div>
-        <MeasurementRowsEditor item={item} onUpdate={onUpdate} disabled={disabled} />
-        <RateAnalysisEditor item={item} onUpdate={onUpdate} disabled={disabled} />
-        <VendorComparisonEditor item={item} onUpdate={onUpdate} disabled={disabled} />
+        {/* Scope-of-work details is intentionally lean now: Rate Analysis has
+            its own editor tab; the Measurement Sheet is viewed via the header
+            "Measurement Sheet" button; Vendor Comparison moved to Procurement.
+            Only the material breakdown remains inline here. */}
         <MaterialEditor item={item} onUpdate={onUpdate} disabled={disabled} />
       </td>
     </tr>
@@ -3955,204 +4078,7 @@ const MaterialEditor = ({ item, onUpdate, disabled = false }) => {
   );
 };
 
-const measurementNetQty = (row, unit) => {
-  const explicitQty = Number(row.netQuantity ?? row.qty) || 0;
-  if (explicitQty > 0) return explicitQty;
-  const nos = Number(row.nos) || 1;
-  const L = Number(row.length) || 0;
-  const B = Number(row.breadth ?? row.width) || 0;
-  const H = Number(row.height) || 0;
-  const deduction = Number(row.deduction) || 0;
-  let qty = 0;
-  if (DIMENSIONAL_UNITS[unit]?.kind === "length") {
-    qty = L;
-  } else {
-    const factors = [L, B, H].filter((v) => v > 0);
-    qty = factors.length > 0 ? factors.reduce((p, v) => p * v, 1) : 0;
-  }
-  return Math.max(0, qty * nos - deduction);
-};
 
-const MeasurementRowsEditor = ({ item, onUpdate, disabled = false }) => {
-  const rows = item.measurementRows || [];
-  const [open, setOpen] = useState(rows.length > 0);
-  const update = (next) => onUpdate({ measurementRows: next });
-  const patch = (idx, values) =>
-    update(rows.map((row, i) => (i === idx ? { ...row, ...values } : row)));
-  const add = () => {
-    update([...rows, { ...blankMeasurementRow(), unit: item.unit || "" }]);
-    setOpen(true);
-  };
-  const remove = (idx) => update(rows.filter((_, i) => i !== idx));
-  const totalQty = rows.reduce(
-    (sum, row) => sum + measurementNetQty(row, item.unit),
-    0,
-  );
-
-  return (
-    <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
-      <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((p) => !p)}
-          className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted hover:text-select-blue"
-        >
-          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          Measurement Sheet
-          {rows.length > 0 && (
-            <span className="text-[9.5px] font-bold text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
-              {rows.length}
-            </span>
-          )}
-        </button>
-        <div className="flex items-center gap-2">
-          {rows.length > 0 && (
-            <span className="text-[10px] font-bold text-text-muted tabular-nums">
-              Qty {totalQty.toFixed(2).replace(/\.00$/, "")} {unitLabelOf(item.unit)}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={add}
-            disabled={disabled}
-            className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Plus size={11} /> Add row
-          </button>
-        </div>
-      </div>
-      {open && (
-        <div className="mt-2 space-y-2">
-          {rows.length === 0 ? (
-            <p className="text-[10.5px] text-text-subtle">
-              Add measurement rows to calculate BOQ quantity from location-wise measurements.
-            </p>
-          ) : (
-            rows.map((row, idx) => (
-              <div
-                key={row.id || idx}
-                className="rounded-lg border border-bordergray/70 bg-bg-soft/25 p-2"
-              >
-                <div className="grid grid-cols-1 md:grid-cols-[110px_1fr_52px_62px_62px_62px_70px_82px_70px_28px] gap-2 items-start">
-                  <input
-                    type="text"
-                    value={row.location || ""}
-                    onChange={(e) => patch(idx, { location: e.target.value })}
-                    disabled={disabled}
-                    placeholder="Location"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <input
-                    type="text"
-                    value={row.description || ""}
-                    onChange={(e) => patch(idx, { description: e.target.value })}
-                    disabled={disabled}
-                    placeholder="Description"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  {[
-                    ["nos", "Nos"],
-                    ["length", "L"],
-                    ["breadth", "B"],
-                    ["height", "H"],
-                    ["deduction", "Deduct"],
-                  ].map(([key, label]) => (
-                    <input
-                      key={key}
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={row[key] ?? (key === "nos" ? 1 : 0)}
-                      onChange={(e) => patch(idx, { [key]: Number(e.target.value) || 0 })}
-                      disabled={disabled}
-                      placeholder={label}
-                      title={label}
-                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    />
-                  ))}
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={row.netQuantity ?? row.qty ?? 0}
-                    onChange={(e) =>
-                      patch(idx, {
-                        netQuantity: Number(e.target.value) || 0,
-                        qty: Number(e.target.value) || 0,
-                      })
-                    }
-                    disabled={disabled}
-                    placeholder="Net qty"
-                    title={`Calculated: ${measurementNetQty(row, item.unit).toFixed(2)}`}
-                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <input
-                    type="text"
-                    value={row.unit || item.unit || ""}
-                    onChange={(e) => patch(idx, { unit: e.target.value })}
-                    disabled={disabled}
-                    placeholder="Unit"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => remove(idx)}
-                    disabled={disabled}
-                    className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Remove measurement row"
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                </div>
-                <div className="mt-2 grid grid-cols-1 md:grid-cols-[1fr_110px_110px_128px_1fr] gap-2">
-                  <input
-                    type="text"
-                    value={row.drawingPhotoRef || ""}
-                    onChange={(e) => patch(idx, { drawingPhotoRef: e.target.value })}
-                    disabled={disabled}
-                    placeholder="Drawing/photo reference"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <input
-                    type="text"
-                    value={row.measuredBy || ""}
-                    onChange={(e) => patch(idx, { measuredBy: e.target.value })}
-                    disabled={disabled}
-                    placeholder="Measured by"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <input
-                    type="text"
-                    value={row.checkedBy || ""}
-                    onChange={(e) => patch(idx, { checkedBy: e.target.value })}
-                    disabled={disabled}
-                    placeholder="Checked by"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <input
-                    type="date"
-                    value={row.measurementDate || ""}
-                    onChange={(e) => patch(idx, { measurementDate: e.target.value })}
-                    disabled={disabled}
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <input
-                    type="text"
-                    value={row.remarks || ""}
-                    onChange={(e) => patch(idx, { remarks: e.target.value })}
-                    disabled={disabled}
-                    placeholder="Remarks"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 const rateRowAmount = (row) => {
   const quantity = Number(row.quantity) || 0;
@@ -4167,6 +4093,10 @@ const rateRowQww = (row) => {
   const wastage = Number(row.wastagePercent) || 0;
   return Number(row.quantityWithWastage) || quantity * (1 + wastage / 100);
 };
+
+// Digits and at most one decimal point only — nothing else (no letters, "e",
+// signs, or a second dot). Used to gate the Rate/unit & Waste% text fields.
+const DECIMAL_ONLY = /^\d*\.?\d*$/;
 
 // One shared 9-column grid drives the whole sheet — the column header, the A/B
 // group bands, the editable item rows, and the C→F calculation cascade all line
@@ -4347,31 +4277,37 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOpti
       ))}
     </select>
     <input
-      type="number"
-      min="0"
-      step="0.01"
-      value={row.rate || 0}
-      onChange={(e) => onChange({ rate: Number(e.target.value) || 0 })}
+      type="text"
+      inputMode="decimal"
+      value={row.rate ?? ""}
+      onChange={(e) => {
+        if (DECIMAL_ONLY.test(e.target.value)) onChange({ rate: e.target.value });
+      }}
       disabled={disabled}
       title="Rate per unit"
+      placeholder="0"
       className={`${raCellInput} text-right`}
     />
     <input
-      type="number"
-      min="0"
-      step="0.01"
-      value={row.quantity || 0}
-      onChange={(e) => onChange({ quantity: Number(e.target.value) || 0 })}
+      type="text"
+      inputMode="decimal"
+      value={row.quantity ?? ""}
+      onChange={(e) => {
+        if (DECIMAL_ONLY.test(e.target.value)) onChange({ quantity: e.target.value });
+      }}
       disabled={disabled}
+      placeholder="0"
       className={`${raCellInput} text-right`}
     />
     <input
-      type="number"
-      min="0"
-      step="0.01"
-      value={row.wastagePercent || 0}
-      onChange={(e) => onChange({ wastagePercent: Number(e.target.value) || 0 })}
+      type="text"
+      inputMode="decimal"
+      value={row.wastagePercent ?? ""}
+      onChange={(e) => {
+        if (DECIMAL_ONLY.test(e.target.value)) onChange({ wastagePercent: e.target.value });
+      }}
       disabled={disabled}
+      placeholder="0"
       className={`${raCellInput} text-right`}
     />
     <div
@@ -4386,7 +4322,7 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOpti
         type="button"
         onClick={onRemove}
         disabled={disabled}
-        className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
+        className="h-6 w-6 flex items-center justify-center rounded-md text-text-muted hover:text-red-500 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
         title="Remove row"
       >
         <Trash2 size={11} />
@@ -4398,12 +4334,14 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOpti
 // Group band header (A. Material Items / B. Contract Items) — just the block
 // label and its Add action. The block total sits in the footer below its rows.
 const RaGroupHeader = ({ letter, title, onAdd, disabled }) => (
-  <div className={`${RA_COLS} border-t border-bordergray bg-rose-50/70`}>
-    <div className="flex items-center justify-center text-[10px] font-bold text-rose-700">
-      {letter}
+  <div className={`${RA_COLS} border-t border-bordergray bg-active-bg/50`}>
+    <div className="flex items-center justify-center">
+      <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-select-blue/15 text-[9px] font-bold text-select-blue">
+        {letter}
+      </span>
     </div>
     <div className="col-span-8 flex items-center gap-2 px-1.5 py-1.5">
-      <span className="text-[10.5px] font-bold uppercase tracking-wide text-textcolor">
+      <span className="text-[10.5px] font-bold uppercase tracking-wide text-primary">
         {title}
       </span>
       <button
@@ -4421,14 +4359,14 @@ const RaGroupHeader = ({ letter, title, onAdd, disabled }) => (
 // Block subtotal row — the block's total Amount, shown below its item rows.
 // Rate/sqft is intentionally left blank (only per-row rates carry meaning).
 const RaGroupFooter = ({ label, subtotal }) => (
-  <div className={`${RA_COLS} border-t border-bordergray bg-rose-50/40`}>
-    <div className="col-span-7 flex items-center justify-end px-2 py-1.5 text-[10px] font-bold uppercase tracking-wide text-text-muted">
+  <div className={`${RA_COLS} border-t border-bordergray bg-bg-soft`}>
+    <div className="col-span-7 flex items-center justify-end px-2 py-1.5 text-[10px] font-bold uppercase tracking-wide text-grey">
       {label}
     </div>
-    <RaValueCell strong className="bg-rose-50/40">
+    <RaValueCell strong className="bg-bg-soft">
       {formatAmount(subtotal)}
     </RaValueCell>
-    <div className="bg-rose-50/40" />
+    <div className="bg-bg-soft" />
   </div>
 );
 
@@ -4445,8 +4383,12 @@ const RaCascadeRow = ({
   disabled,
 }) => (
   <div className={`${RA_COLS} border-t border-bordergray/70 ${tint}`}>
-    <div className={`flex items-center justify-center text-[10px] font-bold ${strong ? "text-emerald-800" : "text-text-muted"}`}>
-      {letter}
+    <div className="flex items-center justify-center">
+      {letter && (
+        <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-select-blue/15 text-[9px] font-bold text-select-blue">
+          {letter}
+        </span>
+      )}
     </div>
     <div className="col-span-6 flex items-center gap-2 px-1.5 py-1.5">
       <span className={`text-[11px] ${strong ? "font-bold text-textcolor" : "font-semibold text-text-muted"}`}>
@@ -4455,12 +4397,14 @@ const RaCascadeRow = ({
       {onPercentChange && (
         <span className="inline-flex items-center gap-0.5">
           <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={percentValue || 0}
-            onChange={(e) => onPercentChange(Number(e.target.value) || 0)}
+            type="text"
+            inputMode="decimal"
+            value={percentValue ?? ""}
+            onChange={(e) => {
+              if (DECIMAL_ONLY.test(e.target.value)) onPercentChange(e.target.value);
+            }}
             disabled={disabled}
+            placeholder="0"
             className="w-12 rounded border border-bordergray bg-white px-1 py-0.5 text-right text-[10.5px] tabular-nums focus:outline-none focus:ring-1 focus:ring-select-blue/40 disabled:bg-bg-soft disabled:cursor-not-allowed"
           />
           <span className="text-[10px] font-semibold text-text-muted">%</span>
@@ -4474,10 +4418,97 @@ const RaCascadeRow = ({
   </div>
 );
 
+// Consolidated Rate Analysis worksheet — every line item across all sections in
+// one place, so unit rates can be built up and validated together before the
+// BOQ is finalized. Reuses the same per-item RateAnalysisEditor shown inline in
+// Scope of Work, wired to the same updateItem path, so edits stay in sync across
+// both tabs (there's one source of truth per item).
+const RateAnalysisTab = ({ boq, onUpdateItem, disabled = false }) => {
+  const sections = (boq.sections || []).filter((s) => (s.items || []).length > 0);
+  const allItems = sections.flatMap((s) => s.items || []);
+  const enabledCount = allItems.filter((it) => it.rateAnalysis?.enabled).length;
+
+  if (allItems.length === 0) {
+    return (
+      <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto scroll-hidden-bar">
+        <div className="rounded-2xl border border-dashed border-bordergray bg-white px-6 py-12 text-center">
+          <Calculator size={22} className="mx-auto mb-2 text-text-subtle" />
+          <p className="text-[13px] font-semibold text-textcolor">
+            No line items yet
+          </p>
+          <p className="mt-1 text-[11.5px] text-text-muted">
+            Add scope items first, then build up their rates here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="lg:flex-1 lg:min-h-0 space-y-5 lg:overflow-y-auto lg:pr-2 lg:pb-6 scroll-hidden-bar">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-select-blue/20 bg-select-blue/[0.03] px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Calculator size={15} className="text-select-blue" />
+          <div>
+            <p className="text-[12.5px] font-bold text-textcolor">Rate Analysis</p>
+            <p className="text-[11px] text-text-muted">
+              Build up and validate unit rates for every line item before
+              finalizing.
+            </p>
+          </div>
+        </div>
+        <span className="rounded-lg border border-bordergray bg-white px-2.5 py-1 text-[11px] font-semibold text-text-muted">
+          {enabledCount}/{allItems.length} with rate analysis
+        </span>
+      </div>
+
+      {sections.map((section) => (
+        <section key={section.id} className="space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="h-4 w-1 rounded bg-select-blue" />
+            <h3 className="text-[12px] font-bold text-textcolor">
+              {section.title || "Untitled section"}
+            </h3>
+            <span className="text-[10.5px] text-text-subtle">
+              {section.items.length} item{section.items.length > 1 ? "s" : ""}
+            </span>
+          </div>
+          {section.items.map((item) => (
+            <div
+              key={item.id}
+              className="rounded-2xl border border-bordergray bg-bg-soft/40 px-4 py-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-[12.5px] font-semibold text-textcolor">
+                    {item.description || "Untitled item"}
+                  </p>
+                  {item.spec && (
+                    <p className="truncate text-[10.5px] text-text-muted">
+                      {item.spec}
+                    </p>
+                  )}
+                </div>
+                <span className="shrink-0 rounded-lg border border-bordergray bg-white px-2.5 py-1 text-[11px] font-bold text-textcolor tabular-nums">
+                  {formatAmount(item.rate || 0)} / {item.unit || "unit"}
+                </span>
+              </div>
+              <RateAnalysisEditor
+                item={item}
+                onUpdate={(changes) => onUpdateItem(section.id, item.id, changes)}
+                disabled={disabled}
+              />
+            </div>
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+};
+
 const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
   const current = computeRateAnalysis(item.rateAnalysis, item.unit);
   const [open, setOpen] = useState(!!current.enabled);
-  const [showAdjustments, setShowAdjustments] = useState(false);
   const unitLabel = current.unit || item.unit || "unit";
   const ro = disabled || !current.enabled;
   // Material Master catalog, read once — powers the Material Items picker.
@@ -4701,16 +4732,15 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
               {current.subtotalConsumables > 0 && (
                 <RaCascadeRow letter="" label="Consumables" value={current.subtotalConsumables} />
               )}
-              {current.labourRate > 0 && (
-                <RaCascadeRow letter="" label="Labour (lump sum)" value={current.labourRate} />
-              )}
+              {/* Labour — mapped from the build-up and shown as a cost line. */}
+              <RaCascadeRow letter="" label="Labour (lump sum)" value={current.labourRate} />
 
               {/* C — Total of Material + Contracts (A+B) */}
               <RaCascadeRow
                 letter="C"
                 label="Total of Material + Contracts (A+B)"
                 value={current.directCost}
-                tint="bg-emerald-50/60"
+                tint="bg-active-bg/30"
                 strong
               />
               {/* D — Cost per unit */}
@@ -4718,261 +4748,55 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
                 letter="D"
                 label={`Cost per unit (C / ${current.raQuantity || 0} ${unitLabel})`}
                 value={current.costPerUnit}
-                tint="bg-emerald-50/40"
+                tint="bg-active-bg/20"
                 strong
               />
-              {current.overheadAmount > 0 && (
-                <RaCascadeRow
-                  letter=""
-                  label="Overhead"
-                  value={current.overheadAmount}
-                  percentValue={current.overheadPercent}
-                  onPercentChange={(v) => applyRa({ overheadPercent: v })}
-                  disabled={ro}
-                />
-              )}
+              {/* Overhead — mapped from the build-up (read-only). Its % shows in
+                  the label; the value comes from the Item Master recipe. */}
+              <RaCascadeRow
+                letter=""
+                label={`Overhead (${current.overheadPercent || 0}%)`}
+                value={current.overheadAmount}
+              />
               {/* E — Contract PCE (D × E%) */}
               <RaCascadeRow
                 letter="E"
                 label="Contract PCE — adds to basic cost"
                 value={current.rateBeforeMargin}
-                tint="bg-emerald-50/40"
+                tint="bg-active-bg/20"
                 strong
                 percentValue={current.pcePercent}
                 onPercentChange={(v) => applyRa({ pcePercent: v })}
                 disabled={ro}
               />
-              {/* F — Margin (on selling price: basic cost ÷ (1 − margin%)) */}
+              {/* F — Margin (mapped from the build-up, read-only). On selling
+                  price: final rate = basic cost ÷ (1 − margin%). */}
               <RaCascadeRow
                 letter="F"
-                label="Margin — on selling price"
+                label={`Margin — on selling price (${current.marginPercent || 0}%)`}
                 value={current.roundedFinalRate}
-                tint="bg-emerald-100/70"
+                tint="bg-active-bg/60"
                 strong
-                percentValue={current.marginPercent}
-                onPercentChange={(v) => applyRa({ marginPercent: v })}
-                disabled={ro}
               />
             </div>
           </div>
 
-          {/* Final rate highlight */}
-          <div className="flex items-center justify-between gap-3 rounded-lg bg-select-blue/10 px-3 py-2">
-            <span className="text-[10.5px] font-bold uppercase tracking-wider text-select-blue">
+          {/* Final rate highlight — mirrors the Summary Grand Total bar */}
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-linear-to-br from-select-blue to-primary px-3 py-2.5 text-white shadow-sm">
+            <span className="text-[10.5px] font-bold uppercase tracking-wider opacity-80">
               Final Rate / {unitLabel}
             </span>
-            <span className="text-[16px] font-bold tabular-nums text-select-blue">
+            <span className="text-[18px] font-bold tabular-nums">
               {formatAmount(current.roundedFinalRate)}
             </span>
           </div>
 
-          {/* Adjustments — secondary inputs kept out of the main sheet view */}
-          <div className="rounded-lg border border-bordergray/70 bg-bg-soft/25">
-            <button
-              type="button"
-              onClick={() => setShowAdjustments((p) => !p)}
-              className="flex w-full items-center gap-1.5 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-text-muted hover:text-select-blue"
-            >
-              {showAdjustments ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-              Adjustments &amp; basis
-            </button>
-            {showAdjustments && (
-              <div className="space-y-3 px-3 pb-3">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <Field icon={<User size={10} />} label="Labour (lump sum)">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={current.labourRate || 0}
-                      onChange={(e) => applyRa({ labourRate: Number(e.target.value) || 0 })}
-                      disabled={ro}
-                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    />
-                  </Field>
-                  <Field icon={<Package size={10} />} label="Consumables">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={current.consumables || 0}
-                      onChange={(e) => applyRa({ consumables: Number(e.target.value) || 0 })}
-                      disabled={ro}
-                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    />
-                  </Field>
-                  <Field icon={<Percent size={10} />} label="Overhead %">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={current.overheadPercent || 0}
-                      onChange={(e) => applyRa({ overheadPercent: Number(e.target.value) || 0 })}
-                      disabled={ro}
-                      className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    />
-                  </Field>
-                  <label className="flex items-center gap-1.5 pt-5 text-[10.5px] font-semibold text-text-muted">
-                    <input
-                      type="checkbox"
-                      checked={!!current.useFinalRate}
-                      onChange={(e) => applyRa({ useFinalRate: e.target.checked })}
-                      disabled={ro}
-                      className="h-3.5 w-3.5 accent-select-blue"
-                    />
-                    Use calculated rate
-                  </label>
-                </div>
-                <p className="text-[9.5px] text-text-subtle">
-                  Margin is applied on the selling price: final rate = basic cost
-                  ÷ (1 − margin%).
-                </p>
-              </div>
-            )}
-          </div>
         </div>
       )}
     </div>
   );
 };
 
-const VendorComparisonEditor = ({ item, onUpdate, disabled = false }) => {
-  const rows = item.vendorComparisons || [];
-  const [open, setOpen] = useState(rows.length > 0);
-  const update = (next) => onUpdate({ vendorComparisons: next });
-  const patch = (idx, values) => {
-    const next = rows.map((row, i) => {
-      if (i !== idx) return values.selected ? { ...row, selected: false } : row;
-      return { ...row, ...values };
-    });
-    update(next);
-  };
-  const add = () => {
-    update([...rows, blankVendorComparison()]);
-    setOpen(true);
-  };
-  const remove = (idx) => update(rows.filter((_, i) => i !== idx));
-
-  return (
-    <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
-      <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((p) => !p)}
-          className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted hover:text-select-blue"
-        >
-          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          Vendor Comparison
-          {rows.length > 0 && (
-            <span className="text-[9.5px] font-bold text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
-              {rows.length}
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={add}
-          disabled={disabled}
-          className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <Plus size={11} /> Add vendor
-        </button>
-      </div>
-      {open && (
-        <div className="mt-2 space-y-2">
-          {rows.length === 0 ? (
-            <p className="text-[10.5px] text-text-subtle">
-              Add vendor quotes to compare commercial options for this item.
-            </p>
-          ) : (
-            rows.map((row, idx) => (
-              <div
-                key={row.id || idx}
-                className="grid grid-cols-1 md:grid-cols-[1fr_90px_64px_78px_110px_84px_1fr_28px] gap-2 items-start rounded-lg border border-bordergray/70 bg-bg-soft/25 p-2"
-              >
-                <input
-                  type="text"
-                  value={row.vendorName || ""}
-                  onChange={(e) => patch(idx, { vendorName: e.target.value })}
-                  disabled={disabled}
-                  placeholder="Vendor name"
-                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                />
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={row.quotedRate || 0}
-                  onChange={(e) => patch(idx, { quotedRate: Number(e.target.value) || 0 })}
-                  disabled={disabled}
-                  placeholder="Quoted rate"
-                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                />
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={row.gstPercent || 0}
-                  onChange={(e) => patch(idx, { gstPercent: Number(e.target.value) || 0 })}
-                  disabled={disabled}
-                  placeholder="GST %"
-                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                />
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={row.leadTimeDays || 0}
-                  onChange={(e) =>
-                    patch(idx, { leadTimeDays: Number(e.target.value) || 0 })
-                  }
-                  disabled={disabled}
-                  placeholder="Lead days"
-                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                />
-                <input
-                  type="text"
-                  value={row.warranty || ""}
-                  onChange={(e) => patch(idx, { warranty: e.target.value })}
-                  disabled={disabled}
-                  placeholder="Warranty"
-                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                />
-                <label className="flex h-7 items-center gap-1.5 rounded-md border border-bordergray bg-white px-2 text-[10px] font-semibold text-text-muted">
-                  <input
-                    type="checkbox"
-                    checked={!!row.selected}
-                    onChange={(e) => patch(idx, { selected: e.target.checked })}
-                    disabled={disabled}
-                    className="h-3.5 w-3.5 accent-select-blue"
-                  />
-                  Select
-                </label>
-                <input
-                  type="text"
-                  value={row.selectionReason || ""}
-                  onChange={(e) => patch(idx, { selectionReason: e.target.value })}
-                  disabled={disabled}
-                  placeholder="Selection reason"
-                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                />
-                <button
-                  type="button"
-                  onClick={() => remove(idx)}
-                  disabled={disabled}
-                  className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Remove vendor"
-                >
-                  <Trash2 size={11} />
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 const ClientPicker = ({ current, onPick, onClear, disabled = false }) => {
   const [open, setOpen] = useState(false);
@@ -5457,219 +5281,6 @@ const SeedPicker = ({ onClose, onPick }) => {
             <AlertTriangle size={10} /> Seeding replaces existing sections in
             this BOQ.
           </p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const LibraryPicker = ({ onClose, onInsert }) => {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("all");
-  const [selected, setSelected] = useState({});
-
-  const items = listLibrary();
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return items.filter((it) => {
-      if (category !== "all" && it.category !== category) return false;
-      if (!q) return true;
-      return (
-        (it.description || "").toLowerCase().includes(q) ||
-        (it.hsn || "").toLowerCase().includes(q) ||
-        (it.tags || []).some((t) => t.toLowerCase().includes(q))
-      );
-    });
-  }, [items, query, category]);
-
-  const cats = useMemo(() => {
-    const counts = items.reduce((acc, it) => {
-      acc[it.category] = (acc[it.category] || 0) + 1;
-      return acc;
-    }, {});
-    const rooms = getScheduleConfig().rooms.map((r) => r.name);
-    return [
-      { value: "all", label: "All", count: items.length },
-      ...rooms.map((name) => ({
-        value: name,
-        label: name,
-        count: counts[name] || 0,
-      })),
-    ].filter((c) => c.count > 0 || c.value === "all");
-  }, [items]);
-
-  const toggle = (id) => setSelected((p) => ({ ...p, [id]: !p[id] }));
-  const selectedIds = Object.keys(selected).filter((k) => selected[k]);
-  const selectedItems = items.filter((it) => selected[it.id]);
-  const handleInsert = () => {
-    if (selectedItems.length === 0) return;
-    onInsert(selectedItems);
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[88vh] overflow-hidden flex flex-col">
-        <div className="px-5 py-4 border-b border-bordergray flex items-center justify-between bg-linear-to-r from-select-blue/5 to-white">
-          <div className="flex items-center gap-2">
-            <span className="h-8 w-8 rounded-lg bg-select-blue/10 text-select-blue flex items-center justify-center">
-              <BookOpen size={14} />
-            </span>
-            <div>
-              <h3 className="text-[14px] font-bold text-textcolor">
-                Insert from Item Master
-              </h3>
-              <p className="text-[10.5px] text-text-muted">
-                Pick one or more items — they'll be added to this section with
-                materials, HSN, and rate filled in
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="px-4 py-3 border-b border-bordergray flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-1 flex-wrap">
-            {cats.map((c) => (
-              <button
-                key={c.value}
-                type="button"
-                onClick={() => setCategory(c.value)}
-                className={`px-2.5 py-1 rounded-md text-[10.5px] font-semibold transition-all border ${
-                  category === c.value
-                    ? "bg-active-bg text-select-blue border-select-blue/30"
-                    : "bg-transparent text-text-muted hover:bg-bg-soft border-transparent"
-                }`}
-              >
-                {c.label} <span className="opacity-60">{c.count}</span>
-              </button>
-            ))}
-          </div>
-          <div className="relative">
-            <Search
-              size={12}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400"
-            />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search description, HSN, tag"
-              className="bg-bg-soft border border-transparent rounded-lg pl-7 pr-3 py-1.5 text-[11.5px] placeholder:text-text-subtle focus:outline-none focus:bg-white focus:border-select-blue/30 w-[240px]"
-              autoFocus
-            />
-          </div>
-        </div>
-
-        <div className="overflow-y-auto flex-1 p-3 space-y-1.5">
-          {filtered.length === 0 ? (
-            <div className="text-center py-12">
-              <BookOpen size={28} className="text-text-subtle mx-auto mb-2" />
-              <p className="text-[12px] font-semibold text-textcolor">
-                No matches
-              </p>
-              <p className="text-[11px] text-text-muted mt-1">
-                Try a different search or category.
-              </p>
-            </div>
-          ) : (
-            filtered.map((it) => {
-              const c = roomColor(it.category);
-              const isSelected = !!selected[it.id];
-              const unitLabel =
-                UNITS.find((u) => u.code === it.unit)?.label || it.unit;
-              return (
-                <button
-                  key={it.id}
-                  type="button"
-                  onClick={() => toggle(it.id)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all ${
-                    isSelected
-                      ? "border-select-blue bg-active-bg/40 shadow-[0_1px_3px_rgba(30,58,138,0.08)]"
-                      : "border-bordergray hover:border-select-blue/30 hover:bg-bg-soft/40"
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <span
-                      className={`mt-0.5 h-5 w-5 flex items-center justify-center rounded-md border shrink-0 ${
-                        isSelected
-                          ? "bg-select-blue border-select-blue text-white"
-                          : "bg-white border-bordergray"
-                      }`}
-                    >
-                      {isSelected && <Check size={11} strokeWidth={3} />}
-                    </span>
-                    <span className={`h-2 w-2 rounded-full mt-2 ${c.dot}`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[12px] font-semibold text-textcolor leading-snug">
-                        {it.description}
-                      </p>
-                      {(it.materials || []).length > 0 && (
-                        <p className="text-[10px] text-text-muted mt-0.5 truncate">
-                          {it.materials
-                            .map(
-                              (m) => `${m.name}${m.spec ? ` (${m.spec})` : ""}`,
-                            )
-                            .join(" · ")}
-                        </p>
-                      )}
-                      <div className="flex items-center gap-3 mt-1 text-[10px] text-text-subtle">
-                        {it.hsn && <span>HSN {it.hsn}</span>}
-                        <span>GST {it.gstPercent}%</span>
-                        {(it.usage || 0) > 0 && (
-                          <span className="text-select-blue/70">
-                            ↗ used {it.usage}×
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end shrink-0">
-                      <span className="text-[13px] font-bold text-textcolor tabular-nums">
-                        ₹{Number(it.rate || 0).toLocaleString("en-IN")}
-                      </span>
-                      <span className="text-[9.5px] text-text-subtle">
-                        / {unitLabel}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })
-          )}
-        </div>
-
-        <div className="px-5 py-3 border-t border-bordergray bg-bg-soft flex items-center justify-between flex-wrap gap-2">
-          <p className="text-[11px] text-text-muted">
-            {selectedIds.length === 0
-              ? "Select items to insert"
-              : `${selectedIds.length} item${selectedIds.length === 1 ? "" : "s"} selected · total ₹${selectedItems
-                  .reduce((s, it) => s + (Number(it.rate) || 0), 0)
-                  .toLocaleString("en-IN")} (at qty 1)`}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 rounded-lg border border-bordergray bg-white text-[12px] font-semibold text-text-muted hover:text-textcolor"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleInsert}
-              disabled={selectedIds.length === 0}
-              className="px-4 py-1.5 rounded-lg bg-linear-to-br from-select-blue to-primary text-white text-[12px] font-semibold shadow-md hover:scale-[1.02] transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed"
-            >
-              <Plus size={12} /> Insert{" "}
-              {selectedIds.length > 0 && `(${selectedIds.length})`}
-            </button>
-          </div>
         </div>
       </div>
     </div>

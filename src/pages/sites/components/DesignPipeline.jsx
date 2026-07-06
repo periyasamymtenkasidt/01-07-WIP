@@ -27,7 +27,10 @@ import {
   hydrateDesignFlow,
   getStage,
   currentStage,
-  isStageBillable,
+  revisionBilling,
+  getRevisionPolicy,
+  setRevisionPolicy,
+  totalRevisionCharges,
   setStageDeliverables,
   submitForInternalReview,
   generateStageBoq,
@@ -92,6 +95,7 @@ const DesignPipeline = ({ site }) => {
   const [newType, setNewType] = useState("");
   const [fileUrls, setFileUrls] = useState({}); // fileId → object URL
   const [showSurvey, setShowSurvey] = useState(true);
+  const [showRevPolicy, setShowRevPolicy] = useState(false);
   const [newBid, setNewBid] = useState({ name: "", amount: "" });
 
   // Each stage offers only its own deliverable types — reset on stage switch.
@@ -164,7 +168,9 @@ const DesignPipeline = ({ site }) => {
   const isArchBasis = basis.kind === "architecture";
   const firmOwns =
     stage?.reviewState === "DRAFTING" || stage?.reviewState === "REVISION_REQUESTED";
-  const billable = isStageBillable(stage);
+  const billing = revisionBilling(flow, stage);
+  const revisionPolicy = getRevisionPolicy(flow);
+  const chargesTotal = totalRevisionCharges(flow);
   const lastRevision = stage?.approvals?.find((a) => a.decision === "REVISION");
   const isBoqStage = selectedKey === "BOQ";
   const isTenderStage = selectedKey === "TENDER";
@@ -222,6 +228,77 @@ const DesignPipeline = ({ site }) => {
               className="h-full rounded-full bg-emerald-500 transition-all"
               style={{ width: `${(approvedCount / flow.stages.length) * 100}%` }}
             />
+          </div>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowRevPolicy((v) => !v)}
+              className="flex items-center gap-1.5 rounded-lg border border-bordergray bg-white px-3 py-1.5 text-[12px] font-semibold text-grey hover:bg-bg-soft"
+              title="Free revisions per stage & fee for extra revisions"
+            >
+              <FiRotateCcw size={13} /> {revisionPolicy.freeRevisions} free ·{" "}
+              {inr(revisionPolicy.feePerRevision)}/extra
+              {chargesTotal > 0 && (
+                <span className="ml-1 rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-bold text-orange-700">
+                  {inr(chargesTotal)} billed
+                </span>
+              )}
+            </button>
+            {showRevPolicy && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setShowRevPolicy(false)}
+                />
+                <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-bordergray bg-white p-3 shadow-xl">
+                  <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-text-subtle">
+                    Revision policy (this project)
+                  </p>
+                  <label className="mb-2 block">
+                    <span className="mb-1 block text-[11px] font-semibold text-grey">
+                      Free revisions per stage
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={revisionPolicy.freeRevisions}
+                      onChange={(e) =>
+                        setFlow(
+                          setRevisionPolicy(siteID, {
+                            freeRevisions: e.target.value,
+                          }),
+                        )
+                      }
+                      className="w-full rounded-lg border border-bordergray bg-white px-2.5 py-1.5 text-[12px] focus:outline-none focus:border-select-blue"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-grey">
+                      Fee per extra revision (₹)
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="500"
+                      value={revisionPolicy.feePerRevision}
+                      onChange={(e) =>
+                        setFlow(
+                          setRevisionPolicy(siteID, {
+                            feePerRevision: e.target.value,
+                          }),
+                        )
+                      }
+                      className="w-full rounded-lg border border-bordergray bg-white px-2.5 py-1.5 text-[12px] focus:outline-none focus:border-select-blue"
+                    />
+                  </label>
+                  {chargesTotal > 0 && (
+                    <p className="mt-2 border-t border-bg-soft pt-2 text-[11px] font-semibold text-orange-700">
+                      Chargeable revisions billed so far: {inr(chargesTotal)}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
           </div>
           <button
             type="button"
@@ -315,11 +392,18 @@ const DesignPipeline = ({ site }) => {
                 <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-grey">
                   Round {stage.round}
                 </span>
-                {billable && (
-                  <span className="rounded-full bg-orange-100 px-2.5 py-0.5 text-[11px] font-bold text-orange-700">
-                    Billable revision
-                  </span>
-                )}
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                    billing.freeLeft > 0
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-orange-100 text-orange-700"
+                  }`}
+                  title={`${billing.used} client revision${billing.used === 1 ? "" : "s"} used of ${billing.free} free`}
+                >
+                  {billing.freeLeft > 0
+                    ? `${billing.freeLeft}/${billing.free} free revisions left`
+                    : `Free revisions used · next ${inr(billing.fee)}`}
+                </span>
               </div>
               <p className="mt-1.5 text-[13px] text-grey">
                 <span className="font-semibold text-darkgray">Client signs off:</span>{" "}

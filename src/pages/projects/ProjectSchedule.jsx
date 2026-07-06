@@ -69,6 +69,27 @@ const RoomModal = ({ room, started, onSave, onClose }) => {
     set("shiftsDone", n);
   };
 
+  // Override the shifts/day (team allocation) for THIS project's room — does not
+  // touch the Schedule Master. When the room groups individual works, the rate
+  // is applied uniformly to each so getRoomShiftPlan's per-work total agrees with
+  // days × shifts/day. Completed shifts are clamped to the new planned total.
+  const setShiftsPerDay = (value) => {
+    const n = Math.max(0, Math.round(Number(value) || 0));
+    setForm((f) => {
+      const next = { ...f, shiftsPerDay: n };
+      if (Array.isArray(f.works) && f.works.length > 0) {
+        next.works = f.works.map((w) => ({ ...w, shiftsPerDay: n }));
+      }
+      const sumDays =
+        Array.isArray(f.works) && f.works.length > 0
+          ? f.works.reduce((s, w) => s + (Number(w.days) || 0), 0)
+          : Math.max(0, Number(f.days) || 0);
+      const newTotal = sumDays * n;
+      if ((Number(f.shiftsDone) || 0) > newTotal) next.shiftsDone = newTotal;
+      return next;
+    });
+  };
+
   const handleSave = () => {
     // start/end are derived in computeChain — never persist them.
     const { _existing, start: _start, end: _end, ...clean } = form;
@@ -140,9 +161,64 @@ const RoomModal = ({ room, started, onSave, onClose }) => {
             </p>
           )}
           <p className="text-[10.5px] text-text-subtle mt-1.5">
-            Scope, duration &amp; shifts/day come from the proposal / Schedule
-            Master and aren&apos;t edited here.
+            Scope &amp; duration come from the proposal / Schedule Master.
+            Shifts/day can be adjusted below for this room.
           </p>
+        </div>
+
+        {/* Shifts/day — editable team-allocation override for this room only */}
+        <div className="rounded-lg border border-bordergray px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[12px] font-semibold text-textcolor">
+                Shifts per day
+              </p>
+              <p className="text-[11px] text-text-muted">
+                Team allocation for this room. Planned shifts = days ×
+                shifts/day.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShiftsPerDay(plan.shiftsPerDay - 1)}
+                disabled={!!form.done || plan.shiftsPerDay <= 0}
+                className="h-7 w-7 flex items-center justify-center rounded-lg border border-bordergray text-textcolor hover:bg-bg-soft disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                −
+              </button>
+              <input
+                type="number"
+                min={0}
+                value={plan.shiftsPerDay}
+                disabled={!!form.done}
+                onChange={(e) => setShiftsPerDay(e.target.value)}
+                className="w-16 rounded-lg border border-bordergray px-2 py-1.5 text-[12px] text-textcolor text-center focus:outline-none focus:border-select-blue disabled:bg-bg-soft disabled:cursor-not-allowed"
+              />
+              <button
+                type="button"
+                onClick={() => setShiftsPerDay(plan.shiftsPerDay + 1)}
+                disabled={!!form.done}
+                className="h-7 w-7 flex items-center justify-center rounded-lg border border-bordergray text-textcolor hover:bg-bg-soft disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                +
+              </button>
+            </div>
+          </div>
+          {plan.days > 0 && (
+            <p className="text-[11px] text-text-muted mt-2">
+              <span className="font-semibold text-textcolor">
+                {plan.shiftsPerDay}
+              </span>
+              /day ×{" "}
+              <span className="font-semibold text-textcolor">{plan.days}</span>{" "}
+              day{plan.days === 1 ? "" : "s"} ={" "}
+              <span className="font-semibold text-select-blue">
+                {plan.totalPlanned} planned shift
+                {plan.totalPlanned === 1 ? "" : "s"}
+              </span>
+            </p>
+          )}
         </div>
 
         {/* Execution progress — completed shifts ÷ total planned (timeline-free) */}

@@ -18,6 +18,12 @@ import {
   getProposalBaselineForSite,
 } from "./surveyMeasureStorage";
 import { listLibrary } from "./itemLibrary";
+import { listMaterials } from "./materialLibrary";
+import {
+  recipeBuildupForRateAnalysis,
+  recipeToMaterials,
+  materialsById,
+} from "./rateBuildup";
 import {
   saveBoq,
   getBoq,
@@ -26,6 +32,27 @@ import {
   genShortId,
   seedRateAnalysisFromMaterials,
 } from "./boqStorage";
+
+// Resolve the Item Master rate build-up for a survey row straight from the
+// recipe — the recipe IS the build-up, so it carries the per-unit material
+// quantities and wastage exactly, unlike the lossy proposal-material copy. The
+// recipe lives on the linked library item (by masterId); the grade comes from
+// the row's selected material. Returns the material rows (with qty + waste%) and
+// the commercial loadings (labour, overhead%, margin%) for the rate analysis.
+// `libById` / `matById` are prebuilt lookups so a whole BOQ generation does one
+// library + material read, not one per row. Falls back to the row's own
+// materials when the row isn't linked to an Item Master recipe.
+const buildupSeedForRow = (row, libById, matById) => {
+  const lib = row?.masterId ? libById[row.masterId] : null;
+  const grade =
+    row?.selectedMaterial?.grade || row?.grade || lib?.defaultGrade || "economy";
+  const recipe = lib?.recipes?.[grade] || null;
+  if (!recipe) return { materials: null, buildup: null };
+  return {
+    materials: recipeToMaterials(recipe, matById),
+    buildup: recipeBuildupForRateAnalysis(recipe),
+  };
+};
 import { getDesignFlow as getDesignFlowApi } from "../api/designFlow";
 import { tokens } from "../api/client";
 
@@ -168,6 +195,66 @@ export const DESIGN_REVIEW_CHECKLIST = [
 // Contractual free revision rounds per stage; extra rounds get flagged billable.
 const DEFAULT_ROUNDS_INCLUDED = 2;
 
+// Free CLIENT revisions granted per design stage. Each stage's allowance is
+// independent — one stage's free revisions can't be spent on another. Past the
+// free count, every further change request is chargeable at feePerRevision. Both
+// are overridable per project via setRevisionPolicy.
+const DEFAULT_FREE_REVISIONS_PER_STAGE = 5;
+const DEFAULT_REVISION_FEE = 5000; // ₹ per chargeable revision
+
+// Per-project revision policy (stored on the flow), with firm-wide defaults.
+export const getRevisionPolicy = (flow) => ({
+  freeRevisions: Number(
+    flow?.revisionPolicy?.freeRevisions ?? DEFAULT_FREE_REVISIONS_PER_STAGE,
+  ),
+  feePerRevision: Number(
+    flow?.revisionPolicy?.feePerRevision ?? DEFAULT_REVISION_FEE,
+  ),
+});
+
+export const setRevisionPolicy = (siteID, patch = {}) => {
+  const flow = getDesignFlow(siteID);
+  if (!flow) return flow;
+  const cur = getRevisionPolicy(flow);
+  flow.revisionPolicy = {
+    freeRevisions: Math.max(
+      0,
+      Math.round(Number(patch.freeRevisions ?? cur.freeRevisions)) || 0,
+    ),
+    feePerRevision: Math.max(
+      0,
+      Math.round(Number(patch.feePerRevision ?? cur.feePerRevision)) || 0,
+    ),
+  };
+  return writeFlow(siteID, flow);
+};
+
+// Client change requests already made on a stage (each REVISION approval = one).
+export const stageRevisionsUsed = (stage) =>
+  (stage?.approvals || []).filter((a) => a.decision === "REVISION").length;
+
+// Billing snapshot for the NEXT change request on a stage: how many revisions
+// are used, how many free remain, and whether/what the next one costs.
+export const revisionBilling = (flow, stage) => {
+  const { freeRevisions, feePerRevision } = getRevisionPolicy(flow);
+  const used = stageRevisionsUsed(stage);
+  const nextRevisionNo = used + 1;
+  const nextIsPaid = nextRevisionNo > freeRevisions;
+  return {
+    used,
+    free: freeRevisions,
+    freeLeft: Math.max(0, freeRevisions - used),
+    nextRevisionNo,
+    nextIsPaid,
+    fee: nextIsPaid ? feePerRevision : 0,
+    feePerRevision,
+  };
+};
+
+// Sum of all accepted chargeable-revision fees across the design phase.
+export const totalRevisionCharges = (flow) =>
+  (flow?.revisionCharges || []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+
 const stamp = () => {
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -287,6 +374,10 @@ export const startDesign = (site, { areas, surveyState, basis } = {}) => {
   const siteBasis = basis
     ? { ...basis, frozenAt: basis.frozenAt || stamp() }
     : {
+        // Full survey dims incl. photos — the frozen "Site Survey" panel in the
+        // design pipeline renders these images. Storage pressure is handled
+        // reactively by saveBoq's reclaim (it sheds inline images only when the
+        // quota is actually hit), so we keep the photos here by default.
         measurements: readDims(site.siteID),
         areas: (areas || []).map((a) => ({
           area: a.area,
@@ -415,9 +506,11 @@ export const getStage = (flow, key) =>
 export const currentStage = (flow) =>
   flow?.stages?.find((s) => s.reviewState !== "APPROVED") || null;
 
-// A stage is over its included rounds → extra revisions are chargeable.
+// A stage's NEXT client revision is chargeable → it has used up its free
+// revisions. Uses the firm-wide default free count (a boolean convenience);
+// callers that need the per-project fee should use revisionBilling(flow, stage).
 export const isStageBillable = (stage) =>
-  !!stage && stage.round > stage.roundsIncluded;
+  !!stage && stageRevisionsUsed(stage) >= DEFAULT_FREE_REVISIONS_PER_STAGE;
 
 // Firm edits the deliverables list (only meaningful while it owns the stage).
 export const setStageDeliverables = (siteID, stageKey, deliverables) => {
@@ -472,25 +565,58 @@ export const approveStage = (siteID, stageKey, { by = "Client", comment = "" } =
   return writeFlow(siteID, flow);
 };
 
-// Client requests changes → bump the round, hand back to the firm.
-export const requestRevision = (siteID, stageKey, { by = "Client", comment = "" } = {}) => {
+// Client requests changes → bump the round, hand back to the firm. Past the
+// stage's free revisions, the request is chargeable and only proceeds once the
+// fee has been paid (payment record supplied); the charge is then recorded.
+export const requestRevision = (
+  siteID,
+  stageKey,
+  { by = "Client", comment = "", payment = null } = {},
+) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
+  const billing = revisionBilling(flow, stage);
+  // A chargeable revision may only proceed once payment has been collected. The
+  // UI collects it; the guard here keeps a paid revision from slipping through
+  // without a payment record.
+  if (billing.nextIsPaid && !payment) return flow;
   stage.approvals.unshift({
     round: stage.round,
     decision: "REVISION",
     by,
     comment,
     at: stamp(),
+    revisionNo: billing.nextRevisionNo,
+    paid: billing.nextIsPaid,
+    fee: billing.fee,
   });
   stage.round += 1;
   stage.reviewState = "REVISION_REQUESTED";
-  const billable = isStageBillable(stage);
+  if (billing.nextIsPaid) {
+    flow.revisionCharges = [
+      ...(flow.revisionCharges || []),
+      {
+        id: genShortId(),
+        stageKey,
+        revisionNo: billing.nextRevisionNo,
+        amount: billing.fee,
+        acceptedBy: by,
+        comment,
+        status: "paid",
+        // { method, reference, amount, paidAt } captured by the portal's
+        // payment step. Swap in a real gateway response here when available.
+        payment,
+        at: stamp(),
+      },
+    ];
+  }
   flow.history.unshift({
     at: stamp(),
-    action: `Client requested changes on ${labelForStage(stageKey)} (R${stage.round})${
-      billable ? " — billable revision" : ""
+    action: `Client requested changes on ${labelForStage(stageKey)} (revision ${billing.nextRevisionNo})${
+      billing.nextIsPaid
+        ? ` — paid ₹${Math.round(billing.fee).toLocaleString("en-IN")}${payment?.method ? ` via ${payment.method}` : ""}`
+        : " — free"
     }`,
   });
   return writeFlow(siteID, flow);
@@ -560,6 +686,22 @@ export const setChecklistItem = (siteID, stageKey, index, patch) => {
   const internal = ensureInternal(stage);
   const current = internal.checklist[index] || { value: null, comment: "" };
   internal.checklist[index] = { ...current, ...patch };
+  return writeFlow(siteID, flow);
+};
+
+// Set every checklist row to "yes" in one action ("Yes to all"). A blanket
+// overwrite — any existing "No" is flipped to "Yes" too — so the reviewer is
+// asked to confirm the resulting answers before proceeding (see the panel's
+// confirmation modal).
+export const markAllChecklistYes = (siteID, stageKey) => {
+  const flow = getDesignFlow(siteID);
+  const stage = getStage(flow, stageKey);
+  if (!stage) return flow;
+  const internal = ensureInternal(stage);
+  internal.checklist = internal.checklist.map((row) => ({
+    ...(row || { comment: "" }),
+    value: "yes",
+  }));
   return writeFlow(siteID, flow);
 };
 
@@ -896,6 +1038,8 @@ export const generateStageBoq = (siteID) => {
     targetBoq.surveyFrozenAt = flow.siteBasis?.frozenAt || null;
 
     const generatedSectionNames = new Set(boq.areas.map((area) => area.area));
+    const libById = Object.fromEntries(listLibrary().map((l) => [l.id, l]));
+    const matById = materialsById(listMaterials());
     const generatedSections = boq.areas.map((area) => {
       const existingSection = targetBoq.sections?.find((s) => s.name === area.area);
       const matchedItemIds = new Set();
@@ -946,14 +1090,19 @@ export const generateStageBoq = (siteID) => {
             nos: Number(d.nos) || 1,
           },
           materials: row.materials || [],
-          // Auto-map the proposal's materials + per-unit quantities into the
-          // rate build-up. Forced on (re)generation so it reflects the proposal.
-          rateAnalysis: seedRateAnalysisFromMaterials(
-            existingItem?.rateAnalysis,
-            row.proposalMaterials || row.materials || [],
-            row.unit,
-            { force: true },
-          ),
+          // Auto-map materials + per-unit quantity + wastage AND the commercial
+          // loadings (labour/overhead%/margin%) straight from the Item Master
+          // build-up recipe. Forced on (re)generation so it reflects the current
+          // build-up. Falls back to the proposal materials when there's no recipe.
+          rateAnalysis: (() => {
+            const seed = buildupSeedForRow(row, libById, matById);
+            return seedRateAnalysisFromMaterials(
+              existingItem?.rateAnalysis,
+              seed.materials || row.proposalMaterials || row.materials || [],
+              row.unit,
+              { force: true, buildup: seed.buildup },
+            );
+          })(),
           quotedQty: row.quotedQty,
           quotedRate: row.quotedRate,
           quotedAmount: row.quotedAmount,
@@ -1086,6 +1235,8 @@ export const generateBoqFromSurvey = (siteID) => {
 
     // Build sections + items from survey areas, merging any existing manual work.
     const surveyAreaNames = new Set(boq.areas.map((a) => a.area));
+    const libById = Object.fromEntries(listLibrary().map((l) => [l.id, l]));
+    const matById = materialsById(listMaterials());
     const generatedSections = boq.areas.map((area) => {
       const existingSection = (targetBoq.sections || []).find((s) => s.name === area.area);
       const matchedIds = new Set();
@@ -1118,14 +1269,23 @@ export const generateBoqFromSurvey = (siteID) => {
           gstPercent: row.selectedMaterial?.gstPercent ?? existing?.gstPercent ?? 18,
           discount: existing?.discount || { type: "percent", value: 0 },
           materials: row.materials || existing?.materials || [],
-          // Auto-map the proposal's materials + per-unit quantities into the
-          // rate build-up. Forced on (re)generation so it reflects the proposal.
-          rateAnalysis: seedRateAnalysisFromMaterials(
-            existing?.rateAnalysis,
-            row.proposalMaterials || row.materials || existing?.materials || [],
-            row.unit,
-            { force: true },
-          ),
+          // Auto-map materials + per-unit quantity + wastage AND the commercial
+          // loadings (labour/overhead%/margin%) straight from the Item Master
+          // build-up recipe. Forced on (re)generation so it reflects the current
+          // build-up. Falls back to the proposal materials when there's no recipe.
+          rateAnalysis: (() => {
+            const seed = buildupSeedForRow(row, libById, matById);
+            return seedRateAnalysisFromMaterials(
+              existing?.rateAnalysis,
+              seed.materials ||
+                row.proposalMaterials ||
+                row.materials ||
+                existing?.materials ||
+                [],
+              row.unit,
+              { force: true, buildup: seed.buildup },
+            );
+          })(),
           dimensions: {
             enabled: hasDims,
             length: Number(d.length) || 0,

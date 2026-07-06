@@ -4,8 +4,12 @@
 // overhead and margin on top. Each work keeps a recipe per quality GRADE so the
 // same work can be Economy / Premium / Luxury just by swapping materials.
 //
-//   rate(grade) = [ Σ component(qty × (1+wastage) × materialRate) + labour ]
-//                 × (1 + overhead%) × (1 + margin%)
+//   base       = Σ component(qty × (1+wastage) × materialRate) + labour + consumables
+//   rate(grade) = [ base × (1 + overhead%) ] ÷ (1 − margin%)
+//
+// Margin is taken on the SELLING PRICE (gross margin), identical to the BOQ
+// Rate Analysis (rateBeforeMargin ÷ (1 − margin%)), so the same margin% means
+// the same rate in the build-up and the BOQ — no markup-vs-margin mismatch.
 //
 //   line cost  = measured qty (sqft from survey) × rate(grade)
 //
@@ -96,8 +100,14 @@ export const computeRecipe = (recipe, materialsById = {}) => {
   const consumables = Math.max(0, Number(r.consumables) || 0);
   const base = materialCost + labour + consumables;
   const overhead = (base * Math.max(0, Number(r.overheadPct) || 0)) / 100;
-  const margin = ((base + overhead) * Math.max(0, Number(r.marginPct) || 0)) / 100;
-  const rate = base + overhead + margin;
+  const rateBeforeMargin = base + overhead;
+  // Margin on selling price: rate = rateBeforeMargin ÷ (1 − margin%). A margin of
+  // 100%+ is undefined (÷0 or negative), so it falls back to the pre-margin rate —
+  // matching the BOQ Rate Analysis guard exactly.
+  const marginPct = Math.max(0, Number(r.marginPct) || 0);
+  const rate =
+    marginPct < 100 ? rateBeforeMargin / (1 - marginPct / 100) : rateBeforeMargin;
+  const margin = rate - rateBeforeMargin;
   const inputGst = lines.reduce((s, l) => s + l.inputGst, 0);
   return {
     lines,
@@ -110,6 +120,20 @@ export const computeRecipe = (recipe, materialsById = {}) => {
     rate,
     inputGst,
   };
+};
+
+// Extract a recipe's commercial loadings (labour, overhead%, margin%) in the
+// shape the BOQ Rate Analysis expects, so the build-up entered in Item Master
+// auto-maps onto the BOQ item's rate analysis. Field names differ between the
+// two models (overheadPct → overheadPercent, marginPct → marginPercent), hence
+// the explicit remap. Returns null when there's nothing to carry.
+export const recipeBuildupForRateAnalysis = (recipe) => {
+  if (!recipe) return null;
+  const labourRate = Math.max(0, Number(recipe.labourRate) || 0);
+  const overheadPercent = Math.max(0, Number(recipe.overheadPct) || 0);
+  const marginPercent = Math.max(0, Number(recipe.marginPct) || 0);
+  if (!labourRate && !overheadPercent && !marginPercent) return null;
+  return { labourRate, overheadPercent, marginPercent };
 };
 
 // Computed rate for every grade — for the comparison chips.

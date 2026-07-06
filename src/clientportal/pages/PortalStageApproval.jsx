@@ -7,6 +7,9 @@ import {
   FileText,
   ThumbsUp,
   Download,
+  CreditCard,
+  Check,
+  Loader2,
 } from "lucide-react";
 import { getFile } from "../../utils/fileStorage";
 import {
@@ -15,7 +18,7 @@ import {
   currentStage,
   approveStage,
   requestRevision,
-  isStageBillable,
+  revisionBilling,
   tenderEstimate,
 } from "../../data/designFlowStorage";
 import { approvePortalStage, requestPortalRevision } from "../../api/portal";
@@ -47,6 +50,11 @@ const PortalStageApproval = ({ site, clientName }) => {
   const [flow, setFlow] = useState(() => (siteID ? getDesignFlow(siteID) : null));
   const [showChanges, setShowChanges] = useState(false);
   const [comment, setComment] = useState("");
+  const [showPayment, setShowPayment] = useState(false); // paid-revision checkout
+  const [paymentReference, setPaymentReference] = useState("");
+  const [paymentBank, setPaymentBank] = useState("");
+  const [paying, setPaying] = useState(false);
+  const [paidSuccess, setPaidSuccess] = useState(false);
   const [fileUrls, setFileUrls] = useState({}); // fileId → object URL
 
   useEffect(() => {
@@ -82,7 +90,7 @@ const PortalStageApproval = ({ site, clientName }) => {
   const pipeline = getPipeline(flow.track);
   const stage = currentStage(flow); // first stage not yet approved
   const awaiting = stage?.reviewState === "AWAITING_CLIENT";
-  const billable = isStageBillable(stage);
+  const billing = revisionBilling(flow, stage);
   const stageLabel = (key) =>
     pipeline.find((s) => s.key === key)?.label || key;
 
@@ -92,19 +100,61 @@ const PortalStageApproval = ({ site, clientName }) => {
     if (backendId != null) pushPortal(() => approvePortalStage(backendId));
   };
 
-  const sendChanges = () => {
+  // Core submit — records the change request (with a payment record for a
+  // chargeable revision) and mirrors it to the portal API.
+  const submitRevision = (payment = null) => {
     const backendId = stageBackendId(stage);
     const note = comment.trim();
     setFlow(
       requestRevision(siteID, stage.key, {
         by: clientName || "Client",
         comment: note,
+        payment,
       }),
     );
     if (backendId != null)
       pushPortal(() => requestPortalRevision(backendId, note));
-    setComment("");
-    setShowChanges(false);
+  };
+
+  const closePayment = () => {
+    setShowPayment(false);
+    setPaying(false);
+    setPaidSuccess(false);
+    setPaymentReference("");
+    setPaymentBank("");
+  };
+
+  // Free revision → submit straight away. Chargeable → open the payment modal.
+  const sendChanges = () => {
+    if (!comment.trim()) return;
+    if (billing.nextIsPaid) {
+      setShowPayment(true);
+    } else {
+      submitRevision(null);
+      setComment("");
+      setShowChanges(false);
+    }
+  };
+
+  // Log the bank-transfer reference for the chargeable revision, then submit it.
+  const handleSubmitPayment = (e) => {
+    e.preventDefault();
+    if (!paymentReference.trim() || !paymentBank.trim()) return;
+    setPaying(true);
+    setTimeout(() => {
+      submitRevision({
+        method: "bank_transfer",
+        reference: paymentReference.trim(),
+        bank: paymentBank.trim(),
+        amount: billing.fee,
+        paidAt: new Date().toISOString(),
+      });
+      setPaying(false);
+      setPaidSuccess(true);
+      setComment("");
+      setShowChanges(false);
+      setTimeout(closePayment, 1600);
+    }, 800);
   };
 
   return (
@@ -141,6 +191,32 @@ const PortalStageApproval = ({ site, clientName }) => {
           );
         })}
       </div>
+
+      {/* Free-revisions allowance — always visible while a stage is in play, so
+          the client always knows how many free changes remain for it. */}
+      {stage && (
+        <div
+          className={`mb-4 flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold ${
+            billing.freeLeft > 0
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : "border-orange-200 bg-orange-50 text-orange-700"
+          }`}
+        >
+          <RotateCcw size={14} className="shrink-0" />
+          {billing.freeLeft > 0 ? (
+            <span>
+              <strong>{billing.freeLeft}</strong> of {billing.free} free
+              revisions remaining for {stageLabel(stage.key)}.
+            </span>
+          ) : (
+            <span>
+              You&apos;ve used all {billing.free} free revisions for{" "}
+              {stageLabel(stage.key)} — further changes are{" "}
+              <strong>{inr(billing.fee)}</strong> each.
+            </span>
+          )}
+        </div>
+      )}
 
       {/* All approved */}
       {!stage && (
@@ -275,10 +351,11 @@ const PortalStageApproval = ({ site, clientName }) => {
                 placeholder="What would you like changed?"
                 className="w-full rounded-xl border border-slate-200 p-3 text-[12.5px] text-darkgray placeholder:text-slate-400 focus:outline-none focus:border-purple/40"
               />
-              {billable && (
-                <p className="mt-1 text-[11px] font-semibold text-orange-600">
-                  Note: this stage is past its included revisions — a further
-                  change may be chargeable.
+              {billing.nextIsPaid && (
+                <p className="mt-2 flex items-center gap-1.5 text-[11px] font-semibold text-orange-700">
+                  <CreditCard size={13} className="shrink-0" />
+                  Revision {billing.nextRevisionNo} is chargeable —{" "}
+                  {inr(billing.fee)} payable before it&apos;s sent.
                 </p>
               )}
             </div>
@@ -301,7 +378,15 @@ const PortalStageApproval = ({ site, clientName }) => {
                   disabled={!comment.trim()}
                   className="flex items-center gap-1.5 rounded-xl bg-slate-800 px-4 py-2 text-[11px] font-bold text-white hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <RotateCcw size={13} /> Send change request
+                  {billing.nextIsPaid ? (
+                    <>
+                      <CreditCard size={13} /> Pay {inr(billing.fee)} &amp; send
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw size={13} /> Send change request
+                    </>
+                  )}
                 </button>
               </>
             ) : (
@@ -332,6 +417,101 @@ const PortalStageApproval = ({ site, clientName }) => {
             {stageLabel(stage.key)}
           </span>
           . You&apos;ll be notified when it&apos;s ready for your review.
+        </div>
+      )}
+
+      {/* Payment modal — collects the fee for a chargeable (6th+) revision.
+          Mirrors the "Log Milestone Payment" modal used in Payment Milestones. */}
+      {showPayment && stage && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl border border-slate-100 text-left relative overflow-hidden animate-fade-in">
+            {paidSuccess ? (
+              <div className="py-8 text-center flex flex-col items-center justify-center">
+                <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 mb-4 animate-scale-up">
+                  <Check size={32} strokeWidth={3} />
+                </div>
+                <h3 className="text-xl font-bold text-darkgray mb-2">
+                  Payment Logged Successfully!
+                </h3>
+                <p className="text-sm text-text-subtle">
+                  Your payment update is being processed by our accounts team.
+                  Your change request has been sent to the design team.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <h3 className="text-lg font-extrabold text-darkgray mb-2">
+                  Log Revision Payment
+                </h3>
+                <p className="text-xs text-text-subtle mb-4">
+                  Log bank transfer details for{" "}
+                  <span className="font-bold text-darkgray">
+                    {stageLabel(stage.key)} · Revision {billing.nextRevisionNo}
+                  </span>{" "}
+                  (past your {billing.free} free revisions for this stage).
+                </p>
+                <div className="bg-slate-50 p-4 rounded-2xl mb-4 border border-slate-100">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-text-subtle">Amount to Pay</span>
+                    <span className="font-bold text-darkgray">
+                      {inr(billing.fee)}
+                    </span>
+                  </div>
+                </div>
+                <form onSubmit={handleSubmitPayment} className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-grey uppercase tracking-wider">
+                      Transaction Reference ID
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={paymentReference}
+                      onChange={(e) => setPaymentReference(e.target.value)}
+                      placeholder="E.g. TXN9876543210"
+                      className="w-full text-xs border border-bordergray rounded-xl px-3.5 py-2.5 bg-white focus:outline-none focus:border-purple"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-grey uppercase tracking-wider">
+                      Originating Bank Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={paymentBank}
+                      onChange={(e) => setPaymentBank(e.target.value)}
+                      placeholder="E.g. HDFC Bank, ICICI Bank"
+                      className="w-full text-xs border border-bordergray rounded-xl px-3.5 py-2.5 bg-white focus:outline-none focus:border-purple"
+                    />
+                  </div>
+                  <div className="flex gap-3 mt-6">
+                    <button
+                      type="button"
+                      onClick={closePayment}
+                      className="flex-1 py-2.5 border border-bordergray hover:bg-slate-50 rounded-full text-xs font-bold text-grey transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={paying}
+                      className="flex-1 py-2.5 bg-purple hover:bg-dark-blue text-white rounded-full text-xs font-bold shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      {paying ? (
+                        <>
+                          <Loader2 className="animate-spin" size={14} />
+                          Processing...
+                        </>
+                      ) : (
+                        "Submit Reference"
+                      )}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

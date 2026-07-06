@@ -32,6 +32,11 @@ const QuotePreview = ({ quote }) => {
   const { subtotal, gst, grandTotal } = computeTotals(refreshedScopeItems);
   const namedItems = assignCategoryNames(refreshedScopeItems);
 
+  // Measurement column is data-driven: it only appears when at least one scope
+  // row carries dimensions (final quotes derived from a BOQ). Proposal quotes
+  // have no `measurement` field, so their layout is unchanged.
+  const showMeasurement = namedItems.some((it) => it.measurement?.length);
+
   // Group named items by base category (item.area)
   const groupedPreviewItems = useMemo(() => {
     const groups = [];
@@ -154,7 +159,12 @@ const QuotePreview = ({ quote }) => {
             <th className="py-3 px-2 text-left w-8">#</th>
             <th className="py-3 px-2 text-left">OBJECTS</th>
             <th className="py-3 px-2 text-left">DESCRIPTION</th>
-            <th className="py-3 px-2 text-center">RATE/SQ.FT.</th>
+            {showMeasurement && (
+              <th className="py-3 px-2 text-center whitespace-nowrap">
+                SIZE (L × B × H)
+              </th>
+            )}
+            <th className="py-3 px-2 text-center">RATE/UNIT</th>
             <th className="py-3 px-2 text-center">QTY</th>
             <th className="py-3 px-2 text-right">AMOUNT (INR)</th>
           </tr>
@@ -168,7 +178,7 @@ const QuotePreview = ({ quote }) => {
                   {/* Base category section header */}
                   <tr className="bg-slate-50/50">
                     <td
-                      colSpan={6}
+                      colSpan={showMeasurement ? 7 : 6}
                       className="py-2 px-2 font-bold uppercase tracking-wider text-[9px] text-gray-800 bg-paleorange/10 border-b border-black/10"
                     >
                       {group.baseCat}
@@ -213,6 +223,15 @@ const QuotePreview = ({ quote }) => {
                             </ul>
                           )}
                         </td>
+                        {showMeasurement && (
+                          <td className="py-4 px-2 text-center text-[10px] leading-snug whitespace-nowrap text-gray-600">
+                            {item.measurement?.length
+                              ? item.measurement.map((line, i) => (
+                                  <div key={i}>{line}</div>
+                                ))
+                              : "—"}
+                          </td>
+                        )}
                         <td className="py-4 px-2 text-center whitespace-nowrap">
                           {formatAmount(rate)}/{item.unit || "sqft"}
                         </td>
@@ -231,7 +250,7 @@ const QuotePreview = ({ quote }) => {
           ) : (
             <tr className="border-b border-black">
               <td
-                colSpan={6}
+                colSpan={showMeasurement ? 7 : 6}
                 className="py-10 text-center text-gray-300 italic uppercase tracking-widest"
               >
                 No Items Added
@@ -258,6 +277,68 @@ const QuotePreview = ({ quote }) => {
           </div>
         </div>
       </div>
+
+      {/* Material Summary — the rolled-up material take-off, shown after the
+          priced scope. Data-driven: only renders when the quote carries it. */}
+      {quote.materialSummary?.length > 0 && (
+        <div className="mt-12 break-inside-avoid">
+          <h2 className="text-[12px] font-extrabold tracking-widest text-black uppercase border-b-2 border-black pb-1.5 mb-4">
+            Material Summary
+          </h2>
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="bg-black text-white uppercase text-[8px] tracking-[0.15em]">
+                <th className="py-3 px-2 text-left w-8">#</th>
+                <th className="py-3 px-2 text-left">Material</th>
+                <th className="py-3 px-2 text-left">Specification</th>
+                <th className="py-3 px-2 text-center">Quantity</th>
+                <th className="py-3 px-2 text-center">Rate/Unit</th>
+                <th className="py-3 px-2 text-right">Amount (INR)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {quote.materialSummary.map((m, i) => (
+                <tr key={i} className="border-b border-black/15 align-top">
+                  <td className="py-3 px-2 font-bold">{i + 1}</td>
+                  <td className="py-3 px-2 font-bold uppercase text-[9px] leading-tight w-1/6">
+                    {m.name || "—"}
+                  </td>
+                  <td className="py-3 px-2 text-[11px] text-gray-600 leading-snug">
+                    {m.spec || "—"}
+                  </td>
+                  <td className="py-3 px-2 text-center whitespace-nowrap tabular-nums">
+                    {Number(m.qty).toFixed(2)} {m.unit}
+                  </td>
+                  <td className="py-3 px-2 text-center whitespace-nowrap tabular-nums">
+                    {formatAmount(m.rate)}/{m.unit}
+                  </td>
+                  <td className="py-3 px-2 text-right font-bold tabular-nums">
+                    {formatAmount(m.amount)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-black">
+                <td
+                  colSpan={5}
+                  className="py-3 px-2 text-right font-bold uppercase text-[10px] tracking-widest"
+                >
+                  Total Material Value
+                </td>
+                <td className="py-3 px-2 text-right font-bold tabular-nums">
+                  {formatAmount(
+                    quote.materialSummary.reduce(
+                      (sum, m) => sum + (Number(m.amount) || 0),
+                      0,
+                    ),
+                  )}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
 
       {/* Category-wise Terms & Conditions display */}
       {(() => {

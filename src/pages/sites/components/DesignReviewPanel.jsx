@@ -20,6 +20,7 @@ import {
   internalApprove,
   internalRequestChanges,
   setChecklistItem,
+  markAllChecklistYes,
   addDesignComment,
   setDesignCommentStatus,
   removeDesignComment,
@@ -120,18 +121,35 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
   });
   // Which comment is mid-close, plus the resolution note being typed.
   const [closing, setClosing] = useState({ id: null, note: "" });
+  // "Confirm checklist & proceed" modal shown before an approve/authorise step.
+  const [confirmProceed, setConfirmProceed] = useState(false);
 
   const done = checklistComplete(stage);
   const openCount = openCommentsCount(stage);
   const canFinalize = canFinalizeInternal(stage);
   const answered = checklist.filter((c) => c && c.value).length;
+  // Readable breakdown for the confirmation modal.
+  const yesItems = DESIGN_REVIEW_CHECKLIST.filter(
+    (_, i) => checklist[i]?.value === "yes",
+  );
+  const noItems = DESIGN_REVIEW_CHECKLIST.filter(
+    (_, i) => checklist[i]?.value === "no",
+  );
+  const pendingItems = DESIGN_REVIEW_CHECKLIST.filter(
+    (_, i) => checklist[i]?.value !== "yes" && checklist[i]?.value !== "no",
+  );
+  // The final step (Principal) may only authorise once the stage is ready:
+  // checklist complete and every comment closed.
+  const canProceed = !isFinalStep || canFinalize;
 
   // The acting role is bound to whichever step is current — the sequence
   // (Intern → Principal) is enforced, so the log can't claim a role out of turn.
   const approve = () => {
     onChange(internalApprove(siteID, stageKey, { role: expectedRole, comment: decisionNote }));
     setDecisionNote("");
+    setConfirmProceed(false);
   };
+  const markAllYes = () => onChange(markAllChecklistYes(siteID, stageKey));
   const requestChanges = () => {
     if (!decisionNote.trim()) return;
     onChange(
@@ -212,8 +230,8 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
               </button>
               <button
                 type="button"
-                onClick={approve}
-                disabled={isFinalStep && !canFinalize}
+                onClick={() => setConfirmProceed(true)}
+                disabled={!canProceed}
                 className="flex items-center gap-1.5 rounded-lg bg-linear-to-br from-violet-600 to-violet-800 px-4 py-2 text-[12px] font-bold text-white shadow-sm hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
               >
                 <FiCheckCircle size={13} />
@@ -252,15 +270,27 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
             <FiClipboard size={15} className="text-select-blue" />
             <SectionTitle>Design review checklist</SectionTitle>
           </div>
-          <span
-            className={`rounded-full px-2.5 py-0.5 text-[10.5px] font-bold ${
-              done
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-slate-100 text-slate-500"
-            }`}
-          >
-            {answered}/{DESIGN_REVIEW_CHECKLIST.length} answered
-          </span>
+          <div className="flex items-center gap-2">
+            {editable && (
+              <button
+                type="button"
+                onClick={markAllYes}
+                title="Set every checklist item to Yes"
+                className="flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100"
+              >
+                <FiCheck size={11} /> Yes to all
+              </button>
+            )}
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-[10.5px] font-bold ${
+                done
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-slate-100 text-slate-500"
+              }`}
+            >
+              {answered}/{DESIGN_REVIEW_CHECKLIST.length} answered
+            </span>
+          </div>
         </div>
         <div className="divide-y divide-bg-soft">
           {DESIGN_REVIEW_CHECKLIST.map((label, i) => {
@@ -520,6 +550,111 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
           </div>
         )}
       </div>
+
+      {/* ── Confirm checklist & proceed ──────────────────────────────────────
+          Lists every item marked "Yes" in readable form, flags any No / pending,
+          and confirms before advancing the review to the next step. */}
+      {confirmProceed && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setConfirmProceed(false)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <FiUserCheck size={18} className="text-violet-600" />
+              <h3 className="text-[15px] font-bold text-darkgray">
+                {isFinalStep
+                  ? "Confirm checklist & send to client"
+                  : `Confirm checklist & approve as ${expectedRole}`}
+              </h3>
+            </div>
+            <p className="mb-3 text-[12.5px] leading-relaxed text-grey">
+              These design-review items are marked{" "}
+              <span className="font-bold text-emerald-700">Yes</span>. Review them
+              before you proceed to the next step
+              {isFinalStep ? " and release the stage to the client" : ""}.
+            </p>
+
+            <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-bg-soft bg-palewhite/50 p-3">
+              {yesItems.length === 0 ? (
+                <p className="text-[12px] italic text-text-subtle">
+                  No items are marked Yes yet.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {yesItems.map((label, i) => (
+                    <li
+                      key={i}
+                      className="flex items-start gap-2 text-[12.5px] text-darkgray"
+                    >
+                      <FiCheck
+                        size={13}
+                        className="mt-0.5 shrink-0 text-emerald-600"
+                      />
+                      <span>{label}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2 text-[11.5px]">
+              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 font-bold text-emerald-700">
+                {yesItems.length} Yes
+              </span>
+              {noItems.length > 0 && (
+                <span className="rounded-full bg-rose-100 px-2.5 py-0.5 font-bold text-rose-600">
+                  {noItems.length} No
+                </span>
+              )}
+              {pendingItems.length > 0 && (
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 font-bold text-slate-500">
+                  {pendingItems.length} unanswered
+                </span>
+              )}
+              {openCount > 0 && (
+                <span className="rounded-full bg-amber-100 px-2.5 py-0.5 font-bold text-amber-700">
+                  {openCount} open comment{openCount > 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+
+            {(noItems.length > 0 || pendingItems.length > 0) && (
+              <p className="mt-2 flex items-start gap-1.5 text-[11.5px] text-amber-800">
+                <FiClock size={13} className="mt-0.5 shrink-0" />
+                {noItems.length > 0 &&
+                  `${noItems.length} item${noItems.length > 1 ? "s are" : " is"} marked No`}
+                {noItems.length > 0 && pendingItems.length > 0 && " and "}
+                {pendingItems.length > 0 &&
+                  `${pendingItems.length} still unanswered`}
+                . Confirm this is acceptable before proceeding.
+              </p>
+            )}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmProceed(false)}
+                className="rounded-lg border border-bordergray px-3.5 py-2 text-[12px] font-semibold text-grey hover:bg-bg-soft"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={approve}
+                disabled={!canProceed}
+                className="flex items-center gap-1.5 rounded-lg bg-linear-to-br from-violet-600 to-violet-800 px-4 py-2 text-[12px] font-bold text-white shadow-sm hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <FiCheckCircle size={13} />
+                {isFinalStep ? "Confirm & send to client" : "Confirm & proceed"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

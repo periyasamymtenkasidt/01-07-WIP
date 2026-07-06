@@ -396,10 +396,60 @@ export const getSurveyMeasureState = (site) => {
 };
 
 // A survey matches the proposal while its measured, material-adjusted total is
-// no more than ₹15,000 above the baseline for the property preset + type chosen
-// by the client. Lower totals are allowed; only the upper limit blocks Design.
-const MAX_SURVEY_VARIANCE_AMOUNT = 15000;
+// within tolerance of the baseline for the property preset + type chosen by the
+// client. Tolerance is the GREATER of a flat floor and a percentage of the
+// proposal — so small jobs keep a sensible minimum allowance and large jobs
+// scale up instead of tripping on a fixed ₹ band. Lower totals are always
+// allowed; only the upper band gates Design (and even then it can be approved).
+const SURVEY_VARIANCE_FLOOR = 15000; // ₹ minimum allowance
+const SURVEY_VARIANCE_PCT = 5; // % of the proposal, whichever is larger
 const GST_PERCENT = 18;
+
+// ── Survey variance approval ────────────────────────────────────────────────
+// When a survey comes in over tolerance, a Senior/Principal Architect can sign
+// off on the overage (with a reason) instead of being hard-blocked. The
+// approval is stored per site and is scoped to the overage it was granted for —
+// if the survey later grows beyond that figure, the approval goes stale and
+// must be renewed (see getSurveyVsProposalVariance).
+export const varianceApprovalKey = (siteID) => `siteVarianceApproval_${siteID}`;
+
+export const getSurveyVarianceApproval = (siteID) => {
+  try {
+    return JSON.parse(
+      localStorage.getItem(varianceApprovalKey(siteID)) || "null",
+    );
+  } catch {
+    return null;
+  }
+};
+
+export const approveSurveyVariance = (
+  siteID,
+  { by, reason, forDifference } = {},
+) => {
+  const record = {
+    approved: true,
+    by: by || "Principal Architect",
+    reason: reason || "",
+    forDifference: Math.round(Number(forDifference) || 0),
+    at: new Date().toISOString(),
+  };
+  try {
+    localStorage.setItem(varianceApprovalKey(siteID), JSON.stringify(record));
+  } catch (e) {
+    console.error("Failed to save survey variance approval:", e);
+    return null;
+  }
+  return record;
+};
+
+export const clearSurveyVarianceApproval = (siteID) => {
+  try {
+    localStorage.removeItem(varianceApprovalKey(siteID));
+  } catch (e) {
+    console.error("Failed to clear survey variance approval:", e);
+  }
+};
 
 export const getSurveyVsProposalVariance = (site) => {
   const areas = areasForSite(site);
@@ -450,23 +500,43 @@ export const getSurveyVsProposalVariance = (site) => {
   const sqftIncreasePct = pctOver(measuredSqft, quotedSqft);
   const amountIncreasePct = pctOver(measuredTotal, quotedAmount);
   const amountDifference = measuredTotal - quotedAmount;
+  // Hybrid tolerance: the greater of the flat floor and a % of the proposal.
+  const maxVarianceAmount = Math.max(
+    SURVEY_VARIANCE_FLOOR,
+    Math.round((SURVEY_VARIANCE_PCT / 100) * quotedAmount),
+  );
   const amountWithinTolerance =
-    quotedAmount > 0 &&
-    amountDifference <= MAX_SURVEY_VARIANCE_AMOUNT;
+    quotedAmount > 0 && amountDifference <= maxVarianceAmount;
+  const amountOverLimit = quotedAmount > 0 && !amountWithinTolerance;
+
+  // A prior sign-off only covers the overage it was granted for. If the survey
+  // has since grown beyond that figure, the approval is stale and Design is
+  // blocked again until it's renewed. (A tiny epsilon absorbs rounding.)
+  const approval = getSurveyVarianceApproval(site.siteID);
+  const approvalValid =
+    amountOverLimit &&
+    !!approval?.approved &&
+    amountDifference <= (Number(approval.forDifference) || 0) + 1;
 
   return {
     quotedSqft,
     measuredSqft,
     sqftIncreasePct,
-    // Sqft remains informational; only the fixed amount band gates matching.
+    // Sqft remains informational; only the amount band gates matching.
     sqftOverLimit: false,
     quotedAmount,
     measuredAmount: measuredTotal,
     amountDifference,
     amountIncreasePct,
     amountWithinTolerance,
-    amountOverLimit: quotedAmount > 0 && !amountWithinTolerance,
-    maxVarianceAmount: MAX_SURVEY_VARIANCE_AMOUNT,
+    amountOverLimit,
+    maxVarianceAmount,
+    variancePct: SURVEY_VARIANCE_PCT,
+    // Sign-off state: approval that still covers the current overage, plus the
+    // effective gate for Design (over limit AND not covered by a valid approval).
+    approval: approval || null,
+    approvalValid,
+    blocksDesign: amountOverLimit && !approvalValid,
     comparisonSource: presetTotal
       ? "property-preset"
       : quote?.grandTotal

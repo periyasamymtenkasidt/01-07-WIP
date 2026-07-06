@@ -170,13 +170,23 @@ const RateBuildupModal = ({ item, onSave, onClose }) => {
     const defaultRecipe = recipes[activeGrade] || blankRecipe();
     const mappedMaterials = (defaultRecipe.components || []).map((c) => {
       const mat = matById[c.materialId];
-      const factor = (Number(c.qty) || 0) * (1 + (Number(c.wastagePct) || 0) / 100);
+      const qty = Number(c.qty) || 0;
+      const wastagePct = Number(c.wastagePct) || 0;
+      const factor = qty * (1 + wastagePct / 100);
       return {
+        materialId: c.materialId || mat?.id || "",
         name: mat?.name || c.name || "",
         spec: mat?.specifications || "",
+        // Keep the folded factor for procurement (it already includes wastage and
+        // is read first there), and carry the raw qty + waste% + material link so
+        // the BOQ Rate Analysis can map quantity and wastage onto its rows.
         consumptionFormula: `Q * ${Number(factor.toFixed(4))}`,
+        qty,
+        wastagePct,
         rate: mat ? Number(mat.rate) || 0 : Number(c.rate) || 0,
         unit: mat?.unit || c.unit || "",
+        hsn: mat?.hsn || "",
+        gstPercent: Number(mat?.gstPercent) || 0,
       };
     });
 
