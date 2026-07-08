@@ -117,8 +117,11 @@ import {
   defaultWastageFor,
 } from "../../data/rateBuildup";
 import { getDesignFlow, buildBoq } from "../../data/designFlowStorage";
-import { getElementMeasurement } from "../../data/surveyMeasureStorage";
-import { getAllSites } from "../../data/siteStorage";
+import {
+  getElementMeasurement,
+  getSiteServiceTrack,
+} from "../../data/surveyMeasureStorage";
+import { getAllSites, getSite } from "../../data/siteStorage";
 
 const inputBase =
   "bg-white border border-bordergray text-[12px] text-textcolor rounded-lg px-3 py-2 w-full focus:outline-none focus:border-select-blue focus:ring-2 focus:ring-select-blue/15 transition-all placeholder:text-text-subtle";
@@ -324,6 +327,18 @@ const BOQEditor = () => {
     const t = setTimeout(() => saveBoq(boq), 400);
     return () => clearTimeout(t);
   }, [boq]);
+
+  // Service track (Interiors/Architecture) of this BOQ, resolved via its linked
+  // site. The extended item-detail fields (floor, work category, drawing ref,
+  // brand/finish, item/billing/scope type, execution) are architecture concerns;
+  // interior BOQs keep the line-item view lean and hide them. Standalone BOQs
+  // (no site) default to showing them so no data is silently hidden.
+  const isInteriorBoq = useMemo(() => {
+    const siteID = boq?.project?.siteID;
+    if (!siteID) return false;
+    const site = getSite(siteID);
+    return site ? getSiteServiceTrack(site) === "Interiors" : false;
+  }, [boq?.project?.siteID]);
 
   const showToast = (message, type = "success") => {
     setToast({ message, type, id: Date.now() });
@@ -1210,12 +1225,22 @@ const BOQEditor = () => {
   const raAverages = useMemo(() => {
     const items = (boq?.sections || []).flatMap((s) => s.items || []);
     const withRa = items.filter((it) => it.rateAnalysis?.enabled);
-    if (withRa.length === 0) return { marginPct: 0, pcePct: 0, count: 0 };
+    if (withRa.length === 0)
+      return { marginPct: 0, pcePct: 0, marginAmt: 0, pceAmt: 0, count: 0 };
     const sum = (key) =>
       withRa.reduce((s, it) => s + (Number(it.rateAnalysis?.[key]) || 0), 0);
+    // Total ₹ margin / PCE across the BOQ = Σ (per-unit amount × item qty),
+    // derived from each item's computed rate analysis.
+    const amt = (key) =>
+      withRa.reduce((s, it) => {
+        const ra = computeRateAnalysis(it.rateAnalysis, it.unit);
+        return s + (Number(ra?.[key]) || 0) * computeItemQty(it);
+      }, 0);
     return {
       marginPct: sum("marginPercent") / withRa.length,
       pcePct: sum("pcePercent") / withRa.length,
+      marginAmt: amt("marginAmount"),
+      pceAmt: amt("pceAmount"),
       count: withRa.length,
     };
   }, [boq]);
@@ -2376,6 +2401,7 @@ const BOQEditor = () => {
                                           [item.id]: !p[item.id],
                                         }))
                                       }
+                                      hideArchDetails={isInteriorBoq}
                                       disabled={isLocked}
                                     />
                                   );
@@ -2547,7 +2573,9 @@ const BOQEditor = () => {
                       <Percent size={11} /> Avg Margin %
                     </span>
                     <span className="font-semibold text-textcolor tabular-nums">
-                      {raAverages.count > 0 ? `${raAverages.marginPct.toFixed(1)}%` : "—"}
+                      {raAverages.count > 0
+                        ? `${raAverages.marginPct.toFixed(1)}% · ${formatAmount(raAverages.marginAmt)}`
+                        : "—"}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
@@ -2555,7 +2583,9 @@ const BOQEditor = () => {
                       <Percent size={11} /> Avg PCE %
                     </span>
                     <span className="font-semibold text-textcolor tabular-nums">
-                      {raAverages.count > 0 ? `${raAverages.pcePct.toFixed(1)}%` : "—"}
+                      {raAverages.count > 0
+                        ? `${raAverages.pcePct.toFixed(1)}% · ${formatAmount(raAverages.pceAmt)}`
+                        : "—"}
                     </span>
                   </div>
                 </div>
@@ -3094,6 +3124,7 @@ const ItemRow = ({
   isLinked,
   isCompact,
   onToggleCompact,
+  hideArchDetails = false,
   disabled = false,
 }) => {
   const r = computeItemAmount(item);
@@ -3500,13 +3531,23 @@ const ItemRow = ({
       )}
 
       {detailsOpen && (
-        <ItemDetailsRow item={item} onUpdate={onUpdate} disabled={disabled} />
+        <ItemDetailsRow
+          item={item}
+          onUpdate={onUpdate}
+          hideArchDetails={hideArchDetails}
+          disabled={disabled}
+        />
       )}
     </>
   );
 };
 
-const ItemDetailsRow = ({ item, onUpdate, disabled = false }) => {
+const ItemDetailsRow = ({
+  item,
+  onUpdate,
+  hideArchDetails = false,
+  disabled = false,
+}) => {
   // Look up the Item Master entry so we can offer grade re-pricing.
   const libItem = useMemo(
     () =>
@@ -3599,6 +3640,11 @@ const ItemDetailsRow = ({ item, onUpdate, disabled = false }) => {
           </div>
         )}
 
+        {/* Architecture-only item metadata (floor, work category, drawing ref,
+            brand/finish, item/billing/scope type, execution, remarks & spec).
+            Interior BOQs keep the line-item view lean and hide this block. */}
+        {!hideArchDetails && (
+        <>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
           <Field icon={<Building2 size={11} />} label="Floor">
             <input
@@ -3752,6 +3798,8 @@ const ItemDetailsRow = ({ item, onUpdate, disabled = false }) => {
             />
           </Field>
         </div>
+        </>
+        )}
         {/* Scope-of-work details is intentionally lean now: Rate Analysis has
             its own editor tab; the Measurement Sheet is viewed via the header
             "Measurement Sheet" button; Vendor Comparison moved to Procurement.

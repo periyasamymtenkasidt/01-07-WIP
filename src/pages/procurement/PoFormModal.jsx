@@ -3,6 +3,7 @@ import { X, Plus, Trash2 } from "lucide-react";
 import { listContracts } from "../../data/contractStorage";
 import { listVendors } from "../../data/vendorStorage";
 import { createPurchaseOrder } from "../../data/procurementStorage";
+import NumericInput from "../../components/NumericInput";
 
 // Shared "create purchase order" modal, used by the Purchase Orders tab (blank)
 // and the Take-off tab (pre-filled with BOQ material lines + the linked contract).
@@ -150,11 +151,10 @@ const PoFormModal = ({
                     onChange={(e) => setLine(i, { name: e.target.value })}
                     className="flex-1 border border-bordergray rounded-lg px-2.5 py-1.5 text-[13px]"
                   />
-                  <input
-                    type="number"
+                  <NumericInput
                     placeholder="Qty"
                     value={l.qty}
-                    onChange={(e) => setLine(i, { qty: e.target.value })}
+                    onChange={(val) => setLine(i, { qty: val })}
                     className="w-16 border border-bordergray rounded-lg px-2 py-1.5 text-[13px]"
                   />
                   <input
@@ -163,11 +163,10 @@ const PoFormModal = ({
                     onChange={(e) => setLine(i, { unit: e.target.value })}
                     className="w-16 border border-bordergray rounded-lg px-2 py-1.5 text-[13px]"
                   />
-                  <input
-                    type="number"
+                  <NumericInput
                     placeholder="Rate"
                     value={l.rate}
-                    onChange={(e) => setLine(i, { rate: e.target.value })}
+                    onChange={(val) => setLine(i, { rate: val })}
                     className="w-24 border border-bordergray rounded-lg px-2 py-1.5 text-[13px]"
                   />
                   <button

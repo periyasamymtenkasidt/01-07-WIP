@@ -33,6 +33,55 @@ export const PROJECT_INTENTS = [
 ];
 export const LAND_OWNERSHIP = ["Owned", "Under purchase", "Disputed / Unknown"];
 
+// ── Lead-intake quick-qualification options (shared by both tracks) ──────────
+export const CLIENT_TYPES = [
+  "Individual",
+  "Company",
+  "Developer",
+  "Institution",
+  "Government",
+  "Other"
+];
+export const CONTACT_PERSON_ROLES = [
+  "Owner",
+  "Director",
+  "Manager",
+  "Admin",
+  "Project Coordinator",
+  "Consultant",
+  "Other"
+];
+export const PROPERTY_STATUSES = [
+  "Vacant Land",
+  "Existing Building",
+  "Under Construction",
+  "Renovation Site",
+  "Demolition Required"
+
+];
+export const SITE_VISIT_OPTIONS = ["Yes", "No", "Scheduled", "Not Required Yet"];
+
+// ── Architecture project descriptors ─────────────────────────────────────────
+export const REQUIREMENT_TYPES = [
+  "New Construction",
+  "Renovation / Remodel",
+  "Extension / Addition",
+  "Redevelopment",
+  "Interior Fit-out",
+  "Consultation Only",
+];
+export const BUILDING_USES = [
+  "Residential",
+  "Rental",
+  "Commercial",
+  "Sale",
+  "Mixed-use",
+  "Institutional",  
+  "Industrial",
+  "Hospitality",
+  "Retail",
+];
+
 export const resolveServiceTrack = (record) =>
   record?.serviceTrack || "Interiors";
 

@@ -20,6 +20,15 @@ const newInquirySchema = yup.object().shape({
     .trim()
     .matches(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Enter a valid email address"),
   inquirySource: yup.string().required("Inquiry Source is required"),
+  // Lead-intake extras — all optional. WhatsApp, when entered, must be 10 digits.
+  whatsappNumber: yup
+    .string()
+    .transform((v) => (v ? v.replace(/\s/g, "") : v))
+    .matches(/^\d{10}$/, {
+      message: "Must be a 10-digit number",
+      excludeEmptyString: true,
+    })
+    .notRequired(),
   referralPersonName: yup.string().when("inquirySource", {
     is: "Referral",
     then: (s) => s.required("Referral Person Name is required"),
@@ -85,22 +94,17 @@ import {
 } from "../../data/QuotePresets";
 import { addWorkingDaysISO } from "../../data/scheduleStorage";
 import { formatSizeRange } from "../../utils/sizeRangeValidation";
-import { PROJECT_INTENTS, LAND_OWNERSHIP } from "../../data/serviceTrack";
+import {
+  PROJECT_INTENTS,
+  LAND_OWNERSHIP,
+  CLIENT_TYPES,
+  CONTACT_PERSON_ROLES,
+  PROPERTY_STATUSES,
+  SITE_VISIT_OPTIONS,
+  REQUIREMENT_TYPES,
+  BUILDING_USES,
+} from "../../data/serviceTrack";
 import TrackPicker from "../../components/TrackPicker";
-
-const DEFAULT_PRESET = "";
-
-// Pull preset-defined defaults so a single dropdown change drives
-// propertyType + sizeRange — these mirror the fields managed in
-// Settings → Proposal Master.
-const buildPresetState = (key) => {
-  const cfg = getConfigForType(key);
-  return {
-    quotePreset: key,
-    quoteSizeRange: cfg?.sizeRange || "",
-    propertyType: cfg?.propertyType || "",
-  };
-};
 
 const INITIAL_FORM_STATE = {
   fullName: "",
@@ -114,17 +118,28 @@ const INITIAL_FORM_STATE = {
   location: "",
   inquiryStatus: "Inquiry",
   architecturalNotes: "",
+  // Lead intake — quick qualification (both tracks).
+  whatsappNumber: "",
+  clientType: "",
+  contactPersonRole: "",
+  propertyStatus: "",
+  siteVisitRequired: "",
+  nextFollowUpDate: "",
   // Top-level branch — the one field that drives the whole pipeline.
   serviceTrack: "Interiors",
-  // populated by buildPresetState below
+  // Interiors preset/type — no default; the user must select them.
   quotePreset: "",
   quoteSizeRange: "",
   propertyType: "",
   // Architecture-only intake (shown when track = Architecture).
+  projectName: "",
   projectIntent: "",
+  requirementType: "",
+  buildingUse: "",
   plotArea: "",
   plotNumber: "",
   landOwnership: "",
+  siteAddress: "",
   targetCompletion: "",
   indicativeBudget: "",
 };
@@ -194,9 +209,6 @@ const formatLakhs = (rupees) => {
 
 function NewInquiriesform({ onClose, onAddLead }) {
   const presetKeys = useMemo(() => getPresetKeys(), []);
-  const defaultPresetKey = presetKeys.includes(DEFAULT_PRESET)
-    ? DEFAULT_PRESET
-    : presetKeys[0];
 
   const {
     register,
@@ -204,13 +216,13 @@ function NewInquiriesform({ onClose, onAddLead }) {
     setValue,
     watch,
     reset,
+    trigger,
     formState: { errors },
   } = useForm({
     resolver: yupResolver(newInquirySchema),
-    defaultValues: {
-      ...INITIAL_FORM_STATE,
-      ...buildPresetState(defaultPresetKey),
-    },
+    // Property Preset and Property Type start empty — the user must pick them;
+    // no preset is pre-selected.
+    defaultValues: { ...INITIAL_FORM_STATE },
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   // Once the user edits the possession date manually we stop auto-filling it.
@@ -278,12 +290,13 @@ function NewInquiriesform({ onClose, onAddLead }) {
 
   const handlePresetChange = (e) => {
     const key = e.target.value;
-    const presetState = buildPresetState(key);
-    setValue("quotePreset", presetState.quotePreset, { shouldValidate: true });
-    setValue("quoteSizeRange", presetState.quoteSizeRange);
-    setValue("propertyType", presetState.propertyType, {
-      shouldValidate: true,
-    });
+    setValue("quotePreset", key, { shouldValidate: true });
+    // Property Type must be chosen by the user — don't auto-select the preset's
+    // first type. Clear it (and the derived size range) so they pick explicitly.
+    // Don't validate on clear: the "required" error should surface on submit or
+    // when they pick a type, not the instant a preset is chosen.
+    setValue("propertyType", "", { shouldValidate: false });
+    setValue("quoteSizeRange", "");
   };
 
   const onSubmit = async (data) => {
@@ -322,10 +335,7 @@ function NewInquiriesform({ onClose, onAddLead }) {
         type="button"
         onClick={() => {
           setPossessionTouched(false);
-          reset({
-            ...INITIAL_FORM_STATE,
-            ...buildPresetState(defaultPresetKey),
-          });
+          reset({ ...INITIAL_FORM_STATE });
         }}
         disabled={isSubmitting}
         className="text-sm font-medium cursor-pointer hover:text-red-500 text-text-muted hover:text-text transition-colors disabled:opacity-50"
@@ -399,6 +409,68 @@ function NewInquiriesform({ onClose, onAddLead }) {
 
         <div className="border-t border-border mb-6" />
 
+        {/* ── Lead Intake — quick qualification (both tracks) ─────────── */}
+        <div className="mb-6">
+          <SectionHeader hint="Fast qualification fields for ownership, visit planning, and next action.">
+            Lead Intake
+          </SectionHeader>
+          <div className="grid grid-cols-2 gap-4">
+            <InputField
+              name="whatsappNumber"
+              label="WhatsApp Number"
+              type="tel"
+              register={register("whatsappNumber")}
+              error={errors.whatsappNumber?.message}
+              placeholder="10-digit number"
+            />
+            <InputField
+              name="clientType"
+              label="Client Type"
+              type="select"
+              register={register("clientType")}
+              options={CLIENT_TYPES}
+              error={errors.clientType?.message}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4 mt-4">
+            <InputField
+              name="contactPersonRole"
+              label="Contact Person Role"
+              type="select"
+              register={register("contactPersonRole")}
+              options={CONTACT_PERSON_ROLES}
+              error={errors.contactPersonRole?.message}
+            />
+            <InputField
+              name="propertyStatus"
+              label="Property Status"
+              type="select"
+              register={register("propertyStatus")}
+              options={PROPERTY_STATUSES}
+              error={errors.propertyStatus?.message}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4 mt-4">
+            <InputField
+              name="siteVisitRequired"
+              label="Site Visit Required"
+              type="select"
+              register={register("siteVisitRequired")}
+              options={SITE_VISIT_OPTIONS}
+              error={errors.siteVisitRequired?.message}
+            />
+            <InputField
+              name="nextFollowUpDate"
+              label="Next Follow-up Date"
+              type="date"
+              register={register("nextFollowUpDate")}
+              error={errors.nextFollowUpDate?.message}
+            />
+          </div>
+        </div>
+
+        <div className="border-t border-border mb-6" />
+
         {/* ── Project Type (the one branch that drives everything) ────── */}
         <div className="mb-6">
           <SectionHeader hint="What are we doing for this client? This sets the whole pipeline.">
@@ -438,6 +510,7 @@ function NewInquiriesform({ onClose, onAddLead }) {
               label="Property Type"
               type="select"
               register={register("propertyType")}
+              onChange={() => trigger("propertyType")}
               options={getPropertyTypesForPreset(quotePreset)}
               error={errors.propertyType?.message}
             />
@@ -482,12 +555,36 @@ function NewInquiriesform({ onClose, onAddLead }) {
             </SectionHeader>
             <div className="grid grid-cols-2 gap-4">
               <InputField
+                name="projectName"
+                label="Project Name"
+                type="text"
+                placeholder="e.g. Kapoor Residence"
+                register={register("projectName")}
+                error={errors.projectName?.message}
+              />
+              <InputField
                 name="projectIntent"
                 label="Project Intent"
                 type="select"
                 register={register("projectIntent")}
                 options={PROJECT_INTENTS}
                 error={errors.projectIntent?.message}
+              />
+              <InputField
+                name="requirementType"
+                label="Requirement Type"
+                type="select"
+                register={register("requirementType")}
+                options={REQUIREMENT_TYPES}
+                error={errors.requirementType?.message}
+              />
+              <InputField
+                name="buildingUse"
+                label="Building Use"
+                type="select"
+                register={register("buildingUse")}
+                options={BUILDING_USES}
+                error={errors.buildingUse?.message}
               />
               <InputField
                 name="landOwnership"
@@ -575,7 +672,7 @@ function NewInquiriesform({ onClose, onAddLead }) {
             <div className="grid grid-cols-2 gap-4">
               <InputField
                 name="indicativeBudget"
-                label="Indicative Budget (optional)"
+                label="Construction Budget"
                 type="text"
                 placeholder="e.g. ₹2-2.5 Cr"
                 register={register("indicativeBudget")}
@@ -583,16 +680,38 @@ function NewInquiriesform({ onClose, onAddLead }) {
               />
               <InputField
                 name="targetCompletion"
-                label="Target Completion (optional)"
+                label="Target Completion"
                 type="date"
                 register={register("targetCompletion")}
                 error={errors.targetCompletion?.message}
               />
             </div>
           )}
-          <div className="grid grid-cols-2 gap-4 mt-4">
-            {PROJECT_DETAIL_FIELDS.map(field)}
-          </div>
+          {isArch ? (
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              <InputField
+                name="siteAddress"
+                label="Site Address"
+                type="text"
+                placeholder="Door no, street, landmark"
+                register={register("siteAddress")}
+                error={errors.siteAddress?.message}
+              />
+              <InputField
+                name="location"
+                label="City"
+                type="text"
+                placeholder="e.g. Chennai"
+                register={register("location")}
+                error={errors.location?.message}
+                icon={GrLocation}
+              />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              {PROJECT_DETAIL_FIELDS.map(field)}
+            </div>
+          )}
         </div>
 
         <div className="border-t border-border mb-6" />

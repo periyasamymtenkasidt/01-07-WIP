@@ -125,3 +125,43 @@ export const formatSizeRange = (val) => {
   if (!cleaned) return "—";
   return `${cleaned} Sq Ft`;
 };
+
+/**
+ * Parse a size string to a single sqft number (its first numeric group), or NaN.
+ */
+export const sizeToNumber = (val) => {
+  const m = cleanSizeRange(val).match(/\d+/);
+  return m ? Number(m[0]) : NaN;
+};
+
+/**
+ * Total sqft of a scope — the sum of the quantities of its area-measured
+ * (sqft-unit) rows. Used to compare the current scope against the original so
+ * additions/deletions net out (delete X sqft + add X sqft → no change).
+ */
+export const scopeAreaSqft = (scopeItems = []) =>
+  (scopeItems || []).reduce(
+    (sum, s) => (s && s.unit === "sqft" ? sum + (Number(s.qty) || 0) : sum),
+    0,
+  );
+
+/**
+ * Render a size adjusted by the net change in scope area, showing the final
+ * value too. `original` is the base property size; `delta` is how much the
+ * CURRENT scope's sqft differs from the ORIGINAL scope's sqft.
+ * Positive → "original + added = final Sq Ft" (e.g. 525 + 200 = 725 Sq Ft);
+ * negative → "original - removed = final Sq Ft" (e.g. 525 - 100 = 425 Sq Ft);
+ * zero → the plain size.
+ */
+export const formatSizeWithAddition = (original, delta) => {
+  const orig = sizeToNumber(original);
+  const d = Math.round(Number(delta) || 0);
+  if (Number.isFinite(orig) && orig > 0 && d !== 0) {
+    const final = orig + d;
+    return d > 0
+      ? `Base ${orig} Sq Ft + Added ${d} Sq Ft = ${final} Sq Ft (Extended)`
+      : `Base ${orig} Sq Ft - Removed ${Math.abs(d)} Sq Ft = ${final} Sq Ft (Reduced)`;
+  }
+  return formatSizeRange(original);
+};
+ 

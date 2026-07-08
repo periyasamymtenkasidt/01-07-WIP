@@ -3,6 +3,7 @@ import { X, Plus, Trash2 } from "lucide-react";
 import { listContracts } from "../../data/contractStorage";
 import { listVendors } from "../../data/vendorStorage";
 import { createRfq } from "../../data/rfqStorage";
+import NumericInput from "../../components/NumericInput";
 
 // Shared "send RFQ" modal, used by the RFQs tab (blank) and the Take-off tab
 // (pre-filled with BOQ material lines + the linked contract). Mirrors
@@ -142,11 +143,10 @@ const RfqFormModal = ({
                     onChange={(e) => setLine(i, { name: e.target.value })}
                     className="flex-1 border border-bordergray rounded-lg px-2.5 py-1.5 text-[13px]"
                   />
-                  <input
-                    type="number"
+                  <NumericInput
                     placeholder="Qty"
                     value={l.qty}
-                    onChange={(e) => setLine(i, { qty: e.target.value })}
+                    onChange={(val) => setLine(i, { qty: val })}
                     className="w-20 border border-bordergray rounded-lg px-2 py-1.5 text-[13px]"
                   />
                   <input

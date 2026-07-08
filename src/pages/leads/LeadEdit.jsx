@@ -84,9 +84,14 @@ const readLocalLead = (proposalId) => {
 // not carry (quote-builder state, fee proposal, prelim visit, negotiation
 // notes, the converted client id). These are merged OVER the authoritative
 // server record on reconcile so a fetch never blanks them out.
+//
+// NOTE: quotePreset / quoteSizeRange are intentionally NOT here. They are real
+// lead fields the backend persists (sent on create in Leads.handleAddLead and
+// PATCHed in handleSave), and the Leads list renders them straight from the
+// server. Merging a stale local copy over the server value made the detail
+// page's Project Scope disagree with the list (e.g. "3 BHK" vs "1 BHK") — so
+// they must reconcile from the server like every other lead field.
 const UI_ONLY_FIELDS = [
-  "quotePreset",
-  "quoteSizeRange",
   "quoteGrade",
   "quoteScopeItems",
   "quoteInclusions",
@@ -625,6 +630,8 @@ const LeadEdit = () => {
       status: updatedData.inquiryStatus || lead.status,
       investment: updatedData.investmentRange || lead.investment,
       inquirySource: updatedData.inquirySource || lead.inquirySource,
+      architecturalNotes:
+        updatedData.architecturalNotes ?? lead.architecturalNotes ?? "",
       referralPersonName: updatedData.referralPersonName || "",
       referralPersonEmail: updatedData.referralPersonEmail || "",
       possessionDate: isArch
@@ -664,6 +671,7 @@ const LeadEdit = () => {
         status: newLeadFormat.status,
         investment: newLeadFormat.investment,
         inquirySource: newLeadFormat.inquirySource,
+        architecturalNotes: newLeadFormat.architecturalNotes,
         referralPersonName: newLeadFormat.referralPersonName,
         referralPersonEmail: newLeadFormat.referralPersonEmail,
         possessionDate: toApiDate(newLeadFormat.possessionDate),
@@ -1498,7 +1506,7 @@ const LeadEdit = () => {
             email: lead.email,
             phone: lead.phone,
           }}
-          defaultPropertyType={lead.propertyType || lead.location}
+          defaultPropertyType={lead.propertyType || ""}
           initialQuote={
             isPipelineStep(lead.status) &&
             getStepIndex(lead.status) >= getStepIndex("Proposal")
@@ -1508,7 +1516,7 @@ const LeadEdit = () => {
           presetData={{
             presetKey: lead.quotePreset,
             grade: lead.quoteGrade,
-            propertyType: lead.propertyType || lead.location,
+            propertyType: lead.propertyType || "",
             sizeRange: lead.quoteSizeRange,
             scopeItems: lead.quoteScopeItems,
             inclusions: lead.quoteInclusions,

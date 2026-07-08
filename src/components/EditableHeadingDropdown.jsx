@@ -43,6 +43,7 @@ const EditableHeadingDropdown = ({
   const [roomsVersion, setRoomsVersion] = useState(0);
   const dropdownRef = useRef(null);
   const customInputRef = useRef(null);
+  const searchInputRef = useRef(null);
 
   useEffect(() => {
     const handler = () => setRoomsVersion((v) => v + 1);
@@ -124,6 +125,18 @@ const EditableHeadingDropdown = ({
     const q = typedValue.trim().toUpperCase();
     return roomCategories.filter((r) => r.name.toUpperCase().includes(q));
   }, [roomCategories, typedValue, isTyping]);
+
+  // Whether the typed text is a brand-new heading (matches no existing preset).
+  // Drives the label/behaviour of the always-visible "Create heading" action in
+  // the category view: with new text it creates that heading; empty or matching,
+  // it just focuses the field so the user can type a name.
+  const typedIsNewHeading = useMemo(() => {
+    const typed = typedValue.trim();
+    if (!typed) return false;
+    return !roomCategories.some(
+      (r) => r.name.trim().toUpperCase() === typed.toUpperCase(),
+    );
+  }, [typedValue, roomCategories]);
 
   // Category prefix for locking
   const categoryPrefix = useMemo(() => {
@@ -293,6 +306,7 @@ const EditableHeadingDropdown = ({
         /* ── Main dropdown trigger (Input acting as both Search & Select) ── */
         <div className="relative flex items-center">
           <input
+            ref={searchInputRef}
             type="text"
             value={typedValue}
             onChange={handleInputChange}
@@ -383,25 +397,29 @@ const EditableHeadingDropdown = ({
                 })}
               </div>
 
-              {/* Create a brand-new custom heading from the typed text when it
-                  matches none of the presets. */}
-              {typedValue.trim() &&
-                !roomCategories.some(
-                  (r) =>
-                    r.name.trim().toUpperCase() ===
-                    typedValue.trim().toUpperCase(),
-                ) && (
-                  <div className="p-2 border-t border-bordergray shrink-0">
-                    <button
-                      type="button"
-                      onClick={handleCreateCustom}
-                      className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-select-blue/40 text-select-blue text-[11px] font-semibold hover:bg-active-bg/40 transition-all"
-                    >
-                      <Plus size={12} />
-                      Create heading "{typedValue.trim().toLocaleLowerCase}"
-                    </button>
-                  </div>
-                )}
+              {/* Create a brand-new custom heading — always available. With
+                  new (non-matching) typed text it creates that heading; empty
+                  or matching an existing preset, it focuses the field so the
+                  user can type the new heading name. */}
+              <div className="p-2 border-t border-bordergray shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typedIsNewHeading) {
+                      handleCreateCustom();
+                    } else {
+                      setIsTyping(true);
+                      searchInputRef.current?.focus();
+                    }
+                  }}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-select-blue/40 text-select-blue text-[11px] font-semibold hover:bg-active-bg/40 transition-all"
+                >
+                  <Plus size={12} />
+                  {typedIsNewHeading
+                    ? `Create heading "${typedValue.trim().toUpperCase()}"`
+                    : "Create New Heading"}
+                </button>
+              </div>
             </>
           ) : (
             /* ── Sub-headings list for selected category ────── */

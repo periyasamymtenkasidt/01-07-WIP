@@ -29,6 +29,8 @@ import {
   computeMaterialTakeoff,
 } from "../../data/procurementStorage";
 import { getOrgProfile } from "../../data/orgProfile";
+import { getSite } from "../../data/siteStorage";
+import { getSiteServiceTrack } from "../../data/surveyMeasureStorage";
 import { UNITS } from "../../data/boqUnits";
 import { inrToWords } from "../../utils/numberToWords";
 import { formatSizeRange } from "../../utils/sizeRangeValidation";
@@ -233,6 +235,16 @@ const BOQDocument = ({
   groupMode = "section",
 }) => {
   const approval = mergeApproval(boq.approval);
+
+  // Interior BOQs hide the architecture-only item metadata (floor / work
+  // category / drawing ref / brand-finish / item-billing-scope-execution tags),
+  // mirroring the editor. Standalone BOQs (no site) show it.
+  const isInteriorBoq = useMemo(() => {
+    const siteID = boq?.project?.siteID;
+    if (!siteID) return false;
+    const site = getSite(siteID);
+    return site ? getSiteServiceTrack(site) === "Interiors" : false;
+  }, [boq?.project?.siteID]);
   const initials = (company.name || "")
     .split(/\s+/)
     .filter(Boolean)
@@ -531,22 +543,22 @@ const BOQDocument = ({
                               {item.spec}
                             </p>
                           )}
-                          {hierarchyText && (
+                          {!isInteriorBoq && hierarchyText && (
                             <p className="text-[8.5px] text-text-muted mt-0.5 leading-snug">
                               {hierarchyText}
                             </p>
                           )}
-                          {detailText && (
+                          {!isInteriorBoq && detailText && (
                             <p className="text-[8.5px] text-text-muted mt-0.5 leading-snug">
                               {detailText}
                             </p>
                           )}
-                          {scopeText && (
+                          {!isInteriorBoq && scopeText && (
                             <p className="text-[8.5px] text-text-subtle mt-0.5 leading-snug">
                               {scopeText}
                             </p>
                           )}
-                          {item.details?.remarks && (
+                          {!isInteriorBoq && item.details?.remarks && (
                             <p className="text-[8.5px] text-text-subtle mt-0.5 leading-snug">
                               Remarks: {item.details.remarks}
                             </p>

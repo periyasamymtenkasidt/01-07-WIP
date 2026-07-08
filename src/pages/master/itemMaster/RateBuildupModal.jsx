@@ -9,6 +9,7 @@ import {
   materialsById,
   seedRecipeFromMaterials,
 } from "../../../data/rateBuildup";
+import NumericInput from "../../../components/NumericInput";
 
 const inr = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -331,16 +332,14 @@ const RateBuildupModal = ({ item, onSave, onClose }) => {
                       </option>
                     ))}
                   </select>
-                  <input
-                    type="number"
+                  <NumericInput
                     value={active.components[i].qty}
-                    onChange={(e) => patchComp(i, { qty: e.target.value })}
+                    onChange={(val) => patchComp(i, { qty: val })}
                     className="w-full min-w-0 border border-bordergray rounded-lg px-2 py-1.5 text-center"
                   />
-                  <input
-                    type="number"
+                  <NumericInput
                     value={active.components[i].wastagePct}
-                    onChange={(e) => patchComp(i, { wastagePct: e.target.value })}
+                    onChange={(val) => patchComp(i, { wastagePct: val })}
                     className="w-full min-w-0 border border-bordergray rounded-lg px-2 py-1.5 text-center"
                   />
                   <span className="min-w-0 text-right text-text-muted tabular-nums truncate">
@@ -370,26 +369,23 @@ const RateBuildupModal = ({ item, onSave, onClose }) => {
           {/* Labour / overhead / margin */}
           <div className="grid grid-cols-3 gap-3">
             <Field label={`Labour (₹/${workUnit})`}>
-              <input
-                type="number"
+              <NumericInput
                 value={active.labourRate}
-                onChange={(e) => patchRecipe({ labourRate: e.target.value })}
+                onChange={(val) => patchRecipe({ labourRate: val })}
                 className="w-full border border-bordergray rounded-lg px-3 py-2 text-[13px]"
               />
             </Field>
             <Field label="Overhead %">
-              <input
-                type="number"
+              <NumericInput
                 value={active.overheadPct}
-                onChange={(e) => patchRecipe({ overheadPct: e.target.value })}
+                onChange={(val) => patchRecipe({ overheadPct: val })}
                 className="w-full border border-bordergray rounded-lg px-3 py-2 text-[13px]"
               />
             </Field>
             <Field label="Margin %">
-              <input
-                type="number"
+              <NumericInput
                 value={active.marginPct}
-                onChange={(e) => patchRecipe({ marginPct: e.target.value })}
+                onChange={(val) => patchRecipe({ marginPct: val })}
                 className="w-full border border-bordergray rounded-lg px-3 py-2 text-[13px]"
               />
             </Field>

@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { CheckCircle2, FileX, Send, ArrowLeft, X } from "lucide-react";
 import { getRfqById, recordVendorQuote } from "../../data/rfqStorage";
 import { listVendors } from "../../data/vendorStorage";
+import NumericInput from "../../components/NumericInput";
 import wipLogo from "../../assets/images/Logo.png";
 
 const fmtINR = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
@@ -261,10 +262,9 @@ const VendorQuoteForm = () => {
                   <td className="px-3 py-2.5 text-right text-text-muted">{item.qty}</td>
                   <td className="px-3 py-2.5 text-text-muted">{item.unit}</td>
                   <td className="px-3 py-2.5 text-right">
-                    <input
-                      type="number"
+                    <NumericInput
                       value={rates[idx] ?? ""}
-                      onChange={(e) => setRate(idx, e.target.value)}
+                      onChange={(val) => setRate(idx, val)}
                       disabled={closed}
                       placeholder="0"
                       className="w-24 border border-bordergray rounded-lg px-2 py-1.5 text-[13px] text-right disabled:bg-bg-soft"

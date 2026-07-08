@@ -8,6 +8,7 @@ import {
   awardRfq,
   convertRfqToPo,
 } from "../../data/rfqStorage";
+import NumericInput from "../../components/NumericInput";
 
 // Full-page RFQ detail — replaces the old compare modal. Shows an item ×
 // vendor rate grid: staff key in quotes received by phone/email, or a vendor
@@ -187,10 +188,9 @@ const RfqDetail = () => {
                   </td>
                   {rfq.quotes.map((q) => (
                     <td key={q.vendorId} className="px-3 py-2 text-center">
-                      <input
-                        type="number"
+                      <NumericInput
                         value={rates[q.vendorId]?.[idx] ?? ""}
-                        onChange={(e) => setRate(q.vendorId, idx, e.target.value)}
+                        onChange={(val) => setRate(q.vendorId, idx, val)}
                         disabled={rfq.status === "closed"}
                         placeholder="Rate"
                         className="w-24 border border-bordergray rounded-lg px-2 py-1 text-[12px] text-center disabled:bg-bg-soft"

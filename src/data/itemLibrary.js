@@ -277,12 +277,18 @@ export const listLibrary = () => {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed.map(normalizeItem);
+      // A non-empty stored list is authoritative. An EMPTY array is treated as
+      // "not seeded yet" and falls through to re-seed the defaults — otherwise a
+      // one-time blank (an empty backend sync, a bulk delete, a migration) would
+      // leave the library permanently empty, so "Pick from Library" shows nothing.
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(normalizeItem);
+      }
     }
   } catch {
     // fall through
   }
-  // First read — seed defaults so the library isn't empty.
+  // First read (or recovered-from-empty) — seed defaults so the library is usable.
   const seeded = DEFAULT_LIBRARY.map(normalizeItem);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
   return seeded;

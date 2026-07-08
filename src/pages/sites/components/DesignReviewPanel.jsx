@@ -15,8 +15,8 @@ import {
   INTERNAL_ROLES,
   DESIGN_REVIEW_CHECKLIST,
   checklistComplete,
+  checklistAllYes,
   openCommentsCount,
-  canFinalizeInternal,
   internalApprove,
   internalRequestChanges,
   setChecklistItem,
@@ -126,8 +126,11 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
 
   const done = checklistComplete(stage);
   const openCount = openCommentsCount(stage);
-  const canFinalize = canFinalizeInternal(stage);
   const answered = checklist.filter((c) => c && c.value).length;
+  const yesCount = checklist.filter((c) => c && c.value === "yes").length;
+  // Every reviewer in the chain must clear (Yes) all checklist items before the
+  // stage can advance to the next person.
+  const allYes = checklistAllYes(stage);
   // Readable breakdown for the confirmation modal.
   const yesItems = DESIGN_REVIEW_CHECKLIST.filter(
     (_, i) => checklist[i]?.value === "yes",
@@ -138,9 +141,9 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
   const pendingItems = DESIGN_REVIEW_CHECKLIST.filter(
     (_, i) => checklist[i]?.value !== "yes" && checklist[i]?.value !== "no",
   );
-  // The final step (Principal) may only authorise once the stage is ready:
-  // checklist complete and every comment closed.
-  const canProceed = !isFinalStep || canFinalize;
+  // Advance gate for the CURRENT reviewer (any step): all checklist items must
+  // be Yes. The final step (Principal) also needs every comment closed.
+  const canProceed = allYes && (!isFinalStep || openCount === 0);
 
   // The acting role is bound to whichever step is current — the sequence
   // (Intern → Principal) is enforced, so the log can't claim a role out of turn.
@@ -195,13 +198,18 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
 
         {isReview && (
           <div className="mt-4 rounded-xl border border-bordergray bg-white p-3.5">
-            {isFinalStep && !canFinalize && (
+            {!canProceed && (
               <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-800">
                 <FiClock size={14} className="mt-0.5 shrink-0" />
                 <span>
-                  Principal Architect can authorise once the checklist is
-                  complete ({answered}/{DESIGN_REVIEW_CHECKLIST.length}) and all
-                  comments are closed ({openCount} open).
+                  {expectedRole} can{" "}
+                  {isFinalStep ? "authorise" : "approve"} once every checklist
+                  item is marked Yes ({yesCount}/{DESIGN_REVIEW_CHECKLIST.length}{" "}
+                  yes)
+                  {isFinalStep
+                    ? ` and all comments are closed (${openCount} open)`
+                    : ""}
+                  .
                 </span>
               </div>
             )}

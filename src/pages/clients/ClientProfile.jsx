@@ -179,7 +179,7 @@ const ClientProfile = () => {
     const seedLead = foundLead || {
       proposalId: client.sourceLeadId || client.clientID,
       quotePreset: client.quotePreset || "2BHK",
-      propertyType: client.propertyType || client.location || "Apartment",
+      propertyType: client.propertyType || "Apartment",
       quoteSizeRange: "",
       clientName: client.clientName,
     };
@@ -844,7 +844,16 @@ const ClientProfile = () => {
           initialQuote={getLatestQuoteForParent(
             client.sourceLeadId || client.clientID,
           )}
-          defaultPropertyType={client.location}
+          defaultPropertyType={
+            client.propertyType || associatedLead?.propertyType || ""
+          }
+          presetData={{
+            presetKey: client.quotePreset || associatedLead?.quotePreset || "",
+            propertyType:
+              client.propertyType || associatedLead?.propertyType || "",
+            sizeRange:
+              client.quoteSizeRange || associatedLead?.quoteSizeRange || "",
+          }}
           onClose={() => setShowQuoteModal(false)}
         />
       )}

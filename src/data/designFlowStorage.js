@@ -642,6 +642,10 @@ const ensureInternal = (stage) => {
   return internal;
 };
 
+// A fresh, unanswered checklist — one blank row per review item.
+const blankChecklist = () =>
+  DESIGN_REVIEW_CHECKLIST.map(() => ({ value: null, comment: "" }));
+
 // Every checklist row answered (yes/no).
 export const checklistComplete = (stage) => {
   const checklist = stage?.internal?.checklist || [];
@@ -651,6 +655,18 @@ export const checklistComplete = (stage) => {
       const v = checklist[i]?.value;
       return v === "yes" || v === "no";
     })
+  );
+};
+
+// Every checklist row explicitly marked "Yes". This is the gate to advance the
+// review to the next person: a reviewer cannot pass the stage along until they
+// have reviewed and cleared (Yes) every item. A single "No" or unanswered row
+// blocks the hand-off (raise a comment and return to the team instead).
+export const checklistAllYes = (stage) => {
+  const checklist = stage?.internal?.checklist || [];
+  return (
+    DESIGN_REVIEW_CHECKLIST.length > 0 &&
+    DESIGN_REVIEW_CHECKLIST.every((_, i) => checklist[i]?.value === "yes")
   );
 };
 
@@ -715,7 +731,11 @@ export const internalApprove = (siteID, stageKey, { role, comment = "" } = {}) =
   const internal = ensureInternal(stage);
   const step = internal.step || 0;
   const isFinal = step >= INTERNAL_ROLES.length - 1;
-  if (isFinal && !canFinalizeInternal(stage)) return flow;
+  // Gate: every reviewer must give Yes to ALL checklist items before the stage
+  // can move to the next person. The final (Principal) step additionally needs
+  // every design comment closed. Otherwise the approval is rejected (no-op).
+  if (!checklistAllYes(stage)) return flow;
+  if (isFinal && openCommentsCount(stage) !== 0) return flow;
   const actingRole = role || INTERNAL_ROLES[step];
   internal.signoffs.unshift({
     role: actingRole,
@@ -733,6 +753,9 @@ export const internalApprove = (siteID, stageKey, { role, comment = "" } = {}) =
     });
   } else {
     internal.step = step + 1;
+    // Reset the checklist so the next reviewer must independently review and
+    // clear every item — each person in the chain signs off on the full list.
+    internal.checklist = blankChecklist();
     flow.history.unshift({
       at: stamp(),
       action: `${labelForStage(stageKey)} approved by ${actingRole} (internal review)`,
@@ -758,6 +781,9 @@ export const internalRequestChanges = (siteID, stageKey, { role, comment = "" } 
     at: stamp(),
   });
   internal.step = 0;
+  // A return restarts the chain from the Intern, so clear the checklist too —
+  // the whole hierarchy re-reviews every item on resubmit.
+  internal.checklist = blankChecklist();
   internal.kickback = { role: actingRole, comment, at: stamp() };
   stage.reviewState = "DRAFTING";
   flow.history.unshift({

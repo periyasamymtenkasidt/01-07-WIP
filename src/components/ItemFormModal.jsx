@@ -351,14 +351,20 @@ const ItemFormModal = ({
     setPrevItemName(itemName);
   };
 
-  // Convert a library item to the unified form state object
+  // Convert a library item to the unified form state object.
+  // `masterId` links the scope row back to the Item Master so grade mapping,
+  // rate syncing and library sync all work. The library item's own `id` must
+  // NOT overwrite the scope item's `id` — it goes into `masterId` instead.
   const libraryItemToFormState = (lib) => {
     const defaultHeading = (lib.category || "").toUpperCase();
     const defaultItemName = lib.description || "";
     const defaultSpec = lib.spec || getDetailedDescription(defaultItemName) || defaultItemName;
+    // Destructure `id` out so it doesn't overwrite the scope item's identity.
+    const { id: libId, ...libFields } = lib;
     return {
       ...blankLibraryItem(),
-      ...lib,
+      ...libFields,
+      masterId: libId,
       draftId: Math.random().toString(36).substring(2, 9),
       heading: defaultHeading,
       itemName: defaultItemName,
@@ -371,6 +377,9 @@ const ItemFormModal = ({
       height: lib.height || 0,
       qty: lib.qty || 0,
       gstPercent: lib.gstPercent || 18,
+      areaFactor: lib.areaFactor || 1,
+      recipes: lib.recipes || undefined,
+      defaultGrade: lib.defaultGrade || undefined,
       materials: lib.materials ? lib.materials.map((m) => ({ ...m })) : [],
       tags: lib.tags ? [...lib.tags] : [],
       days: lib.days !== "" && lib.days != null ? lib.days : getRoomDefaultDays(lib.category || ""),
@@ -1435,20 +1444,31 @@ const ItemFormModal = ({
   );
 };
 
-const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) => {
+export const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) => {
   const [items] = useState(() => listLibrary());
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState(new Set());
 
+  // Stable, guaranteed-unique key per library row. Selection is tracked by this
+  // key, NOT by `it.id`: library items *should* have unique ids, but a missing
+  // or duplicated id makes `selectedIds.has(it.id)` collide, so toggling one row
+  // toggles every row that shares that id (or `undefined`) — the "select one /
+  // all select, deselect one / all deselect" bug. The row's index in the loaded
+  // list is stable for the picker's lifetime, so it's a safe fallback key.
+  const keyed = useMemo(
+    () => items.map((it, idx) => ({ it, key: it.id || `__row_${idx}` })),
+    [items],
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return items
+    return keyed
       // Only exclude the item being edited when there's actually an id to
       // exclude. Without this guard, opening the picker for a new (id-less) item
       // makes excludeId `undefined`, which drops every library item that also
       // lacks an id (`undefined !== undefined` is false) — emptying the list.
-      .filter((it) => !excludeId || it.id !== excludeId)
-      .filter((it) => {
+      .filter(({ it }) => !excludeId || it.id !== excludeId)
+      .filter(({ it }) => {
         if (!q) return true;
         return (
           (it.description || "").toLowerCase().includes(q) ||
@@ -1456,21 +1476,21 @@ const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) 
           (it.tags || []).some((t) => t.toLowerCase().includes(q))
         );
       });
-  }, [items, query, excludeId]);
+  }, [keyed, query, excludeId]);
 
-  const handleItemClick = (it) => {
+  const handleItemClick = (row) => {
     if (multiSelectMode) {
       setSelectedIds((prev) => {
         const next = new Set(prev);
-        if (next.has(it.id)) {
-          next.delete(it.id);
+        if (next.has(row.key)) {
+          next.delete(row.key);
         } else {
-          next.add(it.id);
+          next.add(row.key);
         }
         return next;
       });
     } else {
-      onPick(it);
+      onPick(row.it);
     }
   };
 
@@ -1523,15 +1543,16 @@ const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) 
               No items match
             </p>
           ) : (
-            filtered.map((it, i) => {
+            filtered.map((row) => {
+              const { it, key } = row;
               const unitLabel =
                 UNITS.find((u) => u.code === it.unit)?.label || it.unit;
-              const isSelected = selectedIds.has(it.id);
+              const isSelected = selectedIds.has(key);
               return (
                 <button
-                  key={it.id || `${it.description}-${i}`}
+                  key={key}
                   type="button"
-                  onClick={() => handleItemClick(it)}
+                  onClick={() => handleItemClick(row)}
                   className={`w-full text-left rounded-lg border px-3 py-2 transition-all flex items-center gap-3 cursor-pointer ${
                     isSelected
                       ? "border-select-blue bg-active-bg/40"
@@ -1576,7 +1597,9 @@ const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) 
             <button
               type="button"
               onClick={() => {
-                const selectedItems = items.filter((it) => selectedIds.has(it.id));
+                const selectedItems = keyed
+                  .filter(({ key }) => selectedIds.has(key))
+                  .map(({ it }) => it);
                 onPick(selectedItems);
               }}
               disabled={selectedIds.size === 0}

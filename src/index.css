@@ -131,11 +131,14 @@
   .quote-print-area,
   .quote-print-area *,
   .boq-print-area,
-  .boq-print-area * {
+  .boq-print-area *,
+  .po-print-area,
+  .po-print-area * {
     visibility: visible;
   }
   .quote-print-area,
-  .boq-print-area {
+  .boq-print-area,
+  .po-print-area {
     position: absolute;
     top: 0;
     left: 0;

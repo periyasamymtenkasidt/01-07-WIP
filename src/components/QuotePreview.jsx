@@ -1,6 +1,6 @@
 import { Fragment, useMemo } from "react";
 import { formatAmount } from "../utils/formatAmount";
-import { formatSizeRange } from "../utils/sizeRangeValidation";
+import { formatSizeWithAddition } from "../utils/sizeRangeValidation";
 import { GST_RATE, computeTotals } from "../data/QuotePresets";
 import { assignCategoryNames, refreshScopeItemsFromMaster } from "../utils/scopeNaming";
 import { getGlobalTerms, getTermsCategories } from "../data/termsStorage";
@@ -18,16 +18,27 @@ const formatDate = (iso) => {
 // Pure presentational component — renders the quote in print-ready form.
 // Wrap callers in <div className="quote-print-area">…</div> so the print
 // stylesheet in index.css can target it.
-const QuotePreview = ({ quote }) => {
+//
+// `syncFromMaster` reconciles the scope against the current master template
+// (re-adds master rows, drops removed ones) — correct when viewing a *saved*
+// quote that should reflect the latest master. The live preview inside
+// QuoteModal must instead render exactly the scope rows the form shows (the
+// user's in-session adds/removes/edits), so it passes `syncFromMaster={false}`.
+// `highlightAdded` tints scope rows the user pulled in via "Pick from Library"
+// (`_userAdded`) with the project's active-blue theme. It's an editing aid for
+// the on-screen live preview only — left off for print/saved client quotes so
+// the deliverable stays clean.
+const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) => {
   if (!quote) return null;
 
   const refreshedScopeItems = useMemo(() => {
+    if (!syncFromMaster) return quote.scopeItems || [];
     return refreshScopeItemsFromMaster(
       quote.scopeItems || [],
       quote.presetKey,
       quote.propertyType
     );
-  }, [quote.scopeItems, quote.presetKey, quote.propertyType]);
+  }, [quote.scopeItems, quote.presetKey, quote.propertyType, syncFromMaster]);
 
   const { subtotal, gst, grandTotal } = computeTotals(refreshedScopeItems);
   const namedItems = assignCategoryNames(refreshedScopeItems);
@@ -147,7 +158,7 @@ const QuotePreview = ({ quote }) => {
             Size :
           </span>
           <span className="font-medium text-black">
-            {formatSizeRange(quote.sizeRange)}
+            {formatSizeWithAddition(quote.sizeRange, quote.sizeAddedSqft)}
           </span>
         </div>
       </div>
@@ -194,7 +205,9 @@ const QuotePreview = ({ quote }) => {
                     return (
                       <tr
                         key={`${globalIndex}`}
-                        className="border-b border-black align-top"
+                        className={`border-b border-black align-top ${
+                          highlightAdded && item._userAdded ? "bg-active-bg" : ""
+                        }`}
                       >
                         <td className="py-4 px-2 font-bold">{globalIndex}</td>
                         <td className="py-4 px-2 font-bold uppercase text-[9px] leading-tight w-1/4">

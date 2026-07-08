@@ -24,6 +24,7 @@ import {
   CheckCircle2,
   Info,
   FileCheck,
+  Package,
 } from "lucide-react";
 import DestinationPromptModal from "./DestinationPromptModal";
 import { useForm } from "react-hook-form";
@@ -42,7 +43,8 @@ import {
 import {
   cleanSizeRange,
   validateSizeRangeInput,
-  formatSizeRange,
+  formatSizeWithAddition,
+  scopeAreaSqft,
 } from "../utils/sizeRangeValidation";
 
 const quoteRecipientSchema = yup.object().shape({
@@ -96,7 +98,8 @@ import {
 } from "../utils/scopeNaming";
 import { roomColor } from "../data/categoryColors";
 import CategorySelect from "./CategorySelect";
-import LibraryPickerModal from "./LibraryPickerModal";
+import NumericInput from "./NumericInput";
+import { LibraryPicker } from "./ItemFormModal";
 import { getRoomDefaultDays } from "../data/scheduleConfig";
 import { getProposalRoomPresets } from "../data/proposalRooms";
 
@@ -513,6 +516,12 @@ const buildInitialFormData = ({
     ),
     validityDays: presetData?.validityDays || initialQuote?.validityDays || 30,
     scopeItems,
+    // Snapshot of the ORIGINAL scope's total sqft, captured once at load. The
+    // displayed size is extended by however much the current scope's sqft later
+    // exceeds this baseline (so deletions offset library additions). Preserved
+    // across a resend via initialQuote.
+    baselineScopeSqft:
+      initialQuote?.baselineScopeSqft ?? scopeAreaSqft(scopeItems),
     inclusions: flatIn,
     exclusions: flatEx,
     categoryInclusions,
@@ -761,6 +770,13 @@ const QuoteModal = ({
   });
 
   const watchedSizeRange = watch("sizeRange");
+
+  // Net change in the current scope's total sqft vs the original scope baseline.
+  // Adding library scope raises it (+), deleting existing scope lowers it (-),
+  // so the two net out. Drives the "original ± change" adjusted-size display.
+  const addedScopeSqft = Math.round(
+    scopeAreaSqft(formData.scopeItems) - (formData.baselineScopeSqft || 0),
+  );
 
   const [isSending, setIsSending] = useState(false);
   // Controls the library picker modal for "Pick from Library" flow.
@@ -1121,6 +1137,15 @@ const QuoteModal = ({
         // editable even during a first proposal send, where the preset-mapped
         // scope is otherwise locked.
         _userAdded: true,
+        // Link back to the Item Master so grade mapping, library sync and
+        // rate buildup all work. Without masterId, none of these features
+        // can find the originating master item.
+        masterId: lib.id || null,
+        hsn: lib.hsn || "",
+        gstPercent: lib.gstPercent ?? 18,
+        areaFactor: lib.areaFactor || 1,
+        recipes: lib.recipes || undefined,
+        defaultGrade: lib.defaultGrade || undefined,
         length: lib.length != null ? Number(lib.length) : "",
         breadth: lib.breadth != null ? Number(lib.breadth) : "",
         height: lib.height != null ? Number(lib.height) : "",
@@ -1134,9 +1159,23 @@ const QuoteModal = ({
         days,
         materials: lib.materials ? lib.materials.map((m) => ({ ...m })) : [],
       };
+      // Price the picked row through its Item Master grade recipe — exactly how
+      // preset scope rows are priced — so the rate, grade and materials (with
+      // their rates) all come straight from the master. Flat-rate items (no
+      // recipe) keep their own rate/materials unchanged.
+      const graded = mapScopeItemToGrade(
+        newRow,
+        lib.defaultGrade || newRow.grade || "premium",
+      );
+      const finalRow = {
+        ...graded,
+        // Library works carry no assumed qty, so amount computes to 0 — fall
+        // back to the unit rate so the line still shows a price.
+        amount: graded.amount || Number(graded.rate) || 0,
+      };
       setFormData((p) => ({
         ...p,
-        scopeItems: addScopeItemsWithDuplicateCheck(p.scopeItems, [newRow]),
+        scopeItems: addScopeItemsWithDuplicateCheck(p.scopeItems, [finalRow]),
       }));
       setLibraryPickerOpen(false);
     } catch (err) {
@@ -1192,6 +1231,11 @@ const QuoteModal = ({
     propertyType: formData.propertyType,
     grade: formData.grade || "premium",
     sizeRange: cleanSizeRange(overrides.sizeRange ?? watchedSizeRange ?? ""),
+    // The original scope's sqft baseline + how much the current scope exceeds
+    // it. Persisted so the size renders as "original + added" in the live
+    // preview and the sent/printed quote, and so a resend keeps the baseline.
+    baselineScopeSqft: formData.baselineScopeSqft || 0,
+    sizeAddedSqft: addedScopeSqft,
     validityDays: Number(formData.validityDays) || 30,
     scopeItems: formData.scopeItems,
     inclusions: formData.inclusions,
@@ -1234,7 +1278,7 @@ const QuoteModal = ({
       // 2. Render QuotePreview into the temporary container
       const root = createRoot(printContainer);
       flushSync(() => {
-        root.render(<QuotePreview quote={quote} />);
+        root.render(<QuotePreview quote={quote} syncFromMaster={false} />);
       });
 
       // 3. Set printing class on body to isolate the container and hide the rest
@@ -1389,7 +1433,8 @@ const QuoteModal = ({
         return {
           ...s,
           itemName: `${s.itemName || ""} (${short})`,
-          // Keep the appended suffix through QuotePreview's master refresh.
+          // Preview renders with syncFromMaster={false}, so the scope is shown
+          // exactly as edited here; the grade suffix carries through untouched.
           isItemNameCustom: true,
         };
       }),
@@ -1498,10 +1543,11 @@ const QuoteModal = ({
                     {formData.propertyType ? ` / ${formData.propertyType}` : ""}
                   </p>
                   <p className="text-[11px] text-text-muted mt-0.5">
-                    {formatSizeRange(
+                    {formatSizeWithAddition(
                       formData.sizeRange ||
                         getConfigForType(presetKey, formData.propertyType)
                           ?.sizeRange,
+                      addedScopeSqft,
                     )}
                   </p>
                 </div>
@@ -1613,6 +1659,16 @@ const QuoteModal = ({
                     placeholder="e.g. 800-1100"
                   />
                 </div>
+                {addedScopeSqft !== 0 && (
+                  // Current scope sqft differs from the original scope — surface
+                  // the adjusted breakdown (Base + Added / - Removed = final).
+                  <p className="mt-1.5 text-[10.5px] font-medium text-select-blue">
+                    {formatSizeWithAddition(
+                      watchedSizeRange || formData.sizeRange,
+                      addedScopeSqft,
+                    )}
+                  </p>
+                )}
                 <div className="mt-3">
                   <InputField
                     name="validityDays"
@@ -1713,8 +1769,17 @@ const QuoteModal = ({
                           return (
                             <div
                               key={idx}
-                              className="rounded-lg border border-border bg-bg-soft/30 p-2 space-y-2"
+                              className={`rounded-lg border p-2 space-y-2 ${
+                                item._userAdded
+                                  ? "border-select-blue/40 bg-active-bg"
+                                  : "border-border bg-bg-soft/30"
+                              }`}
                             >
+                              {item._userAdded && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-select-blue/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-select-blue">
+                                  <Package size={9} /> Added from Library
+                                </span>
+                              )}
                               <div className="grid grid-cols-[1fr_1.5fr_110px_28px] gap-2 items-start">
                                 {rowLocked ? (
                                   <div
@@ -1789,16 +1854,41 @@ const QuoteModal = ({
                                   </span>
                                 </span>
 
-                                {Number(item.qty) > 0 && (
-                                  <span>
+                                {item._userAdded ? (
+                                  // Rows added via "Pick from Library" carry no
+                                  // assumed quantity, so give them an editable
+                                  // Quantity field (drives amount = qty × rate).
+                                  // Always editable, even on a first send.
+                                  <span className="flex items-center gap-1">
                                     <span className="text-text-subtle">
-                                      Quantity:{" "}
+                                      Quantity:
                                     </span>
-                                    <span className="font-semibold">
-                                      {Number(item.qty).toLocaleString("en-IN")}{" "}
+                                    <NumericInput
+                                      value={item.qty ?? ""}
+                                      onChange={(val) =>
+                                        updateScope(idx, "qty", val)
+                                      }
+                                      placeholder="0"
+                                      className="w-16 bg-white border border-bordergray rounded-md px-1.5 py-1 text-[10px] text-right focus:outline-none focus:border-select-blue"
+                                    />
+                                    <span className="text-text-subtle">
                                       {item.unit}
                                     </span>
                                   </span>
+                                ) : (
+                                  Number(item.qty) > 0 && (
+                                    <span>
+                                      <span className="text-text-subtle">
+                                        Quantity:{" "}
+                                      </span>
+                                      <span className="font-semibold">
+                                        {Number(item.qty).toLocaleString(
+                                          "en-IN",
+                                        )}{" "}
+                                        {item.unit}
+                                      </span>
+                                    </span>
+                                  )
                                 )}
 
                                 {(item.days ?? "") !== "" && (
@@ -2229,14 +2319,19 @@ const QuoteModal = ({
             Live Preview
           </p>
           <div className="quote-print-area rounded-xl border border-border bg-white p-6 shadow-sm">
-            <QuotePreview quote={previewQuote} />
+            <QuotePreview
+              quote={previewQuote}
+              syncFromMaster={false}
+              highlightAdded
+            />
           </div>
         </div>
       </div>
 
-      {/* Library Picker — direct pick from saved items */}
+      {/* Library Picker — the exact same picker used in the Item Master
+          (ItemFormModal). Single-select: onPick receives one library item. */}
       {libraryPickerOpen && (
-        <LibraryPickerModal
+        <LibraryPicker
           onClose={() => setLibraryPickerOpen(false)}
           onPick={handleLibraryPick}
         />

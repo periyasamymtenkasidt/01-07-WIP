@@ -37,33 +37,100 @@ const writeAll = (contractId, list) => {
 
 const lineAmount = (l) => (Number(l.qty) || 0) * (Number(l.rate) || 0);
 
+// Normalized identity for a line item — the trimmed lowercase name, which is the
+// stable human identity of the material. The Material-Master id is only a
+// fallback for the rare unnamed line. Keying on the NAME (not the id) is what
+// lets a take-off RFQ (lines carry materialId) and a manually-typed RFQ (no
+// materialId) for the same material reconcile into one request instead of
+// spawning a duplicate.
+const itemKey = (l) => {
+  const name = (l.name || "").trim().toLowerCase();
+  if (name) return `name:${name}`;
+  return l.materialId ? `id:${l.materialId}` : "";
+};
+
+// Scope signature = the sorted, de-duplicated set of item keys. Two RFQs are the
+// "same request" only when these match. Empty (unidentifiable) keys are dropped.
+const scopeSignature = (items = []) =>
+  Array.from(new Set(items.map(itemKey)))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+
+// An RFQ stays "open" (mergeable) until a vendor is awarded; once awarded or
+// closed its scope + vendor list is frozen and must never be merged into.
+const isOpenRfq = (rfq) => rfq.status !== "awarded" && rfq.status !== "closed";
+
+const blankQuote = (vendorId) => ({
+  vendorId,
+  quotedAt: null,
+  lines: [],
+  total: 0,
+  notes: "",
+});
+
 // Create an RFQ from a take-off (or manually entered) item list, inviting the
 // given vendors. Each invited vendor starts with an empty quote — quotes are
 // recorded later via recordVendorQuote as they come back.
+//
+// Merge is keyed on the OPEN REQUEST, never on the vendor: if an open RFQ for
+// this contract already covers the same scope (same set of line items), the
+// newly-invited vendors are folded into it instead of spawning a duplicate. A
+// vendor already appearing in some other RFQ is NOT a trigger — the request
+// (contract + open + scope) is the identity — so distinct scopes stay separate
+// and awarded/closed RFQs are left untouched.
 export const createRfq = (contractId, { items = [], vendorIds = [] } = {}) => {
+  const normalizedItems = items.map((l) => ({
+    materialId: l.materialId || null,
+    name: l.name || "",
+    spec: l.spec || "",
+    qty: Number(l.qty) || 0,
+    unit: l.unit || "nos",
+  }));
+
+  const existing = listRfqs(contractId);
+  const newSig = scopeSignature(normalizedItems);
+  const target =
+    newSig &&
+    existing.find(
+      (rfq) => isOpenRfq(rfq) && scopeSignature(rfq.items) === newSig,
+    );
+
+  if (target) {
+    const invited = new Set(target.quotes.map((q) => q.vendorId));
+    const addedQuotes = vendorIds
+      .filter((id) => !invited.has(id))
+      .map(blankQuote);
+    // Scope matches by signature, so there is normally nothing to add here; the
+    // union is a defensive no-op that keeps the merge robust if an unlinked line
+    // ever slips through with a new name.
+    const existingKeys = new Set(target.items.map(itemKey));
+    const addedItems = normalizedItems.filter(
+      (l) => !existingKeys.has(itemKey(l)),
+    );
+    const merged = {
+      ...target,
+      items: [...target.items, ...addedItems],
+      quotes: [...target.quotes, ...addedQuotes],
+    };
+    writeAll(
+      contractId,
+      existing.map((rfq) => (rfq.id === target.id ? merged : rfq)),
+    );
+    return merged;
+  }
+
   const rfq = {
     id: generateRfqId(contractId),
     contractId,
-    items: items.map((l) => ({
-      materialId: l.materialId || null,
-      name: l.name || "",
-      spec: l.spec || "",
-      qty: Number(l.qty) || 0,
-      unit: l.unit || "nos",
-    })),
-    quotes: vendorIds.map((vendorId) => ({
-      vendorId,
-      quotedAt: null,
-      lines: [],
-      total: 0,
-      notes: "",
-    })),
+    items: normalizedItems,
+    quotes: vendorIds.map(blankQuote),
     status: "sent", // sent → quoted → awarded → closed
     awardedVendorId: null,
     poId: null,
     createdAt: new Date().toISOString(),
   };
-  writeAll(contractId, [rfq, ...listRfqs(contractId)]);
+  writeAll(contractId, [rfq, ...existing]);
   return rfq;
 };
 

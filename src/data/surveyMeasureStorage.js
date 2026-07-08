@@ -360,7 +360,9 @@ export const generateAppSurveyData = (site) => {
       } else if (info.kind === "length") {
         m = { length: 8 + ei, nos: 1 };
       } else {
-        m = { length: 9 + (ei % 4), breadth: 7 + (ei % 3), nos: 1 + (ei % 2) };
+        // Area works are a single face: qty = length × breadth (nos = 1). Never
+        // seed nos > 1 here — that produced the spurious "L × B × 2" doubling.
+        m = { length: 9 + (ei % 4), breadth: 7 + (ei % 3), nos: 1 };
       }
       // The work's own photos (from the app), shown below its measurement.
       m.images = [1, 2, 3, 4].map((n) => dummyImage(`${el.name} · ${n}`, hue));
