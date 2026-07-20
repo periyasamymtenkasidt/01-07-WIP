@@ -58,7 +58,9 @@ const server = await createServer({
 });
 
 try {
-  const survey = await server.ssrLoadModule("/src/data/surveyMeasureStorage.js");
+  const survey = await server.ssrLoadModule(
+    "/src/data/surveyMeasureStorage.js",
+  );
   const design = await server.ssrLoadModule("/src/data/designFlowStorage.js");
   const boqStore = await server.ssrLoadModule("/src/data/boqStorage.js");
   const gradeMapping = await server.ssrLoadModule("/src/data/gradeMapping.js");
@@ -136,12 +138,15 @@ try {
     initialElement.scopeItemId,
   );
 
-  check("approved proposal grand total is the immutable quoted baseline", () => {
-    const baseline = survey.getProposalBaselineForSite(site);
-    assert.equal(baseline.quoteId, proposal.quoteId);
-    assert.equal(baseline.subtotal, proposal.subtotal);
-    assert.equal(baseline.grandTotal, proposal.grandTotal);
-  });
+  check(
+    "approved proposal grand total is the immutable quoted baseline",
+    () => {
+      const baseline = survey.getProposalBaselineForSite(site);
+      assert.equal(baseline.quoteId, proposal.quoteId);
+      assert.equal(baseline.subtotal, proposal.subtotal);
+      assert.equal(baseline.grandTotal, proposal.grandTotal);
+    },
+  );
 
   survey.writeDims(siteID, {
     [measurementKey]: { length: 10, breadth: 10, nos: 1, images: ["photo-1"] },
@@ -224,12 +229,15 @@ try {
     [customKey]: { nos: 1, images: ["photo-2"] },
   });
 
-  check("selected material rate changes measured value but not quoted value", () => {
-    const variance = survey.getSurveyVsProposalVariance(site);
-    assert.equal(variance.quotedAmount, 11800);
-    almostEqual(variance.measuredAmount, 14750);
-    almostEqual(variance.amountDifference, 2950);
-  });
+  check(
+    "selected material rate changes measured value but not quoted value",
+    () => {
+      const variance = survey.getSurveyVsProposalVariance(site);
+      assert.equal(variance.quotedAmount, 11800);
+      almostEqual(variance.measuredAmount, 14750);
+      almostEqual(variance.amountDifference, 2950);
+    },
+  );
 
   const surveyState = survey.getSurveyMeasureState(site);
   check("survey completeness recognizes measurements for every work", () => {
@@ -243,19 +251,25 @@ try {
     assert.equal(flow.siteBasis.proposalBaseline.grandTotal, 11800);
     assert.equal(flow.siteBasis.areas.length, 1);
     assert.ok(flow.siteBasis.frozenAt);
-    assert.equal(design.getDesignFlow(siteID).stage.startsWith("DESIGN_"), true);
+    assert.equal(
+      design.getDesignFlow(siteID).stage.startsWith("DESIGN_"),
+      true,
+    );
   });
 
   const calculatedBoq = design.buildBoq(flow);
-  check("pipeline BOQ uses GST-inclusive variance and tags site custom work", () => {
-    assert.equal(calculatedBoq.quotedTotal, 11800);
-    almostEqual(calculatedBoq.total, 14750);
-    almostEqual(calculatedBoq.variance, 2950);
-    assert.equal(calculatedBoq.withinTolerance, true);
-    const customRow = calculatedBoq.areas[0].rows.find((row) => row.isCustom);
-    assert.equal(customRow.quotedAmount, 0);
-    assert.equal(customRow.measuredAmount, 500);
-  });
+  check(
+    "pipeline BOQ uses GST-inclusive variance and tags site custom work",
+    () => {
+      assert.equal(calculatedBoq.quotedTotal, 11800);
+      almostEqual(calculatedBoq.total, 14750);
+      almostEqual(calculatedBoq.variance, 2950);
+      assert.equal(calculatedBoq.withinTolerance, true);
+      const customRow = calculatedBoq.areas[0].rows.find((row) => row.isCustom);
+      assert.equal(customRow.quotedAmount, 0);
+      assert.equal(customRow.measuredAmount, 500);
+    },
+  );
 
   design.generateStageBoq(siteID);
   const boqID = `BOQ-${siteID}`;
@@ -265,20 +279,30 @@ try {
     assert.equal(editorBoq.id, boqID);
     assert.equal(editorBoq.quotedTotal, 11800);
     assert.equal(editorBoq.measuredTotal, 14750);
-    assert.equal(boqStore.listBoqs().filter((item) => item.id === boqID).length, 1);
+    assert.equal(
+      boqStore.listBoqs().filter((item) => item.id === boqID).length,
+      1,
+    );
   });
 
-  check("generated lines preserve identities, quote values, materials and variation tags", () => {
-    const items = editorBoq.sections.flatMap((section) => section.items);
-    const proposalItem = items.find((item) => item.scopeItemId === scopeItem.id);
-    const customItem = items.find((item) => item.scopeItemId === "CUSTOM-001");
-    assert.equal(proposalItem.quotedQty, 100);
-    assert.equal(proposalItem.quotedAmount, 10000);
-    assert.equal(proposalItem.measuredRate, 120);
-    assert.equal(proposalItem.materials[0].id, "MAT-PREMIUM");
-    assert.equal(customItem.source, "site-custom");
-    assert.equal(customItem.isVariation, true);
-  });
+  check(
+    "generated lines preserve identities, quote values, materials and variation tags",
+    () => {
+      const items = editorBoq.sections.flatMap((section) => section.items);
+      const proposalItem = items.find(
+        (item) => item.scopeItemId === scopeItem.id,
+      );
+      const customItem = items.find(
+        (item) => item.scopeItemId === "CUSTOM-001",
+      );
+      assert.equal(proposalItem.quotedQty, 100);
+      assert.equal(proposalItem.quotedAmount, 10000);
+      assert.equal(proposalItem.measuredRate, 120);
+      assert.equal(proposalItem.materials[0].id, "MAT-PREMIUM");
+      assert.equal(customItem.source, "site-custom");
+      assert.equal(customItem.isVariation, true);
+    },
+  );
 
   editorBoq.sections[0].items.push({
     ...boqStore.blankItem(),
@@ -292,37 +316,52 @@ try {
   boqStore.saveBoq(editorBoq);
   design.generateStageBoq(siteID);
   editorBoq = boqStore.getBoq(boqID);
-  check("regeneration preserves manual lines and returns revised BOQ to draft", () => {
-    assert.equal(editorBoq.status, "draft");
-    assert.equal(editorBoq.revision, 2);
-    assert.ok(
-      editorBoq.sections.flatMap((section) => section.items).some(
-        (item) => item.description === "Manual BOQ variation",
-      ),
-    );
-    assert.equal(boqStore.listBoqs().filter((item) => item.id === boqID).length, 1);
-  });
+  check(
+    "regeneration preserves manual lines and returns revised BOQ to draft",
+    () => {
+      assert.equal(editorBoq.status, "draft");
+      assert.equal(editorBoq.revision, 2);
+      assert.ok(
+        editorBoq.sections
+          .flatMap((section) => section.items)
+          .some((item) => item.description === "Manual BOQ variation"),
+      );
+      assert.equal(
+        boqStore.listBoqs().filter((item) => item.id === boqID).length,
+        1,
+      );
+    },
+  );
 
   design.unfreezeSurvey(siteID);
-  check("unlock archives Design, returns the site to Survey and marks BOQ stale", () => {
-    assert.equal(design.getDesignFlow(siteID), null);
-    assert.equal(boqStore.getBoq(boqID).surveyStale, true);
-    const archives = JSON.parse(
-      localStorage.getItem(`designFlowArchive_${siteID}`) || "[]",
-    );
-    assert.equal(archives.length, 1);
-    const siteOverrides = JSON.parse(localStorage.getItem("newSitesData"));
-    assert.equal(siteOverrides[siteID].status, "Survey");
-  });
+  check(
+    "unlock archives Design, returns the site to Survey and marks BOQ stale",
+    () => {
+      assert.equal(design.getDesignFlow(siteID), null);
+      assert.equal(boqStore.getBoq(boqID).surveyStale, true);
+      const archives = JSON.parse(
+        localStorage.getItem(`designFlowArchive_${siteID}`) || "[]",
+      );
+      assert.equal(archives.length, 1);
+      const siteOverrides = JSON.parse(localStorage.getItem("newSitesData"));
+      assert.equal(siteOverrides[siteID].status, "Survey");
+    },
+  );
 
   const refreshedAreas = survey.areasForSite(site);
   const refreshedState = survey.getSurveyMeasureState(site);
-  design.startDesign(site, { areas: refreshedAreas, surveyState: refreshedState });
+  design.startDesign(site, {
+    areas: refreshedAreas,
+    surveyState: refreshedState,
+  });
   design.generateStageBoq(siteID);
   check("refreeze regenerates the same BOQ and clears its stale marker", () => {
     const refreshedBoq = boqStore.getBoq(boqID);
     assert.equal(refreshedBoq.surveyStale, false);
-    assert.equal(boqStore.listBoqs().filter((item) => item.id === boqID).length, 1);
+    assert.equal(
+      boqStore.listBoqs().filter((item) => item.id === boqID).length,
+      1,
+    );
   });
 
   localStorage.setItem(
@@ -364,33 +403,36 @@ try {
       },
     ]),
   );
-  check("quality grade maps Item Master rate/materials without changing scope identity", () => {
-    const grades = rateBuildup.collectGrades(
-      JSON.parse(localStorage.getItem("item_library")),
-    );
-    assert.ok(grades.some((grade) => grade.key === "luxury_plus"));
-    const [mapped] = gradeMapping.mapScopeItemsToGrade(
-      [
-        {
-          scopeItemId: "SCOPE-GRADE-001",
-          masterId: "LIB-GRADE-001",
-          heading: "LIVING ROOM",
-          area: "LIVING ROOM",
-          itemName: "Grade-mapped Work",
-          qty: 10,
-          rate: 100,
-          amount: 1000,
-        },
-      ],
-      "luxury_plus",
-    );
-    assert.equal(mapped.scopeItemId, "SCOPE-GRADE-001");
-    assert.equal(mapped.heading, "LIVING ROOM");
-    assert.equal(mapped.grade, "luxury_plus");
-    assert.equal(mapped.rate, 396);
-    assert.equal(mapped.amount, 3960);
-    assert.equal(mapped.materials[0].materialId, "MAT-GRADE-001");
-  });
+  check(
+    "quality grade maps Item Master rate/materials without changing scope identity",
+    () => {
+      const grades = rateBuildup.collectGrades(
+        JSON.parse(localStorage.getItem("item_library")),
+      );
+      assert.ok(grades.some((grade) => grade.key === "luxury_plus"));
+      const [mapped] = gradeMapping.mapScopeItemsToGrade(
+        [
+          {
+            scopeItemId: "SCOPE-GRADE-001",
+            masterId: "LIB-GRADE-001",
+            heading: "LIVING ROOM",
+            area: "LIVING ROOM",
+            itemName: "Grade-mapped Work",
+            qty: 10,
+            rate: 100,
+            amount: 1000,
+          },
+        ],
+        "luxury_plus",
+      );
+      assert.equal(mapped.scopeItemId, "SCOPE-GRADE-001");
+      assert.equal(mapped.heading, "LIVING ROOM");
+      assert.equal(mapped.grade, "luxury_plus");
+      assert.equal(mapped.rate, 396);
+      assert.equal(mapped.amount, 3960);
+      assert.equal(mapped.materials[0].materialId, "MAT-GRADE-001");
+    },
+  );
 
   const legacyRecipe = {
     components: [
@@ -422,18 +464,21 @@ try {
       },
     ]),
   );
-  check("legacy identical grade recipes migrate to increasing quality rates", () => {
-    const scope = {
-      masterId: "LIB-LEGACY-GRADES",
-      itemName: "Legacy Grade Work",
-      qty: 10,
-    };
-    const economy = gradeMapping.mapScopeItemsToGrade([scope], "economy")[0];
-    const premium = gradeMapping.mapScopeItemsToGrade([scope], "premium")[0];
-    const luxury = gradeMapping.mapScopeItemsToGrade([scope], "luxury")[0];
-    assert.ok(economy.amount < premium.amount);
-    assert.ok(premium.amount < luxury.amount);
-  });
+  check(
+    "legacy identical grade recipes migrate to increasing quality rates",
+    () => {
+      const scope = {
+        masterId: "LIB-LEGACY-GRADES",
+        itemName: "Legacy Grade Work",
+        qty: 10,
+      };
+      const economy = gradeMapping.mapScopeItemsToGrade([scope], "economy")[0];
+      const premium = gradeMapping.mapScopeItemsToGrade([scope], "premium")[0];
+      const luxury = gradeMapping.mapScopeItemsToGrade([scope], "luxury")[0];
+      assert.ok(economy.amount < premium.amount);
+      assert.ok(premium.amount < luxury.amount);
+    },
+  );
 
   process.stdout.write(`\n${checks.length} BOQ acceptance checks passed.\n`);
 } finally {

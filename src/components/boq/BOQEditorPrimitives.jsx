@@ -25,22 +25,33 @@ const formatSignoffDate = (iso) => {
   });
 };
 
-export const Field = ({ icon, label, hint, children }) => (
-  <div>
-    <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">
-      <span className="flex items-center gap-1 min-h-[16px]">
-        <span className="text-select-blue">{icon}</span>
-        {label}
-      </span>
-      {hint && (
-        <span className="block text-[9.5px] font-normal text-text-subtle normal-case tracking-normal leading-tight mt-0.5">
-          {hint}
+export const Field = ({ icon, label, hint, children }) => {
+  const [hintOpen, setHintOpen] = useState(false);
+  return (
+    <div>
+      <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">
+        <span className="flex items-center gap-1 min-h-[16px]">
+          <span className="text-select-blue">{icon}</span>
+          {label}
+          {hint && (
+            <span className="relative ml-0.5"
+              onMouseEnter={() => setHintOpen(true)}
+              onMouseLeave={() => setHintOpen(false)}
+            >
+              <Info size={10} className={`transition-colors cursor-default ${hintOpen ? "text-select-blue" : "text-text-subtle hover:text-text-muted"}`} />
+              {hintOpen && (
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-56 rounded-lg border border-bordergray bg-white px-3 py-2 shadow-lg">
+                  <p className="text-[10px] text-text-muted leading-relaxed normal-case tracking-normal">{hint}</p>
+                </div>
+              )}
+            </span>
+          )}
         </span>
-      )}
-    </label>
-    {children}
-  </div>
-);
+      </label>
+      {children}
+    </div>
+  );
+};
 
 export const SignoffField = ({ label, value, date, disabled, onChange }) => (
   <label className="block">
@@ -241,12 +252,23 @@ export const CommercialValue = ({
 }) => {
   const amount = Number(value) || 0;
   const prefix = signed && amount > 0 ? "+" : "";
+
+  const accentColor =
+    tone.includes("emerald")
+      ? "bg-emerald-500"
+      : tone.includes("red")
+      ? "bg-red-500"
+      : tone.includes("purple")
+      ? "bg-purple-600"
+      : "bg-select-blue";
+
   return (
-    <div className="rounded-lg border border-bordergray bg-white px-3 py-2">
-      <p className="text-[9px] font-bold uppercase tracking-wider text-text-muted">
+    <div className="relative flex flex-col justify-between overflow-hidden rounded-xl border border-bordergray bg-white px-4 py-3 shadow-sm">
+      <div className={`absolute left-0 top-0 h-full w-[3px] ${accentColor}`} />
+      <p className="text-[9px] font-bold uppercase tracking-widest text-text-subtle">
         {label}
       </p>
-      <p className={`mt-0.5 text-[13px] font-bold tabular-nums ${tone}`}>
+      <p className={`mt-2 text-base font-bold tabular-nums ${tone}`}>
         {prefix}
         {formatAmount(amount)}
       </p>

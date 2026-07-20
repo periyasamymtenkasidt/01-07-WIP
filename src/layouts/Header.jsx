@@ -30,15 +30,17 @@ const Header = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Keep the org label in sync if the active org changes in another tab or via a
-  // later login (storage events fire cross-document; re-read on focus too).
+  // Keep the org label in sync: cross-tab (storage), same-tab profile save
+  // (orgprofile-changed), and window focus for any other out-of-band updates.
   useEffect(() => {
     const sync = () => setOrgName(resolveOrgName());
     window.addEventListener("storage", sync);
     window.addEventListener("focus", sync);
+    window.addEventListener("orgprofile-changed", sync);
     return () => {
       window.removeEventListener("storage", sync);
       window.removeEventListener("focus", sync);
+      window.removeEventListener("orgprofile-changed", sync);
     };
   }, []);
 

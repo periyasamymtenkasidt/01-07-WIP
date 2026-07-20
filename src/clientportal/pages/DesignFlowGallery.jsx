@@ -31,8 +31,15 @@ const DesignFlowGallery = ({ site }) => {
   useEffect(() => {
     if (!siteID) return;
     const refresh = () => setFlow(getDesignFlow(siteID));
+    const onStorage = (e) => {
+      if (e.key === `designFlow_${siteID}`) refresh();
+    };
     window.addEventListener("designFlowChanged", refresh);
-    return () => window.removeEventListener("designFlowChanged", refresh);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("designFlowChanged", refresh);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [siteID]);
 
   // Flatten every stage's deliverables, tagged with their stage + review state.

@@ -7,10 +7,27 @@ import AddClientForm from "./Addclientform";
 import Table from "../../components/Table";
 import { useNavigate } from "react-router-dom";
 
+// Derive payment status from live milestone data instead of a stored field.
+// completed = all milestones paid; pending = some paid; unpaid = none paid.
+const getClientPaymentStatus = (clientID) => {
+  try {
+    const raw = localStorage.getItem(`clientMilestones_${clientID}`);
+    if (!raw) return "unpaid";
+    const milestones = JSON.parse(raw);
+    if (!Array.isArray(milestones) || milestones.length === 0) return "unpaid";
+    const paid = milestones.filter((m) => m.status === "paid").length;
+    if (paid === milestones.length) return "completed";
+    if (paid > 0) return "pending";
+    return "unpaid";
+  } catch {
+    return "unpaid";
+  }
+};
+
 const MAIN_TABS = ["Clients"];
 
 const SUB_TABS = {
-  0: ["All", "Completed", "Pending", "Unfullfilled"],
+  0: ["All", "Completed", "Pending", "Unpaid"],
 };
 
 // null means no filter (show all)
@@ -18,7 +35,7 @@ const SUB_TAB_STATUS = {
   "0-0": null,
   "0-1": "completed",
   "0-2": "pending",
-  "0-3": "unfulfilled",
+  "0-3": "unpaid",
 };
 
 const Client = () => {
@@ -82,11 +99,13 @@ const Client = () => {
   // Apply sub-tab filter + renumber sno
   const tableData = useMemo(() => {
     const filterStatus = SUB_TAB_STATUS[`${activeMainTab}-${activeSubTab}`];
+    const withStatus = allClients.map((c) => ({
+      ...c,
+      _paymentStatus: getClientPaymentStatus(c.clientID),
+    }));
     const filtered = filterStatus
-      ? allClients.filter(
-          (c) => c.paymentStatus?.toLowerCase() === filterStatus,
-        )
-      : allClients;
+      ? withStatus.filter((c) => c._paymentStatus === filterStatus)
+      : withStatus;
     return filtered.map((item, index) => ({
       ...item,
       sno: String(index + 1).padStart(2, "0"),
@@ -115,15 +134,28 @@ const Client = () => {
       serviceTrack: newClientData.serviceTrack || "Interiors",
       phone: newClientData.clientPhone,
       email: newClientData.clientEmail,
-      propertyType: newClientData.location,
+      whatsappNumber: newClientData.whatsappNumber,
+      clientType: newClientData.clientType,
+      inquirySource: newClientData.inquirySource,
+      referralPersonName: newClientData.referralPersonName,
+      referralPersonEmail: newClientData.referralPersonEmail,
+      quotePreset: newClientData.quotePreset || "",
+      propertyType: newClientData.location || "",
       location: newClientData.locationSecondary,
       sizeRange: newClientData.sizeRange || "",
       budget: newClientData.budget,
+      investmentRange: newClientData.investmentRange,
+      possessionDate: newClientData.possessionDate,
       projectValue: newClientData.projectValue,
       gstin: newClientData.gstin,
       stateCode: newClientData.stateCode,
       billingAddress: newClientData.billingAddress,
       paymentStatus: newClientData.paymentStatus,
+      projectIntent: newClientData.projectIntent,
+      requirementType: newClientData.requirementType,
+      buildingUse: newClientData.buildingUse,
+      plotArea: newClientData.plotArea,
+      architecturalNotes: newClientData.architecturalNotes,
     };
 
     let created = null;
@@ -147,10 +179,25 @@ const Client = () => {
       clientName: newClientData.clientName,
       clientPhone: newClientData.clientPhone,
       clientEmail: newClientData.clientEmail,
+      whatsappNumber: newClientData.whatsappNumber,
+      clientType: newClientData.clientType,
+      inquirySource: newClientData.inquirySource,
+      referralPersonName: newClientData.referralPersonName,
+      referralPersonEmail: newClientData.referralPersonEmail,
+      serviceTrack: newClientData.serviceTrack || "Interiors",
+      quotePreset: newClientData.quotePreset || "",
+      propertyType: newClientData.location || "",
       location: newClientData.location,
       locationSecondary: newClientData.locationSecondary,
       budget: newClientData.budget,
+      investmentRange: newClientData.investmentRange || "",
+      possessionDate: newClientData.possessionDate || "",
       paymentStatus: newClientData.paymentStatus,
+      projectIntent: newClientData.projectIntent,
+      requirementType: newClientData.requirementType,
+      buildingUse: newClientData.buildingUse,
+      plotArea: newClientData.plotArea,
+      architecturalNotes: newClientData.architecturalNotes,
       joinDate,
       ...(created || {}),
       clientID,
@@ -180,23 +227,18 @@ const Client = () => {
     },
     { key: "budget", label: "Budget" },
     {
-      key: "paymentStatus",
+      key: "_paymentStatus",
       label: "Payment Status",
       render: (_, item) => {
         const statusStyles = {
           completed: "bg-green-100 text-green-700",
           pending: "bg-yellow-100 text-yellow-700",
-          failed: "bg-red-100 text-red-600",
-          cancelled: "bg-gray-100 text-gray-500",
+          unpaid: "bg-orange-100 text-orange-600",
         };
-        const style =
-          statusStyles[item.paymentStatus?.toLowerCase()] ||
-          "bg-gray-100 text-gray-600";
+        const style = statusStyles[item._paymentStatus] || "bg-gray-100 text-gray-600";
         return (
-          <span
-            className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${style}`}
-          >
-            {item.paymentStatus}
+          <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${style}`}>
+            {item._paymentStatus}
           </span>
         );
       },
@@ -251,7 +293,6 @@ const Client = () => {
                 { key: "clientName", label: "Client Name" },
                 { key: "clientID", label: "Client ID" },
                 { key: "budget", label: "Budget" },
-                { key: "paymentStatus", label: "Payment Status" },
               ]
             : undefined
         }
@@ -259,9 +300,9 @@ const Client = () => {
           isClients
             ? [
                 {
-                  key: "paymentStatus",
+                  key: "_paymentStatus",
                   label: "Payment Status",
-                  options: ["Completed", "Pending", "Failed", "Cancelled"],
+                  options: ["completed", "pending", "unpaid"],
                 },
               ]
             : undefined
@@ -295,7 +336,7 @@ const Client = () => {
                       `${item.location} - ${item.locationSecondary}`,
                   },
                   { label: "Budget", key: "budget" },
-                  { label: "Payment Status", key: "paymentStatus" },
+                  { label: "Payment Status", key: "_paymentStatus" },
                 ],
               }
             : undefined

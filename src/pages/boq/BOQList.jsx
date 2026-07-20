@@ -1,62 +1,44 @@
 import { useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
   FileText,
   Plus,
   Search,
-  Trash2,
-  Copy,
   TrendingUp,
   Hash,
   Layers,
   Wallet,
-  ChevronRight,
-  Ruler,
-  X,
 } from "lucide-react";
-import { listBoqs, deleteBoq, duplicateBoq } from "../../data/boqStorage";
+import { listBoqs } from "../../data/boqStorage";
 import { generateBoqFromSurvey, getDesignFlow } from "../../data/designFlowStorage";
 import { getAllSites } from "../../data/siteStorage";
 import { formatAmount } from "../../utils/formatAmount";
+import Table from "../../components/Table";
 
 const STATUS_STYLES = {
-  draft: {
-    bg: "bg-slate-100",
-    text: "text-slate-700",
-    border: "border-slate-200",
-  },
-  sent: { bg: "bg-blue-100", text: "text-blue-700", border: "border-blue-200" },
-  approved: {
-    bg: "bg-emerald-100",
-    text: "text-emerald-700",
-    border: "border-emerald-200",
-  },
-  revised: {
-    bg: "bg-amber-100",
-    text: "text-amber-700",
-    border: "border-amber-200",
-  },
-  issued_for_tender: {
-    bg: "bg-amber-100",
-    text: "text-amber-700",
-    border: "border-amber-200",
-  },
-  signed: {
-    bg: "bg-purple-100",
-    text: "text-purple-700",
-    border: "border-purple-200",
-  },
-  issued_for_procurement: {
-    bg: "bg-indigo-100",
-    text: "text-indigo-700",
-    border: "border-indigo-200",
-  },
-  procurement: {
-    bg: "bg-indigo-100",
-    text: "text-indigo-700",
-    border: "border-indigo-200",
-  },
+  draft:                  { bg: "bg-slate-100",  text: "text-slate-700",  border: "border-slate-200"  },
+  sent:                   { bg: "bg-blue-100",   text: "text-blue-700",   border: "border-blue-200"   },
+  approved:               { bg: "bg-emerald-100",text: "text-emerald-700",border: "border-emerald-200"},
+  revised:                { bg: "bg-amber-100",  text: "text-amber-700",  border: "border-amber-200"  },
+  issued_for_tender:      { bg: "bg-amber-100",  text: "text-amber-700",  border: "border-amber-200"  },
+  signed:                 { bg: "bg-purple-100", text: "text-purple-700", border: "border-purple-200" },
+  issued_for_procurement: { bg: "bg-indigo-100", text: "text-indigo-700", border: "border-indigo-200" },
+  procurement:            { bg: "bg-indigo-100", text: "text-indigo-700", border: "border-indigo-200" },
+  survey_ready:           { bg: "bg-teal-100",   text: "text-teal-700",   border: "border-teal-200"   },
+};
+
+const formatDate = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const now = new Date();
+  const mins = Math.floor((now - d) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
 
 const BOQList = () => {
@@ -64,18 +46,22 @@ const BOQList = () => {
   const [items, setItems] = useState(() => listBoqs());
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [showSitePicker, setShowSitePicker] = useState(false);
-  const [siteQuery, setSiteQuery] = useState("");
 
   const refresh = () => setItems(listBoqs());
 
-  // Sites that have a frozen survey (siteBasis set in their design flow)
   const frozenSites = useMemo(() => {
-    const all = getAllSites();
-    return all
+    return getAllSites()
       .map((s) => {
         const flow = getDesignFlow(s.siteID);
+        // Survey must be frozen
         if (!flow?.siteBasis) return null;
+        // Design pipeline must also be complete
+        const designDone =
+          flow.stage === "DESIGN_COMPLETE" ||
+          (Array.isArray(flow.stages) &&
+            flow.stages.length > 0 &&
+            flow.stages.every((st) => st.reviewState === "APPROVED"));
+        if (!designDone) return null;
         const b = flow.siteBasis;
         return {
           siteID: s.siteID,
@@ -86,17 +72,9 @@ const BOQList = () => {
           totalSqft: Number(b.totalSqft) || 0,
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((s) => !s.boqId);
   }, []);
-
-  const siteQ = siteQuery.trim().toLowerCase();
-  const filteredSites = siteQ
-    ? frozenSites.filter(
-        (s) =>
-          s.name.toLowerCase().includes(siteQ) ||
-          s.siteID.toLowerCase().includes(siteQ),
-      )
-    : frozenSites;
 
   const handleFromSurvey = (siteID) => {
     const flow = getDesignFlow(siteID);
@@ -130,258 +108,174 @@ const BOQList = () => {
     });
   }, [items, query, statusFilter]);
 
+  const surveyReadyRows = useMemo(
+    () =>
+      frozenSites.map((s, i) => ({
+        _surveyReady: true,
+        sno: String(i + 1).padStart(2, "0"),
+        id: "—",
+        title: s.name,
+        clientName: s.name,
+        itemCount: s.total > 0 ? `${s.measured}/${s.total} rooms` : "—",
+        grandTotal: null,
+        status: "survey_ready",
+        updatedAt: null,
+        siteID: s.siteID,
+        totalSqft: s.totalSqft,
+      })),
+    [frozenSites],
+  );
+
+  const tableData = useMemo(
+    () => [
+      ...surveyReadyRows,
+      ...filtered.map((b, i) => ({
+        ...b,
+        sno: String(surveyReadyRows.length + i + 1).padStart(2, "0"),
+      })),
+    ],
+    [surveyReadyRows, filtered],
+  );
+
   const stats = useMemo(() => {
-    const totalValue = items.reduce(
-      (s, b) => s + (Number(b.grandTotal) || 0),
-      0,
-    );
+    const totalValue = items.reduce((s, b) => s + (Number(b.grandTotal) || 0), 0);
     const byStatus = items.reduce((acc, b) => {
       acc[b.status] = (acc[b.status] || 0) + 1;
       return acc;
     }, {});
-    return {
-      total: items.length,
-      drafts: byStatus.draft || 0,
-      approved: byStatus.approved || 0,
-      totalValue,
-    };
+    return { total: items.length, drafts: byStatus.draft || 0, approved: byStatus.approved || 0, totalValue };
   }, [items]);
 
-  const handleDelete = (e, id) => {
-    e.stopPropagation();
-    if (!confirm(`Delete ${id}? This cannot be undone.`)) return;
-    deleteBoq(id);
-    refresh();
-  };
-
-  const handleDuplicate = (e, id) => {
-    e.stopPropagation();
-    const next = duplicateBoq(id);
-    if (next) navigate(`/boq/${next.id}`);
-  };
-
   const STATUS_TABS = [
-    { value: "all", label: "All", count: stats.total },
+    { value: "all",                   label: "All",         count: stats.total },
+    { value: "draft",                  label: "Drafts",      count: items.filter((b) => b.status === "draft").length },
+    { value: "sent",                   label: "Sent",        count: items.filter((b) => b.status === "sent").length },
+    { value: "approved",               label: "Approved",    count: stats.approved },
+    { value: "issued_for_procurement", label: "Procurement", count: items.filter((b) => b.status === "issued_for_procurement" || b.status === "procurement").length },
+  ];
+
+  const STATUS_LABELS = {
+    draft:                  "Draft",
+    sent:                   "Sent",
+    approved:               "Approved",
+    revised:                "Revised",
+    issued_for_tender:      "For Tender",
+    signed:                 "Signed",
+    issued_for_procurement: "Procurement",
+    procurement:            "Procurement",
+    survey_ready:           "Survey Ready",
+  };
+
+  const columns = [
+    { key: "sno", label: "Sno", className: "text-center" },
     {
-      value: "draft",
-      label: "Drafts",
-      count: items.filter((b) => b.status === "draft").length,
+      key: "id",
+      label: "BOQ ID",
+      className: "text-center",
+      render: (v, item) =>
+        item._surveyReady ? (
+          <span className="text-text-subtle text-[12px]">—</span>
+        ) : (
+          <span
+            className="cursor-pointer hover:underline text-select-blue font-medium"
+            onClick={() => navigate(`/boq/${item.id}`)}
+          >
+            {v}
+          </span>
+        ),
     },
     {
-      value: "sent",
-      label: "Sent",
-      count: items.filter((b) => b.status === "sent").length,
+      key: "title",
+      label: "Title",
+      className: "text-center",
+      render: (v, item) =>
+        item._surveyReady ? (
+          <span className="font-medium text-textcolor">{v}</span>
+        ) : (
+          <span
+            className="cursor-pointer hover:underline font-medium"
+            onClick={() => navigate(`/boq/${item.id}`)}
+          >
+            {v || "Untitled"}
+          </span>
+        ),
     },
-    { value: "approved", label: "Approved", count: stats.approved },
+    { key: "clientName", label: "Client", className: "text-center", render: (v) => v || "—" },
     {
-      value: "issued_for_tender",
-      label: "Tender",
-      count: items.filter((b) => b.status === "issued_for_tender").length,
+      key: "itemCount",
+      label: "Items",
+      className: "text-center",
+      render: (v, item) =>
+        item._surveyReady ? (
+          <span className="text-[11px] text-text-muted">{v}</span>
+        ) : (
+          v || 0
+        ),
     },
     {
-      value: "signed",
-      label: "Signed",
-      count: items.filter((b) => b.status === "signed").length,
+      key: "grandTotal",
+      label: "Grand Total",
+      className: "text-center",
+      render: (v, item) =>
+        item._surveyReady ? (
+          <span className="text-text-subtle">—</span>
+        ) : (
+          formatAmount(v)
+        ),
     },
     {
-      value: "issued_for_procurement",
-      label: "Procurement",
-      count: items.filter((b) => b.status === "issued_for_procurement" || b.status === "procurement").length,
+      key: "status",
+      label: "Status",
+      className: "text-center",
+      render: (v, item) => {
+        const s = STATUS_STYLES[v] || STATUS_STYLES.draft;
+        const label = STATUS_LABELS[v] ?? v.replace(/_/g, " ");
+        return item._surveyReady ? (
+          <button
+            type="button"
+            onClick={() => handleFromSurvey(item.siteID)}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-select-blue text-white text-[10.5px] font-semibold hover:bg-primary transition-all"
+          >
+            <Plus size={10} /> Generate BOQ
+          </button>
+        ) : (
+          <span className={`px-3 py-1 rounded-full text-[11px] font-semibold tracking-wider uppercase ${s.bg} ${s.text}`}>
+            {label}
+          </span>
+        );
+      },
     },
+    { key: "updatedAt", label: "Updated", className: "text-center", render: (v) => formatDate(v) },
   ];
 
   return (
-    <div className="bg-overallbg font-sans h-full overflow-y-auto">
+    <div className="bg-overallbg font-manrope h-full flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-5 border-b border-bordergray/70 bg-overallbg/80 backdrop-blur-xl sticky top-0 z-10">
+      <div className="px-6 py-5 border-b border-bordergray/70 bg-overallbg/80 backdrop-blur-xl sticky top-0 z-10 shrink-0">
         <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
           <div className="flex items-center gap-3">
             <div className="h-11 w-11 rounded-xl bg-linear-to-br from-select-blue to-primary text-white flex items-center justify-center shadow-lg shadow-select-blue/20">
               <FileText size={18} />
             </div>
             <div>
-              <h1 className="text-[20px] font-bold text-textcolor leading-tight">
-                Bill of Quantities
-              </h1>
-              <p className="text-[12px] text-text-muted mt-0.5">
-                Detailed BOQs for measurement-based quotes & signed contracts
-              </p>
+              <h1 className="text-[20px] font-bold text-textcolor leading-tight">Bill of Quantities</h1>
+              <p className="text-[12px] text-text-muted mt-0.5">Detailed BOQs for measurement-based quotes & signed contracts</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setSiteQuery("");
-                setShowSitePicker(true);
-              }}
-              className="flex items-center gap-1.5 px-4 py-2 border border-bordergray bg-white text-text-muted rounded-lg text-[12px] font-semibold hover:bg-bg-soft transition-all"
-            >
-              <Ruler size={13} /> From Survey
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate("/boq/new")}
-              className="flex items-center gap-1.5 px-4 py-2 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md hover:scale-[1.02] transition-all"
-            >
-              <Plus size={13} /> New BOQ
-            </button>
-          </div>
-
-          {/* Site picker modal — portaled to <body> so it escapes the page
-              header's backdrop-blur containing block and the sticky app header. */}
-          {showSitePicker &&
-            createPortal(
-            <div
-              className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4"
-              onClick={() => setShowSitePicker(false)}
-            >
-              <div
-                className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-bordergray bg-white shadow-2xl"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Header */}
-                <div className="flex items-start justify-between gap-3 border-b border-bordergray px-5 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-select-blue/10 text-select-blue">
-                      <Ruler size={16} />
-                    </div>
-                    <div>
-                      <p className="text-[14px] font-bold text-textcolor">
-                        Generate BOQ from Survey
-                      </p>
-                      <p className="mt-0.5 text-[11.5px] text-text-muted">
-                        Pick a site with a frozen survey to build its BOQ
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowSitePicker(false)}
-                    className="rounded-lg p-1.5 text-text-subtle hover:bg-bg-soft"
-                  >
-                    <X size={15} />
-                  </button>
-                </div>
-
-                {/* Search — only when the list is long enough to warrant it */}
-                {frozenSites.length > 4 && (
-                  <div className="px-4 pt-3">
-                    <div className="relative">
-                      <Search
-                        size={13}
-                        className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle"
-                      />
-                      <input
-                        value={siteQuery}
-                        onChange={(e) => setSiteQuery(e.target.value)}
-                        placeholder="Search site or ID…"
-                        className="w-full rounded-lg border border-bordergray bg-white py-2 pl-8 pr-3 text-[12px] focus:border-select-blue focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* List */}
-                <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 scroll-hidden-bar">
-                  {filteredSites.length === 0 ? (
-                    <div className="py-10 text-center">
-                      <div className="mx-auto mb-2 flex h-11 w-11 items-center justify-center rounded-full bg-bg-soft text-text-subtle">
-                        <Ruler size={18} />
-                      </div>
-                      <p className="text-[12.5px] font-semibold text-textcolor">
-                        {siteQuery ? "No matching sites" : "No frozen surveys found"}
-                      </p>
-                      <p className="mx-auto mt-0.5 max-w-[16rem] text-[11.5px] text-text-subtle">
-                        {siteQuery
-                          ? "Try a different name or site ID."
-                          : "Freeze a site survey in Site Visit to generate its BOQ."}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      {filteredSites.map((s) => (
-                        <button
-                          key={s.siteID}
-                          type="button"
-                          onClick={() => handleFromSurvey(s.siteID)}
-                          className="group flex w-full items-center gap-3 rounded-xl border border-bordergray bg-white px-3 py-2.5 text-left transition-all hover:border-select-blue/40 hover:bg-active-bg/40"
-                        >
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-select-blue/10 text-[12px] font-bold uppercase text-select-blue">
-                            {s.name.slice(0, 2)}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-[13px] font-semibold text-textcolor">
-                              {s.name}
-                            </p>
-                            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[10.5px] text-text-muted">
-                              <span className="font-mono">{s.siteID}</span>
-                              {s.total > 0 && (
-                                <span>· {s.measured}/{s.total} measured</span>
-                              )}
-                              {s.totalSqft > 0 && (
-                                <span>
-                                  · {s.totalSqft.toLocaleString("en-IN")} sqft
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          {s.boqId ? (
-                            <span className="flex shrink-0 items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10.5px] font-bold text-emerald-700">
-                              <FileText size={11} /> Open BOQ
-                            </span>
-                          ) : (
-                            <span className="flex shrink-0 items-center gap-1 rounded-lg border border-select-blue/20 bg-select-blue/10 px-2.5 py-1 text-[10.5px] font-bold text-select-blue">
-                              <Plus size={11} /> Generate
-                            </span>
-                          )}
-                          <ChevronRight
-                            size={15}
-                            className="shrink-0 text-text-subtle transition-colors group-hover:text-select-blue"
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )}
         </div>
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <BentoStat
-            icon={<Layers size={13} />}
-            label="Total BOQs"
-            value={stats.total}
-            tint="blue"
-          />
-          <BentoStat
-            icon={<Hash size={13} />}
-            label="Drafts"
-            value={stats.drafts}
-            tint="orange"
-          />
-          <BentoStat
-            icon={<TrendingUp size={13} />}
-            label="Approved"
-            value={stats.approved}
-            tint="emerald"
-          />
-          <BentoStat
-            icon={<Wallet size={13} />}
-            label="Total Pipeline Value"
-            value={formatAmount(stats.totalValue)}
-            tint="purple"
-          />
+          <BentoStat icon={<Layers size={13} />}    label="Total BOQs"           value={stats.total}                  tint="blue"    />
+          <BentoStat icon={<Hash size={13} />}      label="Drafts"               value={stats.drafts}                 tint="orange"  />
+          <BentoStat icon={<TrendingUp size={13} />} label="Approved"            value={stats.approved}               tint="emerald" />
+          <BentoStat icon={<Wallet size={13} />}    label="Total Pipeline Value" value={formatAmount(stats.totalValue)} tint="purple" />
         </div>
       </div>
 
-      <div className="px-6 py-5">
-        {/* Filters */}
-        <div className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] p-3 mb-4 flex items-center justify-between flex-wrap gap-3">
+      {/* Filter bar */}
+      <div className="px-6 pt-3 pb-2 shrink-0">
+        <div className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] p-3 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-1 flex-wrap">
             {STATUS_TABS.map((t) => (
               <button
@@ -400,10 +294,7 @@ const BOQList = () => {
             ))}
           </div>
           <div className="relative">
-            <Search
-              size={12}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle"
-            />
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle" />
             <input
               type="text"
               value={query}
@@ -413,176 +304,56 @@ const BOQList = () => {
             />
           </div>
         </div>
+      </div>
 
-        {/* Table */}
-        <div className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-          {filtered.length === 0 ? (
-            <EmptyState
-              isEmpty={items.length === 0}
-              onCreate={() => navigate("/boq/new")}
-            />
-          ) : (
-            <table className="w-full">
-              <thead>
-                <tr className="bg-bg-soft/60 border-b border-bordergray text-[10px] font-bold uppercase tracking-wider text-text-muted">
-                  <th className="px-4 py-3 text-left">BOQ ID</th>
-                  <th className="px-4 py-3 text-left">Title</th>
-                  <th className="px-4 py-3 text-left">Client</th>
-                  <th className="px-4 py-3 text-right">Items</th>
-                  <th className="px-4 py-3 text-right">Grand Total</th>
-                  <th className="px-4 py-3 text-left">Status</th>
-                  <th className="px-4 py-3 text-left">Updated</th>
-                  <th className="px-4 py-3 w-24"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((b) => {
-                  const s = STATUS_STYLES[b.status] || STATUS_STYLES.draft;
-                  return (
-                    <tr
-                      key={b.id}
-                      onClick={() => navigate(`/boq/${b.id}`)}
-                      className="border-b border-bordergray/60 hover:bg-active-bg/30 cursor-pointer group transition-colors"
-                    >
-                      <td className="px-4 py-3">
-                        <span className="text-[11px] font-bold text-select-blue tabular-nums">
-                          {b.id}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="text-[12.5px] font-semibold text-textcolor">
-                          {b.title || "Untitled"}
-                        </p>
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="text-[11.5px] text-text-muted">
-                          {b.clientName || "—"}
-                        </p>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-[11.5px] font-semibold text-textcolor tabular-nums">
-                          {b.itemCount || 0}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-[12.5px] font-bold text-textcolor tabular-nums">
-                          {formatAmount(b.grandTotal)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`inline-block text-[9.5px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${s.bg} ${s.text} ${s.border}`}
-                        >
-                          {b.status.replace(/_/g, " ")}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-[11px] text-text-muted">
-                          {formatDate(b.updatedAt)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={(e) => handleDuplicate(e, b.id)}
-                            className="h-7 w-7 flex items-center justify-center rounded-md text-text-muted hover:text-textcolor hover:bg-bg-soft"
-                            title="Duplicate"
-                          >
-                            <Copy size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => handleDelete(e, b.id)}
-                            className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
-                            title="Delete"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                          <ChevronRight
-                            size={13}
-                            className="text-text-subtle ml-1"
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
+      {/* Table */}
+      <div className="flex-1 min-h-0 px-6 pb-4">
+        <Table
+          columns={columns}
+          data={tableData}
+          rowsPerPage={6}
+          emptyMessage={
+            items.length === 0 ? "No BOQs found." : "No matches for the current search or filter."
+          }
+          sortFields={[
+            { key: "id",         label: "BOQ ID"      },
+            { key: "title",      label: "Title"        },
+            { key: "grandTotal", label: "Grand Total"  },
+            { key: "updatedAt",  label: "Last Updated" },
+          ]}
+          exportConfig={{
+            filename: "boq_export",
+            columns: [
+              { label: "BOQ ID",      key: "id"          },
+              { label: "Title",       key: "title"       },
+              { label: "Client",      key: "clientName"  },
+              { label: "Items",       key: "itemCount"   },
+              { label: "Grand Total", key: "grandTotal"  },
+              { label: "Status",      key: "status"      },
+            ],
+          }}
+        />
       </div>
     </div>
   );
-};
-
-const formatDate = (iso) => {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const now = new Date();
-  const diffMs = now - d;
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
 };
 
 const BentoStat = ({ icon, label, value, tint }) => {
   const tints = {
-    blue: "from-blue-50 to-white text-blue-600 border-blue-100",
-    purple: "from-purple-50 to-white text-purple-600 border-purple-100",
-    orange: "from-orange-50 to-white text-orange-600 border-orange-100",
+    blue:    "from-blue-50 to-white text-blue-600 border-blue-100",
+    purple:  "from-purple-50 to-white text-purple-600 border-purple-100",
+    orange:  "from-orange-50 to-white text-orange-600 border-orange-100",
     emerald: "from-emerald-50 to-white text-emerald-600 border-emerald-100",
   };
   return (
-    <div
-      className={`relative bg-linear-to-br ${tints[tint]} border rounded-xl p-3 overflow-hidden`}
-    >
+    <div className={`relative bg-linear-to-br ${tints[tint]} border rounded-xl p-3 overflow-hidden`}>
       <div className="flex items-center justify-between mb-1">
         <span className="opacity-80">{icon}</span>
-        <span className="text-[9.5px] font-bold uppercase tracking-wider opacity-70">
-          {label}
-        </span>
+        <span className="text-[9.5px] font-bold uppercase tracking-wider opacity-70">{label}</span>
       </div>
-      <p className="text-[16px] font-bold text-textcolor tabular-nums leading-tight">
-        {value}
-      </p>
+      <p className="text-[16px] font-bold text-textcolor tabular-nums leading-tight">{value}</p>
     </div>
   );
 };
-
-const EmptyState = ({ isEmpty, onCreate }) => (
-  <div className="text-center py-16 px-6">
-    <div className="h-14 w-14 rounded-2xl bg-linear-to-br from-select-blue/10 to-active-bg flex items-center justify-center mx-auto mb-3 border border-bordergray">
-      <FileText size={20} className="text-select-blue" />
-    </div>
-    <p className="text-[14px] font-bold text-textcolor">
-      {isEmpty ? "No BOQs yet" : "No matches"}
-    </p>
-    <p className="text-[12px] text-text-muted mt-1 max-w-sm mx-auto">
-      {isEmpty
-        ? "Create a detailed Bill of Quantities once you have measurements — it becomes the basis of the signed contract."
-        : "Try a different search term or status filter."}
-    </p>
-    {isEmpty && (
-      <button
-        type="button"
-        onClick={onCreate}
-        className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md hover:scale-[1.02] transition-all"
-      >
-        <Plus size={13} /> Create First BOQ
-      </button>
-    )}
-  </div>
-);
 
 export default BOQList;

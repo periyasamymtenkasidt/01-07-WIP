@@ -74,6 +74,8 @@ import {
   computeLibraryItemArea,
   computeLibraryItemQty,
   computeLibraryItemAmount,
+  ARCH_TRADE_DIVISIONS,
+  ARCH_DEFAULT_LIBRARY,
 } from "../data/itemLibrary";
 import { listMaterials } from "../data/materialLibrary";
 import { UNITS, HSN_SUGGESTIONS, GST_OPTIONS } from "../data/boqUnits";
@@ -100,6 +102,9 @@ const ItemFormModal = ({
   // they're shown read-only and edited only via the Rate Build-up modal, whose
   // saved values are auto-mapped back into the form.
   rateBuildupMode = false,
+  // "architecture" | "interior" — gates which library items are shown and
+  // whether the work-code field and trade-division category picker appear.
+  discipline = "interior",
 }) => {
   const defaults = {
     ...blankLibraryItem(),
@@ -371,6 +376,7 @@ const ItemFormModal = ({
       description: defaultSpec,
       spec: defaultSpec,
       hsn: lib.hsn || "",
+      workCode: lib.workCode || "",
       rate: lib.rate || 0,
       length: lib.length || 0,
       breadth: lib.breadth || 0,
@@ -412,6 +418,7 @@ const ItemFormModal = ({
       itemName: defaultItemName,
       description: defaultSpec,
       spec: defaultSpec,
+      workCode: lib.workCode || "",
       materials: lib.materials ? lib.materials.map((m) => ({ ...m })) : [],
       tags: lib.tags ? [...lib.tags] : [],
     }));
@@ -493,8 +500,10 @@ const ItemFormModal = ({
             }, 0);
             return next;
           });
+          setPickerOpen(false);
         }
-        setPickerOpen(false);
+        // If every category was cancelled (newDrafts still empty), leave the
+        // picker open so the user can make a different selection.
       } else {
         const itemName = libOrLibs.description || "";
         // Only the Proposal scope flow needs a room destination; in the Item
@@ -533,7 +542,11 @@ const ItemFormModal = ({
         setPickerOpen(false);
       }
     } catch (err) {
-      setPickerOpen(false);
+      // "Cancelled by user" is thrown by DestinationPromptModal's cancel action.
+      // Leave the picker open so the user can try a different selection.
+      if (err?.message !== "Cancelled by user") {
+        setPickerOpen(false);
+      }
     }
   };
 
@@ -643,6 +656,7 @@ const ItemFormModal = ({
       area: roomCategoryMode ? validatedData.heading.trim().toUpperCase() : "",
       isDescriptionCustom,
       hsn: validatedData.hsn || "",
+      workCode: form.workCode || "",
       rate: Number(validatedData.rate) || 0,
       gstPercent: Number(form.gstPercent) || 18,
       areaFactor: Number(form.areaFactor) || 1,
@@ -731,6 +745,7 @@ const ItemFormModal = ({
       area: roomCategoryMode ? submittedHeading : "",
       isDescriptionCustom,
       hsn: validatedData.hsn || "",
+      workCode: form.workCode || "",
       rate: Number(validatedData.rate) || 0,
       gstPercent: Number(form.gstPercent) || 18,
       areaFactor: Number(form.areaFactor) || 1,
@@ -974,12 +989,27 @@ const ItemFormModal = ({
               </>
             ) : (
               <>
+                {discipline === "architecture" && (
+                  <div>
+                    <Label>Work Code</Label>
+                    <input
+                      type="text"
+                      value={form.workCode || ""}
+                      onChange={(e) => update({ workCode: e.target.value })}
+                      placeholder="e.g. 01.01"
+                      className={`${inputBase} font-mono`}
+                    />
+                    <p className="text-[10px] text-text-subtle mt-1">
+                      CSI/NBS-style division code (e.g. 02.01 for RCC Columns).
+                    </p>
+                  </div>
+                )}
                 <div>
                   <Label>Item Name *</Label>
                   <InputField
                     name="description"
                     register={register("description")}
-                    placeholder="e.g. False ceiling area"
+                    placeholder={discipline === "architecture" ? "e.g. RCC Columns — M25 with Fe500 steel" : "e.g. False ceiling area"}
                     error={errors.description?.message}
                   />
                 </div>
@@ -990,7 +1020,7 @@ const ItemFormModal = ({
                     name="spec"
                     register={register("spec")}
                     rows={3}
-                    placeholder="e.g. Supply, transport and Installation of Gypsum ceiling. 12.5 mm thk Gyproc board with Gypliner channel sections at every 450mm with fixing brackets, angles and channels connectors also with premium emulsion paint finish."
+                    placeholder={discipline === "architecture" ? "e.g. M25 grade RCC columns per structural drawings, including formwork, Fe500 TMT steel, curing." : "e.g. Supply, transport and Installation of Gypsum ceiling. 12.5 mm thk Gyproc board with Gypliner channel sections at every 450mm with fixing brackets, angles and channels connectors also with premium emulsion paint finish."}
                     error={errors.spec?.message}
                   />
                 </div>
@@ -1017,7 +1047,7 @@ const ItemFormModal = ({
             <div className={`grid grid-cols-2 sm:grid-cols-${showCategory ? 4 : 3} gap-3`}>
               {showCategory && (
                 <div>
-                  <Label>Room / Category</Label>
+                  <Label>{discipline === "architecture" ? "Trade / Division" : "Room / Category"}</Label>
                   <CategorySelect
                     value={form.category}
                     onChange={(v) => {
@@ -1030,6 +1060,8 @@ const ItemFormModal = ({
                       });
                     }}
                     className={`${inputBase} cursor-pointer`}
+                    placeholder={discipline === "architecture" ? "Select trade/division…" : "Select room…"}
+                    customOptions={discipline === "architecture" ? ARCH_TRADE_DIVISIONS : undefined}
                   />
                 </div>
               )}
@@ -1389,43 +1421,44 @@ const ItemFormModal = ({
           )}
         </div>
       </div>
-
-      {pickerOpen && (
-        <LibraryPicker
-          excludeId={form.id}
-          onClose={() => setPickerOpen(false)}
-          onPick={handleLibraryPick}
-          multiSelectMode={multiEntryMode}
-        />
-      )}
-
-      {materialPickerOpen && (
-        <MaterialPicker
-          onClose={() => setMaterialPickerOpen(false)}
-          onPick={handlePickMaterials}
-        />
-      )}
-
-      <DestinationPromptModal
-        isOpen={destPrompt.isOpen}
-        onClose={destPrompt.onCancel}
-        itemName={destPrompt.itemName}
-        itemCategory={destPrompt.category}
-        existingHeadings={destPrompt.existingHeadings}
-        headingsWithItem={destPrompt.headingsWithItem}
-        onSelect={destPrompt.onSelect}
-        onCreateNew={destPrompt.onCreateNew}
-        roomPresets={getProposalRoomPresets().map((r) => r.name)}
-      />
-
-      <DuplicateScopeWarningModal
-        isOpen={duplicateWarning.isOpen}
-        itemName={duplicateWarning.itemName}
-        existingHeading={duplicateWarning.existingHeading}
-        onAddAnyway={duplicateWarning.onAdd}
-        onSkip={duplicateWarning.onSkip}
-      />
     </div>
+
+    {pickerOpen && (
+      <LibraryPicker
+        excludeId={form.id}
+        onClose={() => setPickerOpen(false)}
+        onPick={handleLibraryPick}
+        multiSelectMode={multiEntryMode}
+        discipline={discipline}
+      />
+    )}
+
+    {materialPickerOpen && (
+      <MaterialPicker
+        onClose={() => setMaterialPickerOpen(false)}
+        onPick={handlePickMaterials}
+      />
+    )}
+
+    <DestinationPromptModal
+      isOpen={destPrompt.isOpen}
+      onClose={destPrompt.onCancel}
+      itemName={destPrompt.itemName}
+      itemCategory={destPrompt.category}
+      existingHeadings={destPrompt.existingHeadings}
+      headingsWithItem={destPrompt.headingsWithItem}
+      onSelect={destPrompt.onSelect}
+      onCreateNew={destPrompt.onCreateNew}
+      roomPresets={getProposalRoomPresets().map((r) => r.name)}
+    />
+
+    <DuplicateScopeWarningModal
+      isOpen={duplicateWarning.isOpen}
+      itemName={duplicateWarning.itemName}
+      existingHeading={duplicateWarning.existingHeading}
+      onAddAnyway={duplicateWarning.onAdd}
+      onSkip={duplicateWarning.onSkip}
+    />
 
     {/* Rate Build-up — the single editor for the item's rate & materials.
         Rendered outside the form's click-to-close backdrop. */}
@@ -1444,8 +1477,29 @@ const ItemFormModal = ({
   );
 };
 
-export const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false }) => {
-  const [items] = useState(() => listLibrary());
+export const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = false, discipline = "interior" }) => {
+  const isArch = discipline === "architecture";
+
+  // Architecture items are served from the in-memory constant (never persisted
+  // to localStorage) to avoid hitting the storage quota. User-created arch items
+  // saved via Item Master are also included, merged by description so the seed
+  // items don't duplicate anything the user has already customised.
+  const [items] = useState(() => {
+    const stored = listLibrary();
+    if (!isArch) return stored;
+    const userDescriptions = new Set(
+      stored
+        .filter((it) => it.discipline === "architecture")
+        .map((it) => (it.description || "").trim().toLowerCase()),
+    );
+    const seedArch = ARCH_DEFAULT_LIBRARY.filter(
+      (it) => !userDescriptions.has((it.description || "").trim().toLowerCase()),
+    );
+    return [
+      ...stored.filter((it) => it.discipline === "architecture"),
+      ...seedArch,
+    ];
+  });
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState(new Set());
 
@@ -1473,10 +1527,23 @@ export const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = fa
         return (
           (it.description || "").toLowerCase().includes(q) ||
           (it.hsn || "").toLowerCase().includes(q) ||
+          (it.workCode || "").toLowerCase().includes(q) ||
           (it.tags || []).some((t) => t.toLowerCase().includes(q))
         );
       });
   }, [keyed, query, excludeId]);
+
+  // For architecture mode, group filtered rows by trade division (category).
+  const grouped = useMemo(() => {
+    if (!isArch) return null;
+    const map = {};
+    for (const row of filtered) {
+      const cat = row.it.category || "Uncategorised";
+      if (!map[cat]) map[cat] = [];
+      map[cat].push(row);
+    }
+    return map;
+  }, [filtered, isArch]);
 
   const handleItemClick = (row) => {
     if (multiSelectMode) {
@@ -1492,6 +1559,50 @@ export const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = fa
     } else {
       onPick(row.it);
     }
+  };
+
+  const renderRow = (row) => {
+    const { it, key } = row;
+    const unitLabel = UNITS.find((u) => u.code === it.unit)?.label || it.unit;
+    const isSelected = selectedIds.has(key);
+    return (
+      <button
+        key={key}
+        type="button"
+        onClick={() => handleItemClick(row)}
+        className={`w-full text-left rounded-lg border px-3 py-2 transition-all flex items-center gap-3 cursor-pointer ${
+          isSelected
+            ? "border-select-blue bg-active-bg/40"
+            : "border-bordergray bg-white hover:border-select-blue hover:bg-active-bg/30"
+        }`}
+      >
+        {multiSelectMode && (
+          <div className={`h-4 w-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+            isSelected ? "border-select-blue bg-select-blue text-white" : "border-bordergray bg-white"
+          }`}>
+            {isSelected && <Check size={10} strokeWidth={4} />}
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-[11.5px] font-semibold text-textcolor truncate flex items-center gap-1.5">
+            {isArch && it.workCode && (
+              <span className="font-mono text-[10px] text-select-blue bg-active-bg/60 border border-select-blue/20 px-1 py-0 rounded shrink-0">
+                {it.workCode}
+              </span>
+            )}
+            {it.description}
+          </p>
+          <p className="text-[10px] text-text-muted">
+            {unitLabel} · ₹{Number(it.rate || 0).toLocaleString("en-IN")}
+            {(it.days ?? "") !== "" ? ` · ${it.days}d` : ""} · GST{" "}
+            {it.gstPercent}%
+          </p>
+        </div>
+        <span className="text-[11px] font-bold text-textcolor tabular-nums shrink-0">
+          ₹{Number(it.rate || 0).toLocaleString("en-IN")}
+        </span>
+      </button>
+    );
   };
 
   return (
@@ -1531,7 +1642,7 @@ export const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = fa
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, HSN, tag"
+              placeholder={isArch ? "Search name, work code, tag" : "Search name, HSN, tag"}
               className="bg-bg-soft border border-transparent rounded-lg pl-7 pr-3 py-1.5 text-[11.5px] placeholder:text-text-subtle focus:outline-none focus:bg-white focus:border-select-blue/30 w-full"
             />
           </div>
@@ -1542,46 +1653,25 @@ export const LibraryPicker = ({ excludeId, onClose, onPick, multiSelectMode = fa
             <p className="text-center text-[11.5px] text-text-subtle py-8">
               No items match
             </p>
-          ) : (
-            filtered.map((row) => {
-              const { it, key } = row;
-              const unitLabel =
-                UNITS.find((u) => u.code === it.unit)?.label || it.unit;
-              const isSelected = selectedIds.has(key);
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => handleItemClick(row)}
-                  className={`w-full text-left rounded-lg border px-3 py-2 transition-all flex items-center gap-3 cursor-pointer ${
-                    isSelected
-                      ? "border-select-blue bg-active-bg/40"
-                      : "border-bordergray bg-white hover:border-select-blue hover:bg-active-bg/30"
-                  }`}
-                >
-                  {multiSelectMode && (
-                    <div className={`h-4 w-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
-                      isSelected ? "border-select-blue bg-select-blue text-white" : "border-bordergray bg-white"
-                    }`}>
-                      {isSelected && <Check size={10} strokeWidth={4} />}
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[11.5px] font-semibold text-textcolor truncate">
-                      {it.description}
-                    </p>
-                    <p className="text-[10px] text-text-muted">
-                      {unitLabel} · ₹{Number(it.rate || 0).toLocaleString("en-IN")}
-                      {(it.days ?? "") !== "" ? ` · ${it.days}d` : ""} · GST{" "}
-                      {it.gstPercent}%
-                    </p>
-                  </div>
-                  <span className="text-[11px] font-bold text-textcolor tabular-nums shrink-0">
-                    ₹{Number(it.rate || 0).toLocaleString("en-IN")}
+          ) : isArch && grouped ? (
+            Object.entries(grouped).map(([cat, rows]) => (
+              <div key={cat}>
+                <div className="flex items-center gap-2 px-1 py-1.5 mt-2 first:mt-0">
+                  <span className="w-1 h-3 bg-select-blue rounded-full shrink-0" />
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue">
+                    {cat}
                   </span>
-                </button>
-              );
-            })
+                  <span className="text-[9px] font-semibold text-text-muted bg-white border border-bordergray px-1.5 rounded-md">
+                    {rows.length}
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {rows.map((row) => renderRow(row))}
+                </div>
+              </div>
+            ))
+          ) : (
+            filtered.map((row) => renderRow(row))
           )}
         </div>
 

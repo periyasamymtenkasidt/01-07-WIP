@@ -206,9 +206,11 @@ const ClientPortalLayout = () => {
           needsSave = true;
         }
 
-        // Initialize progress status parameters if missing
-        if (foundSite.progress === undefined || foundSite.progress === 0) {
-          foundSite.progress = 75;
+        // Progress is the site's REAL value (0 until execution starts) — do not
+        // fabricate a placeholder. 0 is valid (survey not started), so it must
+        // not be treated as "missing" and overwritten.
+        if (foundSite.progress === undefined) {
+          foundSite.progress = 0;
           needsSave = true;
         }
         if (!foundSite.approvalStatus) {
@@ -312,58 +314,6 @@ const ClientPortalLayout = () => {
   };
 
   // Appointments / Site Visits state
-  const [meetingSubject, setMeetingSubject] = useState("");
-  const [meetingDate, setMeetingDate] = useState("");
-  const [meetingTime, setMeetingTime] = useState("");
-  const [appointments, setAppointments] = useState(() => {
-    const saved = localStorage.getItem(`clientAppointments_${clientId}`);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // Fallback to default
-      }
-    }
-    return [
-      {
-        date: "12",
-        month: "JAN",
-        title: "Site Visit – Luxury Villa Review",
-        time: "10:00 – 12:00",
-        status: "Done",
-        statusColor: "bg-[#E6F4EA] text-[#16A34A] border-[#DCFCE7]",
-        type: "Site Review",
-      },
-      {
-        date: "28",
-        month: "JAN",
-        title: "Electrical & Ceiling Layout Discussion",
-        time: "14:00 – 15:30",
-        status: "Done",
-        statusColor: "bg-[#E6F4EA] text-[#16A34A] border-[#DCFCE7]",
-        type: "Drawing Review",
-      },
-      {
-        date: "14",
-        month: "FEB",
-        title: "Material & Flooring Selection",
-        time: "11:00 – 12:30",
-        status: "Done",
-        statusColor: "bg-[#E6F4EA] text-[#16A34A] border-[#DCFCE7]",
-        type: "Selection",
-      },
-      {
-        date: "10",
-        month: "JUN",
-        title: "Site Progress Walkthrough",
-        time: "10:00 – 11:30",
-        status: "Scheduled",
-        statusColor: "bg-[#E0F2FE] text-[#0284C7] border-[#BAE6FD]",
-        type: "Site Visit",
-      },
-    ];
-  });
-
   // Support / Message Log state
   const [chatMessage, setChatMessage] = useState("");
   const [messages, setMessages] = useState(() => {
@@ -469,13 +419,6 @@ const ClientPortalLayout = () => {
     setAssociatedLead(foundLead);
   }, [client]);
 
-  // Save appointments to localStorage
-  useEffect(() => {
-    if (clientId) {
-      localStorage.setItem(`clientAppointments_${clientId}`, JSON.stringify(appointments));
-    }
-  }, [appointments, clientId]);
-
   // Save messages to localStorage
   useEffect(() => {
     if (clientId) {
@@ -515,27 +458,6 @@ const ClientPortalLayout = () => {
     });
     localStorage.setItem(`clientMilestones_${cid}`, JSON.stringify(initialMilestones));
     setMilestones(initialMilestones);
-  };
-
-  const handleCreateAppointment = (subject, date, time) => {
-    if (!subject || !date || !time) return;
-
-    const dateParts = date.split("-");
-    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-    const month = monthNames[parseInt(dateParts[1], 10) - 1] || "JUN";
-    const day = dateParts[2] || "15";
-
-    const newApt = {
-      date: day,
-      month,
-      title: subject,
-      time: time,
-      status: "Pending Approval",
-      statusColor: "bg-[#FEF3C7] text-pending border-[#FEEBBE]",
-      type: "Client Request",
-    };
-
-    setAppointments([...appointments, newApt]);
   };
 
   const handleSendMessage = (text) => {
@@ -597,7 +519,6 @@ const ClientPortalLayout = () => {
     { id: "dashboard", label: "Dashboard", icon: Home, path: "dashboard" },
     { id: "milestones", label: "Payment Milestones", icon: RiMoneyRupeeCircleFill, path: "payment-milestones" },
     { id: "quotes", label: "Project Quotes", icon: FaRegFilePdf, path: "project-quotes" },
-    { id: "appointments", label: "Site Visits & Calendar", icon: Calendar, path: "site-visits-calendar" },
     { id: "gallery", label: "Designs & Renders", icon: ImageIcon, path: "designs-renders" },
     { id: "support", label: "Support & Chat", icon: MessageCircleMore, path: "support-chat" },
     { id: "invoices", label: "GST Invoice", icon: FileText, path: "gst-invoice" },
@@ -864,8 +785,6 @@ const ClientPortalLayout = () => {
                 markAllNotificationsAsRead,
                 milestones,
                 setMilestones,
-                appointments,
-                setAppointments,
                 messages,
                 setMessages,
                 gallery,
@@ -877,7 +796,6 @@ const ClientPortalLayout = () => {
                 paidCount,
                 pendingCount,
                 associatedLead,
-                handleCreateAppointment,
                 handleSendMessage,
                 formatAmount,
                 parseBudget,

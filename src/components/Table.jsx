@@ -186,7 +186,7 @@ const Table = ({
   ) : null;
 
   return (
-    <div className="h-full w-full min-w-0 flex flex-col p-1.5 overflow-hidden">
+    <div className="h-full w-full min-w-0 flex flex-col p-1.5 overflow-hidden font-manrope">
       {activeDropdown === "dateRange" && (
         <div className="fixed inset-0  z-40" />
       )}
@@ -327,9 +327,10 @@ const Table = ({
                 {columns.map((col, i) => (
                   <th
                     key={col.key || i}
-                    className={`py-4 px-3 font-medium whitespace-nowrap bg-white text-primary sticky top-0 z-10 shadow-[0_2px_10px_rgba(0,0,0,0.02)]
+                    className={`py-4 px-3 font-bold whitespace-nowrap bg-white text-primary sticky top-0 z-10 shadow-[0_2px_10px_rgba(0,0,0,0.02)]
                       ${i === 0 ? "rounded-l-2xl pl-5" : ""}
-                      ${i === columns.length - 1 ? "rounded-r-2xl pr-5" : ""}`}
+                      ${i === columns.length - 1 ? "rounded-r-2xl pr-5" : ""}
+                      ${col.className || ""}`}
                   >
                     {col.label}
                   </th>
@@ -348,7 +349,7 @@ const Table = ({
                 </tr>
               ) : (
                 pageData.map((item, index) => {
-                  const rowId = item[activeRowKey] ?? index;
+                  const rowId = index;
                   const isSelected =
                     selectedRowId != null && selectedRowId === rowId;
                   const isClickableRow =
@@ -392,11 +393,12 @@ const Table = ({
                                 onCellClick(item);
                               }
                             }}
-                            className={`py-3.5 px-3 transition-colors
+                            className={`py-3.5 px-3 font-medium transition-colors
                               ${isFirst ? "rounded-l-2xl pl-5" : ""}
                               ${isLast ? "rounded-r-2xl pr-5" : ""}
                               ${bgClass} ${borderClass}
-                              ${isClickableCell ? "cursor-pointer hover:text-select-blue hover:underline underline-offset-2" : ""}`}
+                              ${isClickableCell ? "cursor-pointer hover:text-select-blue hover:underline underline-offset-2" : ""}
+                              ${col.className || ""}`}
                           >
                             {col.render
                               ? col.render(item[col.key], item, index)

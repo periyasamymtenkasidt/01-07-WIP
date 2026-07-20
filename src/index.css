@@ -121,6 +121,23 @@
   animation: wip-shimmer 3s ease-in-out infinite;
 }
 
+/* @page must be at the top level — nesting it inside @media print is invalid
+   CSS and browsers silently ignore it. Top/side margins are 0 to suppress the
+   browser's running header (date, title, URL). A small bottom margin is kept
+   solely for the centred page number rendered via @bottom-center. */
+@page {
+  size: A4;
+  margin: 0 0 10mm 0;
+
+  @bottom-center {
+    content: counter(page);
+    font-size: 8px;
+    color: #94a3b8;
+    font-family: "Manrope", sans-serif;
+    letter-spacing: 0.12em;
+  }
+}
+
 /* Print: hide everything except the document being printed so users can
    save it as PDF via the browser print dialog. Multiple `*-print-area`
    classes share the same behavior (quote, BOQ, invoice, etc.). */
@@ -143,10 +160,22 @@
     top: 0;
     left: 0;
     width: 100%;
-    padding: 0;
+    /* Restore page margins as content padding now that @page margin is 0 */
+    padding: 12mm;
+    box-sizing: border-box;
     background: #fff;
     box-shadow: none !important;
     border: none !important;
+    /* Force background colours and images to print (table headers, badges, etc.) */
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  /* Cascade color-adjust to every child so coloured cells/badges print correctly */
+  .quote-print-area *,
+  .boq-print-area *,
+  .po-print-area * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
   .modal-no-print,
   .modal-no-print * {
@@ -155,10 +184,6 @@
   /* Keep section tables together where possible */
   .print-avoid-break {
     page-break-inside: avoid;
-  }
-  @page {
-    size: A4;
-    margin: 12mm;
   }
 }
 
@@ -190,8 +215,15 @@ body.printing-quote-mode > #root {
     height: auto !important;
     overflow: visible !important;
     background: #fff;
-    padding: 0;
+    padding: 12mm;
+    box-sizing: border-box;
     margin: 0;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  body.printing-quote-mode #quote-print-temp-container * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
 }
 

@@ -400,7 +400,7 @@ const SurveyMeasurements = ({ site, onExpandPhoto }) => {
           {designStarted ? (
             <div className="flex items-center gap-2">
               <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-violet-100 text-violet-700 border border-violet-200">
-                <FiLock size={12} /> Design in progress
+                <FiLock size={12} /> {site.status?.toLowerCase() === "completed" ? "Design completed" : "Design in progress"}
               </span>
               <button
                 type="button"

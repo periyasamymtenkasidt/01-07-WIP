@@ -87,9 +87,27 @@ const readProposalBasis = (siteID) => {
 
 const getScopeItemsForSite = (site) => {
   const frozen = readProposalBasis(site.siteID);
-  if (frozen?.items?.length) return frozen.items;
   const lead = getSiteLead(site);
-  const latestQuote = lead ? getLatestQuoteForParent(lead.proposalId) : null;
+  // For direct clients (no source lead), quotes are keyed by clientID.
+  // Only resolve the quote if the client's proposal has been confirmed on
+  // the Client Profile page (proposalConfirmed: true).
+  const directClient = !lead ? getClient(site.clientID) : null;
+  const quoteParentId = lead?.proposalId ?? (directClient?.proposalConfirmed ? site.clientID : null);
+  const latestQuote = quoteParentId ? getLatestQuoteForParent(quoteParentId) : null;
+
+  // Return the frozen snapshot only when it was built from the same quote that
+  // is still the latest. If a newer proposal has been sent (different quoteId),
+  // fall through so the basis is refreshed from the new quote's scope items —
+  // this ensures Sync from App always reflects the latest sent proposal.
+  if (frozen?.items?.length) {
+    const latestQuoteId = latestQuote?.quoteId || null;
+    if (!latestQuoteId || frozen.quoteId === latestQuoteId) {
+      return frozen.items;
+    }
+    // A newer proposal was sent — clear the stale snapshot and rebuild below.
+    try { localStorage.removeItem(proposalBasisKey(site.siteID)); } catch { /* ignore */ }
+  }
+
   // A saved proposal is the commercial source of truth. The lead-level scope
   // is retained only as a fallback for older records that have no saved quote.
   let items = latestQuote?.scopeItems?.length
@@ -138,8 +156,10 @@ export const getElementMeasurement = (dims, area, el) =>
   {};
 
 // The site's service track (Interiors/Architecture), resolved via its source lead.
+// For direct clients (no lead), fall back to the serviceTrack stored on the site
+// itself (populated from the client record in siteStorage).
 export const getSiteServiceTrack = (site) =>
-  resolveServiceTrack(getSiteLead(site) || {});
+  resolveServiceTrack(getSiteLead(site) || site || {});
 
 export const readDims = (siteID) => {
   try {
@@ -345,24 +365,35 @@ const dummyImage = (label, hue) =>
 
 // Simulate the field app's payload: for each WORK it fills the measurement +
 // its own photos (shown below that work). Used by the "Sync from app" demo —
-// we just MAP this onto the survey here.
+// dimensions are derived from the qty on the latest sent proposal so the
+// synced measurements match what was quoted.
 export const generateAppSurveyData = (site) => {
   const areas = areasForSite(site);
   const dims = {};
   areas.forEach((a, ai) => {
     const hue = (ai * 47) % 360;
-    a.elements.forEach((el, ei) => {
+    a.elements.forEach((el) => {
       const key = elKey(a.area, el.name, el.scopeItemId);
       const info = DIMENSIONAL_UNITS[el.unit];
+      const qty = Number(el.qty) || 0;
       let m;
-      if (!info) {
-        m = { nos: 2 + (ei % 4) };
+      if (!info || info.kind === "volume") {
+        // nos-type or volume: qty maps directly to a count
+        m = { nos: qty || 1 };
       } else if (info.kind === "length") {
-        m = { length: 8 + ei, nos: 1 };
+        // Linear unit: qty IS the measured length
+        m = { length: qty || 1, nos: 1 };
       } else {
-        // Area works are a single face: qty = length × breadth (nos = 1). Never
-        // seed nos > 1 here — that produced the spurious "L × B × 2" doubling.
-        m = { length: 9 + (ei % 4), breadth: 7 + (ei % 3), nos: 1 };
+        // Area unit (sqft/sqm): derive a realistic length × breadth pair whose
+        // product equals the quoted qty. Use the square root as the length so
+        // the two sides stay roughly proportional, then back-calculate breadth.
+        if (qty > 0) {
+          const length = Math.round(Math.sqrt(qty) * 10) / 10 || 1;
+          const breadth = Math.round((qty / length) * 100) / 100;
+          m = { length, breadth, nos: 1 };
+        } else {
+          m = { length: 0, breadth: 0, nos: 1 };
+        }
       }
       // The work's own photos (from the app), shown below its measurement.
       m.images = [1, 2, 3, 4].map((n) => dummyImage(`${el.name} · ${n}`, hue));

@@ -7,10 +7,10 @@ import App from "./App";
 import { BrowserRouter } from "react-router-dom";
 import "./index.css";
 import { seedDefaultTerms } from "./data/termsStorage";
+import { migrateRfqIds } from "./data/rfqStorage";
 
-// Seed default T&C records into localStorage on first launch.
-// Runs synchronously before React mounts so every component sees the data.
 seedDefaultTerms();
+migrateRfqIds();
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <BrowserRouter>

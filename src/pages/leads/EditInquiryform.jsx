@@ -63,11 +63,6 @@ const editInquirySchema = yup.object().shape({
     then: (s) => s.required("Plot area is required"),
     otherwise: (s) => s.notRequired(),
   }),
-  landOwnership: yup.string().when("serviceTrack", {
-    is: "Architecture",
-    then: (s) => s.required("Land ownership is required"),
-    otherwise: (s) => s.notRequired(),
-  }),
   location: yup.string().required("Location is required"),
 });
 import {
@@ -81,10 +76,7 @@ import {
 import { formatSizeRange } from "../../utils/sizeRangeValidation";
 import {
   PROJECT_INTENTS,
-  LAND_OWNERSHIP,
   CLIENT_TYPES,
-  CONTACT_PERSON_ROLES,
-  PROPERTY_STATUSES,
   SITE_VISIT_OPTIONS,
   REQUIREMENT_TYPES,
   BUILDING_USES,
@@ -108,22 +100,17 @@ const INITIAL_FORM_STATE = {
   whatsappNumber: "",
   clientType: "",
   contactPersonRole: "",
-  propertyStatus: "",
   siteVisitRequired: "",
   nextFollowUpDate: "",
   serviceTrack: "Interiors",
   quotePreset: "",
   quoteSizeRange: "",
   propertyType: "",
-  projectName: "",
   projectIntent: "",
   requirementType: "",
   buildingUse: "",
   plotArea: "",
   plotNumber: "",
-  landOwnership: "",
-  siteAddress: "",
-  targetCompletion: "",
   indicativeBudget: "",
 };
 
@@ -142,12 +129,14 @@ const CLIENT_INFO_FIELDS = [
     label: "Full Name",
     type: "text",
     placeholder: "Enter full name",
+    lettersOnly: true,
   },
   {
     name: "phoneNumber",
     label: "Phone Number",
     type: "tel",
     placeholder: "10-digit number",
+    numericOnly: true,
   },
   {
     name: "email",
@@ -246,8 +235,10 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
       presetKey && resolvedPropertyType
         ? getConfigForType(presetKey, resolvedPropertyType)
         : null;
+    // Prefer the stored custom size — only fall back to the preset default
+    // when the lead has no saved size yet (e.g. freshly-created from the list).
     const resolvedSizeRange =
-      liveCfg?.sizeRange || initialData.quoteSizeRange || "";
+      initialData.quoteSizeRange || liveCfg?.sizeRange || "";
 
     reset({
       fullName: initialData.clientName || "",
@@ -264,22 +255,17 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
       whatsappNumber: initialData.whatsappNumber || "",
       clientType: initialData.clientType || "",
       contactPersonRole: initialData.contactPersonRole || "",
-      propertyStatus: initialData.propertyStatus || "",
       siteVisitRequired: initialData.siteVisitRequired || "",
       nextFollowUpDate: initialData.nextFollowUpDate || "",
       serviceTrack: resolveServiceTrack(initialData),
       quotePreset: presetKey,
       quoteSizeRange: resolvedSizeRange,
       propertyType: resolvedPropertyType,
-      projectName: initialData.projectName || "",
       projectIntent: initialData.projectIntent || "",
       requirementType: initialData.requirementType || "",
       buildingUse: initialData.buildingUse || "",
       plotArea: initialData.plotArea || "",
       plotNumber: initialData.plotNumber || "",
-      landOwnership: initialData.landOwnership || "",
-      siteAddress: initialData.siteAddress || "",
-      targetCompletion: initialData.targetCompletion || "",
       indicativeBudget: initialData.indicativeBudget || "",
     });
   }, [initialData, presetKeys, reset]);
@@ -351,6 +337,8 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
       placeholder={cfg.placeholder}
       options={cfg.options}
       icon={cfg.icon}
+      numericOnly={!!cfg.numericOnly}
+      lettersOnly={!!cfg.lettersOnly}
     />
   );
 
@@ -423,68 +411,6 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
 
         <div className="border-t border-border mb-6" />
 
-        {/* ── Lead Intake — quick qualification (both tracks) ─────────── */}
-        <div className="mb-6">
-          <SectionHeader hint="Fast qualification fields for ownership, visit planning, and next action.">
-            Lead Intake
-          </SectionHeader>
-          <div className="grid grid-cols-2 gap-4">
-            <InputField
-              name="whatsappNumber"
-              label="WhatsApp Number"
-              type="tel"
-              register={register("whatsappNumber")}
-              error={errors.whatsappNumber?.message}
-              placeholder="10-digit number"
-            />
-            <InputField
-              name="clientType"
-              label="Client Type"
-              type="select"
-              register={register("clientType")}
-              options={CLIENT_TYPES}
-              error={errors.clientType?.message}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4 mt-4">
-            <InputField
-              name="contactPersonRole"
-              label="Contact Person Role"
-              type="select"
-              register={register("contactPersonRole")}
-              options={CONTACT_PERSON_ROLES}
-              error={errors.contactPersonRole?.message}
-            />
-            <InputField
-              name="propertyStatus"
-              label="Property Status"
-              type="select"
-              register={register("propertyStatus")}
-              options={PROPERTY_STATUSES}
-              error={errors.propertyStatus?.message}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4 mt-4">
-            <InputField
-              name="siteVisitRequired"
-              label="Site Visit Required"
-              type="select"
-              register={register("siteVisitRequired")}
-              options={SITE_VISIT_OPTIONS}
-              error={errors.siteVisitRequired?.message}
-            />
-            <InputField
-              name="nextFollowUpDate"
-              label="Next Follow-up Date"
-              type="date"
-              register={register("nextFollowUpDate")}
-              error={errors.nextFollowUpDate?.message}
-            />
-          </div>
-        </div>
-
-        <div className="border-t border-border mb-6" />
-
         {/* ── Project Type (the one branch that drives everything) ────── */}
         <div className="mb-6">
           <SectionHeader hint="What are we doing for this client? This sets the whole pipeline.">
@@ -502,6 +428,44 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
             </p>
           )}
         </div>
+
+        {isArch && <div className="border-t border-border mb-6" />}
+
+        {/* ── Lead Intake — Architecture only ─────────────────────────── */}
+        {isArch && (
+        <div className="mb-6">
+          <SectionHeader hint="Fast qualification fields for ownership, visit planning, and next action.">
+            Lead Intake
+          </SectionHeader>
+          <div className="grid grid-cols-3 gap-4">
+            <InputField
+              name="whatsappNumber"
+              label="WhatsApp Number"
+              type="tel"
+              register={register("whatsappNumber")}
+              error={errors.whatsappNumber?.message}
+              placeholder="10-digit number"
+              numericOnly
+            />
+            <InputField
+              name="clientType"
+              label="Client Type"
+              type="select"
+              register={register("clientType")}
+              options={CLIENT_TYPES}
+              error={errors.clientType?.message}
+            />
+            <InputField
+              name="siteVisitRequired"
+              label="Site Visit Required"
+              type="select"
+              register={register("siteVisitRequired")}
+              options={SITE_VISIT_OPTIONS}
+              error={errors.siteVisitRequired?.message}
+            />
+          </div>
+        </div>
+        )}
 
         {/* ── Property Configuration — Interiors only (preset-driven) ── */}
         {!isArch && (
@@ -569,14 +533,6 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
             </SectionHeader>
             <div className="grid grid-cols-2 gap-4">
               <InputField
-                name="projectName"
-                label="Project Name"
-                type="text"
-                placeholder="e.g. Kapoor Residence"
-                register={register("projectName")}
-                error={errors.projectName?.message}
-              />
-              <InputField
                 name="projectIntent"
                 label="Project Intent"
                 type="select"
@@ -601,28 +557,12 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
                 error={errors.buildingUse?.message}
               />
               <InputField
-                name="landOwnership"
-                label="Land Ownership"
-                type="select"
-                register={register("landOwnership")}
-                options={LAND_OWNERSHIP}
-                error={errors.landOwnership?.message}
-              />
-              <InputField
                 name="plotArea"
                 label="Plot Area"
                 type="text"
                 placeholder="e.g. 2400 sqft"
                 register={register("plotArea")}
                 error={errors.plotArea?.message}
-              />
-              <InputField
-                name="plotNumber"
-                label="Plot / Survey No."
-                type="text"
-                placeholder="e.g. 142/3B"
-                register={register("plotNumber")}
-                error={errors.plotNumber?.message}
               />
             </div>
           </div>
@@ -661,25 +601,6 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
                 error={errors.indicativeBudget?.message}
               />
               <InputField
-                name="targetCompletion"
-                label="Target Completion"
-                type="date"
-                register={register("targetCompletion")}
-                error={errors.targetCompletion?.message}
-              />
-            </div>
-          )}
-          {isArch ? (
-            <div className="grid grid-cols-2 gap-4 mt-4">
-              <InputField
-                name="siteAddress"
-                label="Site Address"
-                type="text"
-                placeholder="Door no, street, landmark"
-                register={register("siteAddress")}
-                error={errors.siteAddress?.message}
-              />
-              <InputField
                 name="location"
                 label="City"
                 type="text"
@@ -689,7 +610,8 @@ function EditInquiryform({ initialData, onClose, onAddLead }) {
                 icon={GrLocation}
               />
             </div>
-          ) : (
+          )}
+          {!isArch && (
             <div className="grid grid-cols-2 gap-4 mt-4">
               {PROJECT_DETAIL_FIELDS.slice(1).map(field)}
             </div>

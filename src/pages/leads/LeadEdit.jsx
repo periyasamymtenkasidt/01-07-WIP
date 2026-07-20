@@ -51,8 +51,8 @@ import {
   FiAward,
   FiEdit3,
   FiX,
+  FiFilePlus,
 } from "react-icons/fi";
-import { FaWhatsapp } from "react-icons/fa6";
 import { getOrSeedSchedule, saveSchedule } from "../../data/scheduleStorage";
 import { createContractFromConversion } from "../../data/contractStorage";
 import { resolveServiceTrack } from "../../data/serviceTrack";
@@ -360,6 +360,27 @@ const activityMeta = (entry) => {
       icon: <FiAward size={12} />,
       bg: "bg-emerald-50",
       iconColor: "text-emerald-600",
+    };
+  }
+  if (entry.type === "scope_change") {
+    const lines = [];
+    if (entry.added?.length) lines.push(`Added: ${entry.added.join(", ")}`);
+    if (entry.removed?.length) lines.push(`Removed: ${entry.removed.join(", ")}`);
+    return {
+      title: "Scope updated",
+      body: lines.join(" • "),
+      icon: <FiLayers size={12} />,
+      bg: "bg-purple-50",
+      iconColor: "text-purple-600",
+    };
+  }
+  if (entry.type === "document") {
+    return {
+      title: "Document added",
+      body: entry.fileName || "",
+      icon: <FiFilePlus size={12} />,
+      bg: "bg-indigo-50",
+      iconColor: "text-indigo-500",
     };
   }
   // status transition
@@ -737,6 +758,9 @@ const LeadEdit = () => {
       joinDate,
       sourceLeadId: lead.proposalId,
       projectValue: numericValue,
+      propertyType: formData.propertyType || lead.propertyType || "",
+      sizeRange: lead.quoteSizeRange || "",
+      quotePreset: lead.quotePreset || "",
     };
     localStorage.setItem(
       "newClientsData",
@@ -841,7 +865,7 @@ const LeadEdit = () => {
     <div className="bg-overallbg p-6 font-sans h-full flex flex-col overflow-y-auto lg:overflow-hidden scroll-hidden-bar">
       {/* Header */}
       <div className="flex justify-between items-center mb-6 shrink-0">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 -mt-7">
           <button
             onClick={() => navigate(-1)}
             className="w-10 h-10 flex items-center justify-center rounded-xl bg-white border border-border hover:bg-gray-50 hover:border-select-blue/30 text-gray-500 hover:text-select-blue transition-all shadow-sm cursor-pointer"
@@ -850,7 +874,7 @@ const LeadEdit = () => {
             <FiArrowLeft size={18} />
           </button>
           <div>
-            <h1 className="text-[26px] font-bold text-darkgray leading-tight">
+            <h1 className="text-[26px] font-bold text-darkgray leading-tight whitespace-nowrap">
               New Inquiry
             </h1>
             <p className="text-[13px] text-gray-500 mt-1">
@@ -992,18 +1016,7 @@ const LeadEdit = () => {
               }}
               className="flex items-center gap-2 px-5 py-2.5 bg-white border border-border cursor-pointer rounded-xl text-sm font-semibold text-darkgray hover:bg-gray-50 shadow-sm transition-all"
             >
-              <FiPhone size={16} /> Log Call
-            </button>
-          )}
-          {lead.status?.toLowerCase() !== "won" && (
-            <button
-              onClick={() => {
-                setLogTab("note");
-                setShowLogModal(true);
-              }}
-              className="flex items-center gap-2 px-5 py-2.5 bg-white border border-border cursor-pointer rounded-xl text-sm font-semibold text-darkgray hover:bg-gray-50 shadow-sm transition-all"
-            >
-              <FiEdit3 size={16} /> Add Note
+              <FiEdit3 size={16} /> Log Activity
             </button>
           )}
           {lead.status?.toLowerCase() !== "won" && (
@@ -1401,14 +1414,9 @@ const LeadEdit = () => {
             <button className="w-full py-3 bg-white border-[1.5px] border-border hover:border-dark-blue hover:text-dark-blue text-midgray rounded-[14px] text-[14px] font-bold mb-3 flex items-center justify-center gap-2.5 transition-all shadow-sm">
               <FiPhone size={18} /> Schedule Call
             </button>
-            <div className="w-full flex gap-3">
-              <button className="flex-1 py-3 bg-palewhite hover:bg-bg-soft text-grey rounded-[14px] text-[13px] font-bold flex items-center justify-center gap-2 transition-colors border border-transparent hover:border-gray-200">
-                <FaWhatsapp size={16} /> WhatsApp
-              </button>
-              <button className="flex-1 py-3 bg-palewhite hover:bg-bg-soft text-grey rounded-[14px] text-[13px] font-bold flex items-center justify-center gap-2 transition-colors border border-transparent hover:border-gray-200">
-                <FiMail size={16} /> Email
-              </button>
-            </div>
+            <button className="w-full py-3 bg-palewhite hover:bg-bg-soft text-grey rounded-[14px] text-[13px] font-bold flex items-center justify-center gap-2 transition-colors border border-transparent hover:border-gray-200">
+              <FiMail size={16} /> Email
+            </button>
           </div>
 
           {/* Documents Card — auto-populated when a proposal is sent */}
@@ -1540,11 +1548,20 @@ const LeadEdit = () => {
             if (next !== lead.status) {
               transitionStatus(next);
             }
-            // Keep the inquiry snapshot aligned with the grade/rates actually
-            // sent so subsequent proposal opens use it.
+            // Sync ALL sent-quote fields back to the inquiry so presetData on the
+            // next open (resend) always reflects what was most recently sent.
             const quotePatch = {
               quoteGrade: quote?.grade || "premium",
               quoteScopeItems: quote?.scopeItems || lead.quoteScopeItems,
+              quoteSizeRange: quote?.sizeRange || lead.quoteSizeRange,
+              quoteValidityDays: quote?.validityDays ?? lead.quoteValidityDays,
+              quoteNotes: quote?.notes ?? lead.quoteNotes,
+              quoteInclusions: quote?.inclusions || lead.quoteInclusions,
+              quoteExclusions: quote?.exclusions || lead.quoteExclusions,
+              quoteCategoryInclusions: quote?.categoryInclusions || lead.quoteCategoryInclusions,
+              quoteCategoryExclusions: quote?.categoryExclusions || lead.quoteCategoryExclusions,
+              quoteAddedInclusions: quote?.addedInclusions || lead.quoteAddedInclusions,
+              quoteAddedExclusions: quote?.addedExclusions || lead.quoteAddedExclusions,
             };
             const savedLeads = JSON.parse(
               localStorage.getItem("newLeadsData") || "[]",
@@ -1568,9 +1585,31 @@ const LeadEdit = () => {
               ]),
             );
             setLead(syncedLead);
-            // Single email-style activity entry — keeps the existing
-            // "lead has emailed proposal" check working for the Projects
-            // list, while linking to the saved quote.
+            // Save document first so its entry sits below email in timeline.
+            const savedDocs = saveQuoteDocument(lead.proposalId, quote);
+            setDocuments(savedDocs);
+            if (savedDocs[0]) {
+              appendActivity(lead.proposalId, {
+                type: "document",
+                fileName: savedDocs[0].fileName,
+                docId: savedDocs[0].docId,
+              });
+            }
+            // Log scope changes on resend (compare against previous scope).
+            if (isResend && prevScopeItems) {
+              const prevNames = prevScopeItems.map((s) => s.itemName).filter(Boolean);
+              const newNames = (quote?.scopeItems || []).map((s) => s.itemName).filter(Boolean);
+              const added = newNames.filter((n) => !prevNames.includes(n));
+              const removed = prevNames.filter((p) => !newNames.includes(p));
+              if (added.length > 0 || removed.length > 0) {
+                appendActivity(lead.proposalId, {
+                  type: "scope_change",
+                  added,
+                  removed,
+                });
+              }
+            }
+            // Email entry last so it appears at the top of the timeline.
             setActivity(
               appendActivity(lead.proposalId, {
                 type: "email",
@@ -1581,7 +1620,6 @@ const LeadEdit = () => {
                 total,
               }),
             );
-            saveQuoteDocument(lead.proposalId, quote);
             window.dispatchEvent(new Event("leadDataChanged"));
           }}
         />
@@ -1653,6 +1691,22 @@ const LeadEdit = () => {
             );
             window.dispatchEvent(new Event("leadDataChanged"));
             setShowNegotiationModal(false);
+
+            const backendId = backendIdOf(lead);
+            if (backendId) {
+              updateLead(backendId, {
+                status: "Negotiation",
+                negotiationNote: note,
+                expectedClose,
+              })
+                .then(() => window.dispatchEvent(new Event("leadDataChanged")))
+                .catch((err) =>
+                  console.warn(
+                    "NegotiationModal: updateLead failed —",
+                    err?.message || err,
+                  ),
+                );
+            }
           }}
         />
       )}

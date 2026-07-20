@@ -3,12 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { FiAlertTriangle } from "react-icons/fi";
 import Table from "../../components/Table";
 import { TableData } from "../../data/TableData";
-import { getAllProjects, getBadgeClass } from "../../data/LeadStatusConfig";
+import { getAllProjects } from "../../data/LeadStatusConfig";
 import { getProjectSlack } from "../../data/scheduleStorage";
-import { ClientTableData } from "../../data/ClientTableData";
-import { PAYMENT_MILESTONES } from "../../data/MilestoneConfig";
 
-const SUB_TABS = ["In Sales", "In Delivery", "Handover Complete"];
+const SUB_TABS = ["Active", "Advanced", "Completed"];
 
 const formatRelative = (iso) => {
   if (!iso) return "—";
@@ -46,56 +44,6 @@ const summarizeActivity = (entry) => {
   }
 };
 
-const isClientProjectCompleted = (clientID) => {
-  if (!clientID) return false;
-
-  let rawClient = null;
-  try {
-    const saved = localStorage.getItem("newClientsData");
-    const newClients = saved ? JSON.parse(saved) : [];
-    rawClient = newClients.find((c) => c.clientID === clientID);
-  } catch {}
-
-  if (!rawClient) {
-    rawClient = ClientTableData.find((c) => c.clientID === clientID);
-  }
-
-  if (!rawClient) return false;
-
-  let paymentStatus = rawClient.paymentStatus;
-  try {
-    const o = JSON.parse(localStorage.getItem("staticClientStatusOverrides") || "{}");
-    if (o[clientID]) {
-      paymentStatus = o[clientID];
-    }
-  } catch {}
-
-  if (paymentStatus === "failed") return false;
-
-  let milestones = [];
-  try {
-    const stored = localStorage.getItem(`clientMilestones_${clientID}`);
-    if (stored) {
-      milestones = JSON.parse(stored);
-    } else {
-      let paidCount = 0;
-      if (paymentStatus === "completed") {
-        paidCount = PAYMENT_MILESTONES.length;
-      } else if (paymentStatus === "pending") {
-        const tail = parseInt(clientID.split("-").pop() || "0", 10);
-        paidCount = tail % 4;
-      }
-      milestones = PAYMENT_MILESTONES.map((m, i) => ({
-        ...m,
-        status: i < paidCount ? "paid" : "pending",
-      }));
-    }
-  } catch {
-    return false;
-  }
-
-  return milestones.length > 0 && milestones.every((m) => m.status === "paid");
-};
 
 const buildRows = () => {
   // Combine static mock leads with localStorage overrides (mirroring how
@@ -113,7 +61,8 @@ const buildRows = () => {
   ];
   return getAllProjects(merged).map((p, idx) => {
     const slack = getProjectSlack(p.lead);
-    const handoverComplete = p.lead.convertedClientID ? isClientProjectCompleted(p.lead.convertedClientID) : false;
+    const paidMilestonesCount = (p.milestones || []).filter((m) => m.status === "paid").length;
+    const handoverComplete = p.milestones?.length > 0 && p.milestones.every((m) => m.status === "paid");
     return {
       sno: String(idx + 1).padStart(2, "0"),
       proposalId: p.lead.proposalId,
@@ -129,6 +78,7 @@ const buildRows = () => {
       phase: p.stage.phase,
       isHandoverComplete: handoverComplete,
       isLost: p.lead.status?.toLowerCase() === "lost",
+      paidMilestonesCount,
     };
   });
 };
@@ -154,13 +104,11 @@ const Projects = () => {
     const filtered = allRows.filter((row) => {
       switch (activeSubTab) {
         case 0:
-          return false;
+          return (row.phase === "delivery" || (row.phase === "closed" && row.stageLabel === "REMAINING")) && !row.isHandoverComplete && !row.isLost && row.paidMilestonesCount <= 1;
         case 1:
-          return (row.phase === "delivery" || (row.phase === "closed" && row.stageLabel === "REMAINING")) && !row.isHandoverComplete && !row.isLost;
+          return (row.paidMilestonesCount === 2 || row.paidMilestonesCount === 3) && !row.isLost;
         case 2:
           return row.isHandoverComplete && !row.isLost;
-        case 3:
-          return row.isLost;
         default:
           return true;
       }
@@ -189,10 +137,7 @@ const Projects = () => {
       render: (_, item) => (
         <span
           className="cursor-pointer hover:underline"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/projects/${item.proposalId}`);
-          }}
+          onClick={() => navigate(`/projects/${item.proposalId}`)}
         >
           {item.proposalId}
         </span>
@@ -204,10 +149,7 @@ const Projects = () => {
       render: (_, item) => (
         <span
           className="cursor-pointer hover:underline"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/projects/${item.proposalId}`);
-          }}
+          onClick={() => navigate(`/projects/${item.proposalId}`)}
         >
           {item.clientName}
         </span>
@@ -215,18 +157,11 @@ const Projects = () => {
     },
     {
       key: "stageLabel",
-      label: "Stage",
+      label: "Payment Stage",
       render: (_, item) => (
         <span className="text-[13px] font-semibold text-darkgray">
           {item.stageLabel}
         </span>
-      ),
-    },
-    {
-      key: "progress",
-      label: "Progress",
-      render: (_, item) => (
-        <span className="text-[12px] text-text-muted">{item.progress}</span>
       ),
     },
     {
@@ -241,17 +176,6 @@ const Projects = () => {
             {formatRelative(item.lastActivity?.at)}
           </span>
         </div>
-      ),
-    },
-    {
-      key: "status",
-      label: "Status",
-      render: (_, item) => (
-        <span
-          className={`px-3 py-1 rounded-full text-[11px] font-semibold tracking-wider uppercase ${getBadgeClass(item.status)}`}
-        >
-          {item.status}
-        </span>
       ),
     },
     { key: "investment", label: "Investment" },
@@ -294,7 +218,6 @@ const Projects = () => {
         emptyMessage="No projects in this stage."
         rowsPerPage={8}
         activeRowKey="proposalId"
-        onRowClick={(row) => navigate(`/projects/${row.proposalId}`)}
         subTabs={SUB_TABS}
         onSubTabChange={setActiveSubTab}
         sortFields={[
@@ -325,9 +248,7 @@ const Projects = () => {
             { label: "Sno", key: "sno" },
             { label: "Project ID", key: "proposalId" },
             { label: "Client", key: "clientName" },
-            { label: "Stage", key: "stageLabel" },
-            { label: "Progress", key: "progress" },
-            { label: "Status", key: "status" },
+            { label: "Payment Stage", key: "stageLabel" },
             { label: "Investment", key: "investment" },
             { label: "Possession", key: "possessionDate" },
             {

@@ -57,7 +57,9 @@ import {
   blankItem,
   blankSection,
   blankRateAnalysisRow,
+  blankRevisionComparison,
   seedRateAnalysisFromMaterials,
+  diffBoqRevisions,
   DIMENSIONAL_UNITS,
   DEFAULT_BOQ_APPROVAL,
   BOQ_TYPES,
@@ -66,6 +68,7 @@ import {
   SCOPE_TYPES,
   EXECUTION_BY,
 } from "../../data/boqStorage";
+import { getCurrentUser } from "../../auth/currentUser";
 import { getOrgProfile } from "../../data/orgProfile";
 import { getPresetKeys } from "../../data/QuotePresets";
 import {
@@ -74,6 +77,7 @@ import {
   validateFinalQuote,
 } from "../../data/finalQuoteStorage";
 import Modal from "../../components/Modal";
+import NumericInput from "../../components/NumericInput";
 import QuotePreview from "../../components/QuotePreview";
 import { UNITS, HSN_SUGGESTIONS } from "../../data/boqUnits";
 import { getAllClients, clientToBoqFields } from "../../data/clientStorage";
@@ -129,7 +133,6 @@ const inputBase =
 const compactInput =
   "bg-white border border-bordergray text-[11.5px] text-textcolor rounded-md px-2 py-1.5 w-full focus:outline-none focus:border-select-blue focus:ring-1 focus:ring-select-blue/20 placeholder:text-text-subtle";
 
-
 const STATUS_STYLES = {
   draft: {
     bg: "bg-slate-100",
@@ -173,10 +176,22 @@ const STATUS_STYLES = {
 // BOQ line-item view. Set to true to bring it back.
 const SHOW_GRADE_SELECTOR = false;
 
-const LOCKED_STATUSES = ["sent", "approved", "issued_for_tender", "signed", "issued_for_procurement", "procurement"];
+const LOCKED_STATUSES = [
+  "sent",
+  "approved",
+  "issued_for_tender",
+  "signed",
+  "issued_for_procurement",
+  "procurement",
+];
 const isLockedStatus = (status) => LOCKED_STATUSES.includes(status);
-const SIGNOFF_LOCKED_STATUSES = ["signed", "issued_for_procurement", "procurement"];
-const isSignoffLockedStatus = (status) => SIGNOFF_LOCKED_STATUSES.includes(status);
+const SIGNOFF_LOCKED_STATUSES = [
+  "signed",
+  "issued_for_procurement",
+  "procurement",
+];
+const isSignoffLockedStatus = (status) =>
+  SIGNOFF_LOCKED_STATUSES.includes(status);
 
 const DEFAULT_APPROVAL = DEFAULT_BOQ_APPROVAL;
 
@@ -247,6 +262,29 @@ const countMaterials = (record) =>
     0,
   );
 
+const ARCH_WORK_CATEGORIES = [
+  { value: "Preliminary & General", label: "Preliminary & General", description: "Site setup, mobilisation, surveying, temporary facilities", suggestions: ["Site clearance & demarcation", "Survey & setting-out", "Site office & facilities", "Scaffolding", "Safety provisions"] },
+  { value: "Earthwork & Excavation", label: "Earthwork & Excavation", description: "Bulk excavation, backfilling, compaction, dewatering", suggestions: ["Bulk excavation", "Excavation for foundations", "Backfilling & compaction", "Dewatering"] },
+  { value: "Foundation & Substructure", label: "Foundation & Substructure", description: "PCC, footings, raft slab, pile caps, anti-termite", suggestions: ["PCC (blinding)", "Isolated footings", "Raft slab", "Retaining wall", "Anti-termite treatment"] },
+  { value: "RCC & Structural Works", label: "RCC & Structural Works", description: "Columns, beams, slabs, staircase, shear walls, structural steel", suggestions: ["RCC columns", "RCC beams & slabs", "Staircase", "Shear wall / lift pit", "Structural steel"] },
+  { value: "Masonry & Block Work", label: "Masonry & Block Work", description: "Brick/block walls, lintels, parapet, partition walls", suggestions: ["Brick masonry", "AAC block masonry", "Lintel beams", "Parapet wall", "Cavity wall"] },
+  { value: "Waterproofing", label: "Waterproofing", description: "Terrace, basement, toilet, external wall waterproofing", suggestions: ["Terrace waterproofing", "Basement waterproofing", "Toilet waterproofing", "Water tank lining"] },
+  { value: "Roof & Terrace", label: "Roof & Terrace", description: "Screed, insulation, tile/slab finish, coping, drainage", suggestions: ["Roof screed & slope", "Terrace tile / paver", "Roof insulation", "Coping / parapet cap", "Roof drainage"] },
+  { value: "External Facade & Cladding", label: "External Facade & Cladding", description: "External plaster, stone/tile cladding, glazing, ACP", suggestions: ["External cement plaster", "Stone / tile cladding", "Curtain wall glazing", "ACP cladding", "Louvres & sunshades"] },
+  { value: "Internal Finishes", label: "Internal Finishes", description: "Plastering, flooring, wall tiles, skirting, dado", suggestions: ["Internal plaster", "Vitrified tile flooring", "Wall tile dado", "Marble / granite flooring", "Skirting"] },
+  { value: "Ceiling Works", label: "Ceiling Works", description: "RCC soffit finish, false ceiling, cornice, coping", suggestions: ["RCC soffit plaster / paint", "Gypsum false ceiling", "GI grid false ceiling", "Cornices & mouldings"] },
+  { value: "Painting & Surface Finishing", label: "Painting & Surface Finishing", description: "Internal/external painting, texture, primer, polish", suggestions: ["Internal emulsion paint", "External weathercoat", "Texture finish", "Primer coat", "Enamel paint"] },
+  { value: "Doors, Windows & Glazing", label: "Doors, Windows & Glazing", description: "Door frames, shutters, windows, hardware, glass", suggestions: ["Wooden door frame & shutter", "Steel door", "Aluminium window", "UPVC window", "Glass partition"] },
+  { value: "Carpentry & Joinery", label: "Carpentry & Joinery", description: "Built-in joinery, panelling, shelving, handrails", suggestions: ["Wall panelling", "Built-in wardrobes", "Staircase railing", "Skirting board", "Shelving"] },
+  { value: "Plumbing & Sanitary", label: "Plumbing & Sanitary", description: "Water supply, drainage, sanitary fixtures, tanks", suggestions: ["CPVC water supply", "PVC drainage", "Sanitary fixtures", "Hot water system", "Overhead / sump tank"] },
+  { value: "Electrical Works", label: "Electrical Works", description: "LT panel, wiring, conduits, light fixtures, earthing", suggestions: ["LT panel & DB", "Concealed conduit & wiring", "Power outlets & switches", "Light fixtures", "Earthing & lightning protection"] },
+  { value: "HVAC & Ventilation", label: "HVAC & Ventilation", description: "AHU, FCU, ducting, diffusers, VRF, split units", suggestions: ["Split AC units", "AHU & FCU", "GI ducting", "Diffusers & grilles", "VRF system"] },
+  { value: "Fire Protection", label: "Fire Protection", description: "Sprinklers, hydrants, fire alarm, suppression system", suggestions: ["Sprinkler system", "Fire hydrant", "Fire alarm & detection", "Suppression system", "Pressurisation"] },
+  { value: "Lifts & Vertical Transport", label: "Lifts & Vertical Transport", description: "Passenger/service lifts, escalators, hydraulic platforms", suggestions: ["Passenger lift", "Service / goods lift", "Hydraulic platform", "Escalator"] },
+  { value: "External Works", label: "External Works", description: "Roads, pathways, storm water, compound wall, landscaping", suggestions: ["Compound wall & gate", "Internal roads & parking", "Storm water drain", "Landscaping & irrigation", "External lighting"] },
+  { value: "Miscellaneous", label: "Miscellaneous", description: "Signage, handrails, safety items, site clean-up", suggestions: ["Signage & numbering", "Handrails & guardrails", "Access control", "Site clean-up", "As-built documentation"] },
+];
+
 const BOQEditor = () => {
   const navigate = useNavigate();
   const { id } = useParams();
@@ -281,9 +319,10 @@ const BOQEditor = () => {
   const [showMasterSheet, setShowMasterSheet] = useState(false);
   const [showMeasurementSheet, setShowMeasurementSheet] = useState(false);
   const [showMaterialSheet, setShowMaterialSheet] = useState(false);
+  const [showSheetsMenu, setShowSheetsMenu] = useState(false);
+  const [showArchSectionPicker, setShowArchSectionPicker] = useState(false);
   const [viewingSnapshot, setViewingSnapshot] = useState(null);
   const [groupMode, setGroupMode] = useState("section"); // "section" | "room" | "work"
-  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   // Items inserted from the library are compact-by-default; user can expand
   // any of them to override rate / HSN / GST. Tracked by item id.
   const [expandedLinked, setExpandedLinked] = useState({});
@@ -340,6 +379,17 @@ const BOQEditor = () => {
     return site ? getSiteServiceTrack(site) === "Interiors" : false;
   }, [boq?.project?.siteID]);
 
+  // Architecture BOQs start from a blank section only — their quantities come
+  // from approved design/GFC drawings and the survey take-off, not from the
+  // Item Master library or interior Proposal-Master presets. So the empty-state
+  // "Add Section from Library" / "Seed from Preset" shortcuts are hidden.
+  const isArchitectureBoq = useMemo(() => {
+    const siteID = boq?.project?.siteID;
+    if (!siteID) return false;
+    const site = getSite(siteID);
+    return site ? getSiteServiceTrack(site) === "Architecture" : false;
+  }, [boq?.project?.siteID]);
+
   const showToast = (message, type = "success") => {
     setToast({ message, type, id: Date.now() });
   };
@@ -358,25 +408,70 @@ const BOQEditor = () => {
     }));
 
   const canEditBoq = (record = boq) => !isLockedStatus(record?.status);
-  const canEditSignoff = (record = boq) => !isSignoffLockedStatus(record?.status);
+  const canEditSignoff = (record = boq) =>
+    !isSignoffLockedStatus(record?.status);
 
-  // Client-approval gate: once a final quote has been published to the client
-  // (record.finalQuote), the BOQ can't advance to the commit steps (tender /
-  // signed / procurement) until the client accepts it in the portal
-  // (record.clientRequest.type === "accepted"). BOQs that never published a
-  // final quote are not gated, so the offline / legacy flow keeps working.
+  // Client-approval gate: the commit steps (tender / signed / procurement)
+  // require the client to have accepted a final quote in the portal.
+  // A final quote must be generated and approved before any of these steps.
   const isClientApprovalPending = (record = boq) =>
-    !!record?.finalQuote && record?.clientRequest?.type !== "accepted";
-  const showClientApprovalToast = () =>
-    showToast(
-      "The client hasn't approved the final quote yet — you can't proceed until they accept it in the portal.",
-      "info",
-    );
+    record?.clientRequest?.type !== "accepted";
+
+  // Auto-transition sent → approved when the client accepts the final quote
+  useEffect(() => {
+    if (boq?.status !== "sent" || boq?.clientRequest?.type !== "accepted") return;
+    const now = new Date().toISOString();
+    updateInternal((prev) => {
+      const approval = mergeApproval(prev.approval);
+      return {
+        status: "approved",
+        approval: {
+          ...approval,
+          approvedAt: approval.approvedAt || now,
+          clientAcceptedAt: approval.clientAcceptedAt || now,
+          clientAcceptedBy:
+            approval.clientAcceptedBy ||
+            prev.clientRequest?.respondedBy ||
+            prev.client?.name ||
+            "Client",
+        },
+        auditTrail: appendAuditTrail(prev, {
+          action: "approved",
+          label: "Auto-Approved",
+          actor:
+            prev.clientRequest?.respondedBy ||
+            prev.client?.name ||
+            "Client",
+          details:
+            "Automatically approved after client accepted the final quote.",
+          at: now,
+        }),
+      };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boq?.status, boq?.clientRequest?.type]);
+
+  const showClientApprovalToast = () => {
+    if (!boq?.finalQuote) {
+      showToast(
+        "Generate and send a final quote to the client first — use the Final Quote button above.",
+        "info",
+      );
+    } else {
+      showToast(
+        "The client hasn't approved the final quote yet — you can't proceed until they accept it in the portal.",
+        "info",
+      );
+    }
+  };
 
   const showLockedToast = () =>
     showToast("Create a revision before editing this issued BOQ.", "info");
   const showSignoffLockedToast = () =>
-    showToast("Create a revision before changing approved signoff details.", "info");
+    showToast(
+      "Create a revision before changing approved signoff details.",
+      "info",
+    );
 
   const update = (changes) =>
     setBoq((prev) => (canEditBoq(prev) ? { ...prev, ...changes } : prev));
@@ -431,6 +526,20 @@ const BOQEditor = () => {
       setItemFormSection(sec.id);
       return next;
     });
+  };
+
+  const addSectionNamed = (name, category) => {
+    if (!canEditBoq()) {
+      showLockedToast();
+      return;
+    }
+    setBoq((prev) => {
+      if (!canEditBoq(prev)) return prev;
+      const sec = { ...blankSection(name), category: category || name };
+      setExpanded((p) => ({ ...p, [sec.id]: true }));
+      return { ...prev, sections: [...(prev.sections || []), sec] };
+    });
+    showToast(`"${name}" section added`, "success");
   };
 
   const updateSection = (sid, changes) => {
@@ -517,6 +626,7 @@ const BOQEditor = () => {
       description: form.description || "",
       spec: form.spec || "",
       hsn: form.hsn || "",
+      workCode: form.workCode || "",
       qty: Number(form.qty) || 1,
       unit: form.unit || "nos",
       rate: Number(form.rate) || 0,
@@ -545,6 +655,7 @@ const BOQEditor = () => {
     spec: item.spec || "",
     category: item.category || "",
     hsn: item.hsn || "",
+    workCode: item.workCode || "",
     unit: item.unit || "nos",
     length: item.dimensions?.length || 0,
     breadth: item.dimensions?.breadth || 0,
@@ -713,6 +824,15 @@ const BOQEditor = () => {
     updateInternal((prev) => {
       const approval = mergeApproval(prev.approval);
       const now = new Date().toISOString();
+      const actor =
+        getCurrentUser()?.name || approval.preparedBy || "User";
+      // Diff this revision's sections against the last snapshot (the previous
+      // revision) so the change register is populated the moment this BOQ is sent.
+      const prevSnapshot = (prev.revisionHistory || []).slice(-1)[0];
+      const diff =
+        prevSnapshot?.sections
+          ? diffBoqRevisions(prevSnapshot.sections, prev.sections)
+          : null;
       return {
         status: "sent",
         orgSnapshot: getOrgProfile(),
@@ -721,10 +841,19 @@ const BOQEditor = () => {
           preparedAt: approval.preparedAt || now,
           sentAt: now,
         },
+        ...(diff && {
+          revisionComparison: {
+            ...blankRevisionComparison(),
+            ...(prev.revisionComparison || {}),
+            previousRevision: prevSnapshot.revision ?? null,
+            currentRevision: prev.revision ?? null,
+            ...diff,
+          },
+        }),
         auditTrail: appendAuditTrail(prev, {
           action: "sent",
           label: "Marked Sent",
-          actor: approval.preparedBy || "Prepared by user",
+          actor,
           details: "BOQ issued to client and locked for controlled revision.",
           at: now,
         }),
@@ -747,6 +876,20 @@ const BOQEditor = () => {
     updateInternal((prev) => {
       const approval = mergeApproval(prev.approval);
       const now = new Date().toISOString();
+      const actor =
+        getCurrentUser()?.name ||
+        approval.approvedBy ||
+        approval.reviewedBy ||
+        "User";
+      // Populate the change register if not already done at send-time (e.g. for
+      // BOQs approved directly without a prior sent step).
+      const prevSnapshot = (prev.revisionHistory || []).slice(-1)[0];
+      const hasDiff =
+        (prev.revisionComparison?.changes || []).length > 0;
+      const diff =
+        !hasDiff && prevSnapshot?.sections
+          ? diffBoqRevisions(prevSnapshot.sections, prev.sections)
+          : null;
       return {
         status: "approved",
         approval: {
@@ -754,10 +897,19 @@ const BOQEditor = () => {
           reviewedAt: approval.reviewedAt || now,
           approvedAt: now,
         },
+        ...(diff && {
+          revisionComparison: {
+            ...blankRevisionComparison(),
+            ...(prev.revisionComparison || {}),
+            previousRevision: prevSnapshot.revision ?? null,
+            currentRevision: prev.revision ?? null,
+            ...diff,
+          },
+        }),
         auditTrail: appendAuditTrail(prev, {
           action: "approved",
           label: "Approved",
-          actor: approval.approvedBy || approval.reviewedBy || "Approver",
+          actor,
           details: "BOQ approval completed for this revision.",
           at: now,
         }),
@@ -863,12 +1015,15 @@ const BOQEditor = () => {
       auditTrail: appendAuditTrail(prev, {
         action: "final_quote_generated",
         label: "Final Quote Generated",
-        actor: mergeApproval(prev.approval).approvedBy || "User",
+        actor: getCurrentUser()?.name || mergeApproval(prev.approval).approvedBy || "User",
         details: `Client quote ${res.quote.quoteId} published to the client portal.`,
       }),
     }));
     setFinalQuotePreview(null);
-    showToast(`Final quote ${res.quote.quoteId} published to client`, "success");
+    showToast(
+      `Final quote ${res.quote.quoteId} published to client`,
+      "success",
+    );
   };
 
   // Dismiss the in-BOQ client-response banner (mark the notification handled).
@@ -877,35 +1032,6 @@ const BOQEditor = () => {
     updateInternal((prev) => ({
       clientRequest: { ...(prev.clientRequest || {}), acknowledged: true },
     }));
-  };
-
-  const handleIssueForTender = () => {
-    if (isClientApprovalPending()) {
-      showClientApprovalToast();
-      return;
-    }
-    setConfirmDialog({
-      title: "Issue for tender?",
-      message: `${boq.id} will be locked and marked as issued for vendor tendering.`,
-      confirmLabel: "Issue Tender",
-      onConfirm: () => {
-        updateInternal((prev) => {
-          const approval = mergeApproval(prev.approval);
-          const now = new Date().toISOString();
-          return {
-            status: "issued_for_tender",
-            auditTrail: appendAuditTrail(prev, {
-              action: "issued_for_tender",
-              label: "Issued for Tender",
-              actor: approval.approvedBy || approval.reviewedBy || "Approver",
-              details: "BOQ issued for tendering to vendors.",
-              at: now,
-            }),
-          };
-        });
-        showToast("BOQ issued for tender", "success");
-      },
-    });
   };
 
   const handleIssueForProcurement = () => {
@@ -920,21 +1046,16 @@ const BOQEditor = () => {
     }
 
     const contract = boq.client?.id ? getContractByClient(boq.client.id) : null;
-    if (!contract?.id) {
-      showToast(
-        "Link this BOQ to a signed client contract before issuing for procurement.",
-        "info",
-      );
-      return;
-    }
 
     setConfirmDialog({
       title: "Issue for procurement?",
-      message: `This will lock ${boq.id} as the procurement basis and link it to ${contract.id}.`,
+      message: contract?.id
+        ? `This will lock ${boq.id} as the procurement basis and link it to contract ${contract.id}.`
+        : `This will lock ${boq.id} as the procurement basis. No signed contract found — you can link one later.`,
       confirmLabel: "Issue Procurement",
       onConfirm: () => {
         const now = new Date().toISOString();
-        linkBoqToContract(contract.id, boq.id);
+        if (contract?.id) linkBoqToContract(contract.id, boq.id);
         updateInternal((prev) => {
           const approval = mergeApproval(prev.approval);
           const issuedBy =
@@ -950,13 +1071,15 @@ const BOQEditor = () => {
               issued: true,
               issuedAt: now,
               issuedBy,
-              contractId: contract.id,
+              contractId: contract?.id || null,
             },
             auditTrail: appendAuditTrail(prev, {
               action: "issued_for_procurement",
               label: "Issued for Procurement",
               actor: issuedBy,
-              details: `Linked to contract ${contract.id} for RFQ and PO takeoff.`,
+              details: contract?.id
+                ? `Linked to contract ${contract.id} for RFQ and PO takeoff.`
+                : "Issued for RFQ and PO takeoff. No contract linked yet.",
               at: now,
             }),
           };
@@ -1006,7 +1129,7 @@ const BOQEditor = () => {
           auditTrail: appendAuditTrail(boq, {
             action: "revision_created",
             label: "Revision Created",
-            actor: "System",
+            actor: getCurrentUser()?.name || "User",
             details: `Revision ${nextRevision} opened from ${boq.status}.`,
           }),
         });
@@ -1088,8 +1211,25 @@ const BOQEditor = () => {
       onConfirm: () => {
         const existingSections = boq.sections || [];
         const surveyAreaNames = new Set(surveyBoq.areas.map((a) => a.area));
+        const library = listLibrary();
+        const masterById = Object.fromEntries(library.map((l) => [l.id, l]));
+        const masterByDesc = Object.fromEntries(
+          library
+            .filter((l) => l.description)
+            .map((l) => [l.description.toLowerCase().trim(), l]),
+        );
+        const resolveHsn = (row, existing) => {
+          if (row.selectedMaterial?.hsn) return row.selectedMaterial.hsn;
+          const masterId = row.masterId || existing?.masterId;
+          const master =
+            (masterId ? masterById[masterId] : null) ||
+            masterByDesc[(row.name || "").toLowerCase().trim()];
+          return master?.hsn || existing?.hsn || "";
+        };
         const generatedSections = surveyBoq.areas.map((area) => {
-          const existingSection = existingSections.find((s) => s.name === area.area);
+          const existingSection = existingSections.find(
+            (s) => s.name === area.area,
+          );
           const matchedIds = new Set();
           const items = area.rows.map((row) => {
             const existing = (existingSection?.items || []).find(
@@ -1114,12 +1254,17 @@ const BOQEditor = () => {
               scopeItemId: row.scopeItemId || existing?.scopeItemId || null,
               masterId: row.masterId || existing?.masterId || null,
               description: row.name,
-              spec: row.selectedMaterial?.specifications || row.selectedMaterial?.spec || existing?.spec || "",
-              hsn: row.selectedMaterial?.hsn || existing?.hsn || "",
+              spec:
+                row.selectedMaterial?.specifications ||
+                row.selectedMaterial?.spec ||
+                existing?.spec ||
+                "",
+              hsn: resolveHsn(row, existing),
               qty: row.measuredQty,
               unit: row.unit,
               rate: row.rate,
-              gstPercent: row.selectedMaterial?.gstPercent ?? existing?.gstPercent ?? 18,
+              gstPercent:
+                row.selectedMaterial?.gstPercent ?? existing?.gstPercent ?? 18,
               discount: existing?.discount || { type: "percent", value: 0 },
               materials: row.materials || existing?.materials || [],
               dimensions: {
@@ -1134,6 +1279,7 @@ const BOQEditor = () => {
               quotedQty: row.quotedQty,
               quotedAmount: row.quotedAmount,
               measuredQty: row.measuredQty,
+              siteMeasuredQty: row.measuredQty,
               surveyVariance: row.variance,
             };
           });
@@ -1158,6 +1304,7 @@ const BOQEditor = () => {
           siteID,
           surveyFrozenAt: flow.siteBasis?.frozenAt || null,
           quotedTotal: surveyBoq.quotedTotal,
+          measuredTotal: surveyBoq.total,
         });
         showToast(
           `Generated ${surveyBoq.areas.length} section(s) with ${totalItems} item(s) from survey`,
@@ -1210,7 +1357,6 @@ const BOQEditor = () => {
         setSendValidation(null);
         setShowPreview(false);
         setShowSeedPicker(false);
-        setShowHeaderMenu(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1250,7 +1396,14 @@ const BOQEditor = () => {
     const groups = {};
     for (const sec of boq.sections) {
       const key = sec.category || sec.name || "Other";
-      if (!groups[key]) groups[key] = { category: key, sectionIds: [], net: 0, gst: 0, itemCount: 0 };
+      if (!groups[key])
+        groups[key] = {
+          category: key,
+          sectionIds: [],
+          net: 0,
+          gst: 0,
+          itemCount: 0,
+        };
       groups[key].sectionIds.push(sec.id);
       for (const item of sec.items || []) {
         const r = computeItemAmount(item);
@@ -1263,12 +1416,11 @@ const BOQEditor = () => {
   }, [boq?.sections]);
 
   const scrollToSection = (sectionId) => {
-    document.getElementById(`section-${sectionId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document
+      .getElementById(`section-${sectionId}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-  const gst = useMemo(
-    () => (boq ? resolveGstTreatment(boq) : null),
-    [boq],
-  );
+  const gst = useMemo(() => (boq ? resolveGstTreatment(boq) : null), [boq]);
   const itemCount = useMemo(
     () =>
       (boq?.sections || []).reduce((s, sec) => s + (sec.items?.length || 0), 0),
@@ -1315,14 +1467,15 @@ const BOQEditor = () => {
   const isLocked = isLockedStatus(boq.status);
   const approval = mergeApproval(boq.approval);
   const isSignoffLocked = isSignoffLockedStatus(boq.status);
-  // A final quote is out with the client but not yet accepted — the commit
-  // steps (tender / signed / procurement) are gated on their approval.
+  // Commit steps (tender / signed / procurement) are gated until the client
+  // has accepted a final quote. Show different tooltips based on whether a
+  // quote has been generated yet.
   const awaitingClient = isClientApprovalPending();
-  const gatedBtn = awaitingClient
-    ? "opacity-50 cursor-not-allowed"
-    : "";
+  const gatedBtn = awaitingClient ? "opacity-50 cursor-not-allowed" : "";
   const gateTitle = awaitingClient
-    ? "Waiting for client approval of the final quote"
+    ? !boq?.finalQuote
+      ? "Generate and send a final quote to the client first"
+      : "Waiting for client approval of the final quote"
     : undefined;
 
   return (
@@ -1352,9 +1505,6 @@ const BOQEditor = () => {
                 >
                   {boq.status.replace(/_/g, " ")}
                 </span>
-                <span className="text-[10px] text-text-subtle">
-                  Rev {boq.revision}
-                </span>
               </div>
               <input
                 type="text"
@@ -1364,34 +1514,48 @@ const BOQEditor = () => {
                 placeholder="Untitled BOQ"
                 className="text-[16px] font-bold text-textcolor bg-transparent border-0 focus:outline-none focus:ring-0 px-0 py-0 mt-0.5 min-w-[200px] hover:bg-white/40 rounded transition-colors disabled:hover:bg-transparent disabled:cursor-default"
               />
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-[10px] text-text-subtle">{boq.sections.length} sections</span>
+                <span className="text-text-subtle/40 text-[10px]">·</span>
+                <span className="text-[10px] text-text-subtle">{itemCount} items</span>
+                <span className="text-text-subtle/40 text-[10px]">·</span>
+                <span className="text-[10px] text-text-subtle">Rev {boq.revision}</span>
+              </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button
-              type="button"
-              onClick={() => setShowMasterSheet(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
-              title="View internal master sheet (materials, measurements, amount & margin)"
-            >
-              <Layers size={12} /> Master Sheet
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowMeasurementSheet(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
-              title="View measurement sheet"
-            >
-              <Ruler size={12} /> Measurement Sheet
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowMaterialSheet(true)}
-              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
-              title="View BOQ material sheet"
-            >
-              <Package size={12} /> Material Sheet
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowSheetsMenu((p) => !p)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"
+              >
+                <Layers size={12} /> Sheets <ChevronDown size={11} className="text-text-muted" />
+              </button>
+              {showSheetsMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowSheetsMenu(false)} />
+                  <div className="absolute right-0 top-full mt-1 z-50 w-48 rounded-xl border border-bordergray bg-white shadow-lg py-1 overflow-hidden">
+                    {[
+                      { label: "Master Sheet", icon: <Layers size={13} />, action: () => { setShowMasterSheet(true); setShowSheetsMenu(false); } },
+                      { label: "Measurement Sheet", icon: <Ruler size={13} />, action: () => { setShowMeasurementSheet(true); setShowSheetsMenu(false); } },
+                      { label: "Material Sheet", icon: <Package size={13} />, action: () => { setShowMaterialSheet(true); setShowSheetsMenu(false); } },
+                    ].map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={item.action}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] text-textcolor hover:bg-bg-soft text-left"
+                      >
+                        <span className="text-text-muted">{item.icon}</span>
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <button
               type="button"
               onClick={() => setShowPreview(true)}
@@ -1409,18 +1573,12 @@ const BOQEditor = () => {
                 <Send size={12} /> Mark Sent
               </button>
             )}
-            {boq.status === "sent" && (
-              <button
-                type="button"
-                onClick={handleApprove}
-                className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-emerald-600 transition-all shadow-sm"
-              >
-                <CheckCircle2 size={12} /> Mark Approved
-              </button>
-            )}
-            {["approved", "issued_for_tender", "signed", "issued_for_procurement"].includes(
-              boq.status,
-            ) && (
+            {[
+              "sent",
+              "approved",
+              "signed",
+              "issued_for_procurement",
+            ].includes(boq.status) && (
               <button
                 type="button"
                 onClick={handleGenerateFinalQuote}
@@ -1430,51 +1588,22 @@ const BOQEditor = () => {
                 <Wallet size={12} /> Final Quote
               </button>
             )}
-            {boq.status === "approved" && (
-              <>
+            {["approved", "signed"].includes(boq.status) && (
+              awaitingClient ? (
+                <span className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11.5px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                  <Info size={12} /> Awaiting client approval
+                </span>
+              ) : (
                 <button
                   type="button"
-                  onClick={handleIssueForTender}
-                  disabled={awaitingClient}
-                  title={gateTitle}
-                  className={`flex items-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-amber-600 transition-all shadow-sm ${gatedBtn}`}
+                  onClick={handleIssueForProcurement}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-indigo-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-indigo-600 transition-all shadow-sm"
                 >
-                  <Send size={12} /> Issue for Tender
+                  <PackageCheck size={12} /> Issue Procurement
                 </button>
-                <button
-                  type="button"
-                  onClick={handleSign}
-                  disabled={awaitingClient}
-                  title={gateTitle}
-                  className={`flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm ${gatedBtn}`}
-                >
-                  <ShieldCheck size={12} /> Mark Signed
-                </button>
-              </>
+              )
             )}
-            {boq.status === "issued_for_tender" && (
-              <button
-                type="button"
-                onClick={handleSign}
-                disabled={awaitingClient}
-                title={gateTitle}
-                className={`flex items-center gap-1.5 px-3 py-2 bg-purple-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-purple-600 transition-all shadow-sm ${gatedBtn}`}
-              >
-                <ShieldCheck size={12} /> Mark Signed
-              </button>
-            )}
-            {boq.status === "signed" && (
-              <button
-                type="button"
-                onClick={handleIssueForProcurement}
-                disabled={awaitingClient}
-                title={gateTitle}
-                className={`flex items-center gap-1.5 px-3 py-2 bg-indigo-500 text-white rounded-lg text-[11.5px] font-semibold hover:bg-indigo-600 transition-all shadow-sm ${gatedBtn}`}
-              >
-                <PackageCheck size={12} /> Issue Procurement
-              </button>
-            )}
-            {isLocked && (
+            {isLocked && isClientApprovalPending() && (
               <button
                 type="button"
                 onClick={handleCreateRevision}
@@ -1491,84 +1620,21 @@ const BOQEditor = () => {
                 isLocked
                   ? "bg-slate-200 text-slate-500 cursor-not-allowed shadow-none"
                   : savedFlash
-                  ? "bg-emerald-500 text-white"
-                  : "bg-linear-to-br from-select-blue to-primary text-white hover:scale-[1.02]"
+                    ? "bg-emerald-500 text-white"
+                    : "bg-linear-to-br from-select-blue to-primary text-white hover:scale-[1.02]"
               }`}
             >
               {savedFlash ? <Check size={12} /> : <Save size={12} />}
               {savedFlash ? "Saved" : "Save"}
             </button>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowHeaderMenu((p) => !p)}
-                className="h-9 w-9 flex items-center justify-center rounded-lg bg-white border border-bordergray text-text-muted hover:bg-bg-soft hover:text-textcolor transition-all"
-                title="More BOQ actions"
-              >
-                <MoreVertical size={15} />
-              </button>
-              {showHeaderMenu && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setShowHeaderMenu(false)}
-                  />
-                  <div className="absolute right-0 top-full mt-2 w-52 overflow-hidden rounded-xl border border-bordergray bg-white shadow-2xl z-50">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowHeaderMenu(false);
-                        setShowSeedPicker(true);
-                      }}
-                      disabled={isLocked}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <Sparkles size={13} /> Seed from Preset
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowHeaderMenu(false);
-                        handleDuplicate();
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor"
-                    >
-                      <Copy size={13} /> Duplicate BOQ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowHeaderMenu(false);
-                        handleSyncHsnFromMaster();
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor"
-                    >
-                      <Hash size={13} /> Sync HSN from Item Master
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowHeaderMenu(false);
-                        handleGenerateFromSurvey();
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-text-muted hover:bg-bg-soft hover:text-textcolor border-t border-bordergray"
-                    >
-                      <Ruler size={13} /> Generate from Survey
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowHeaderMenu(false);
-                        handleDelete();
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] font-semibold text-red-500 hover:bg-red-50"
-                    >
-                      <Trash2 size={13} /> Delete BOQ
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="h-9 w-20 flex items-center justify-center gap-1.5  text-[11.5px] px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-500 hover:bg-red-100 transition-all"
+              title="Delete this BOQ"
+            >
+              <Trash2 size={12} />  Delete
+            </button>
           </div>
         </div>
 
@@ -1598,12 +1664,7 @@ const BOQEditor = () => {
                     </>
                   ) : (
                     <>
-                      This BOQ is{" "}
-                      <b>
-                        {boq.status === "issued_for_tender"
-                          ? "issued for tender"
-                          : boq.status}
-                      </b>
+                      This BOQ is <b>{boq.status}</b>
                       . It is read-only to protect the controlled version.
                       Create a revision to make changes.
                     </>
@@ -1623,19 +1684,6 @@ const BOQEditor = () => {
           </div>
         )}
 
-        <div className="px-6 pb-3">
-          <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
-            <span className="rounded-lg border border-bordergray bg-white px-2 py-1">
-              {boq.sections.length} sections
-            </span>
-            <span className="rounded-lg border border-bordergray bg-white px-2 py-1">
-              {itemCount} line items
-            </span>
-            <span className="rounded-lg border border-bordergray bg-white px-2 py-1">
-              Rev {boq.revision}
-            </span>
-          </div>
-        </div>
       </div>
 
       <div className="px-6 py-5 flex-1 min-h-0 overflow-y-auto lg:overflow-hidden flex flex-col scroll-hidden-bar">
@@ -1657,7 +1705,9 @@ const BOQEditor = () => {
                 {boq.clientRequest.type === "accepted"
                   ? "Client accepted the quote"
                   : "Client requested changes"}
-                {boq.clientRequest.quoteId ? ` · ${boq.clientRequest.quoteId}` : ""}
+                {boq.clientRequest.quoteId
+                  ? ` · ${boq.clientRequest.quoteId}`
+                  : ""}
               </p>
               <p className="mt-0.5 leading-relaxed">
                 <span className="font-semibold">
@@ -1714,40 +1764,41 @@ const BOQEditor = () => {
             </button>
           </div>
         )}
-        {boq.siteID && Number.isFinite(Number(boq.quotedTotal)) && (
-          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-select-blue/20 bg-select-blue/[0.03] p-3 md:grid-cols-4">
-            <CommercialValue
-              label="Proposal quoted"
-              value={boq.quotedTotal}
-              tone="text-select-blue"
-            />
-            <CommercialValue
-              label="Frozen measured"
-              value={boq.measuredTotal}
-              tone="text-textcolor"
-            />
-            <CommercialValue
-              label="Current BOQ"
-              value={totals.grandTotal}
-              tone="text-purple-700"
-            />
-            <CommercialValue
-              label="Survey difference"
-              value={boq.surveyVariance}
-              signed
-              tone={
-                Number(boq.surveyVariance) > Number(boq.surveyToleranceAmount || 15000)
-                  ? "text-red-600"
-                  : "text-emerald-700"
-              }
-            />
-          </div>
-        )}
+        {boq.siteID && Number.isFinite(Number(boq.quotedTotal)) && (() => {
+          const overTolerance = Number(boq.surveyVariance) > Number(boq.surveyToleranceAmount || 15000);
+          const stats = [
+            { label: "Proposal Quoted", value: boq.quotedTotal, signed: false, tone: "text-select-blue", accent: "border-select-blue/60" },
+            { label: "Current BOQ", value: totals.grandTotal, signed: false, tone: "text-purple-700", accent: "border-purple-400" },
+            { label: "Survey Difference", value: boq.surveyVariance, signed: true, tone: overTolerance ? "text-red-600" : "text-emerald-700", accent: overTolerance ? "border-red-400" : "border-emerald-500" },
+          ];
+          return (
+            <div className="mb-4 flex items-stretch gap-2.5">
+              {stats.map((stat) => {
+                const amount = Number(stat.value) || 0;
+                const prefix = stat.signed && amount > 0 ? "+" : "";
+                return (
+                  <div key={stat.label} className={`flex-1 flex flex-col justify-center px-3.5 py-2 bg-white rounded-lg border-l-[3px] shadow-sm ${stat.accent}`}>
+                    <p className="text-[8.5px] font-bold uppercase tracking-widest text-text-subtle">{stat.label}</p>
+                    <p className={`text-[14px] font-bold tabular-nums leading-tight mt-0.5 ${stat.tone}`}>{prefix}{formatAmount(amount)}</p>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
         {/* ── Editor tabs: Scope of Work | Rate Analysis ─────────────────── */}
         <div className="mb-4 flex items-center gap-1 border-b border-bordergray">
           {[
-            { key: "scope", label: "Scope of Work", icon: <Layers size={13} /> },
-            { key: "rate", label: "Rate Analysis", icon: <Calculator size={13} /> },
+            {
+              key: "scope",
+              label: "Scope of Work",
+              icon: <Layers size={13} />,
+            },
+            {
+              key: "rate",
+              label: "Rate Analysis",
+              icon: <Calculator size={13} />,
+            },
           ].map((t) => (
             <button
               key={t.key}
@@ -1765,1162 +1816,1273 @@ const BOQEditor = () => {
         </div>
 
         {editorTab === "scope" && (
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
-          {/* ── Left: Sections + line items ─────────────────────────────── */}
-          <main className="space-y-5 min-w-0 lg:overflow-y-auto lg:pr-2 lg:pb-6 scroll-hidden-bar">
-            {/* Client & Project meta */}
-            <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-              <div className="px-5 py-3 border-b border-bordergray flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <User size={13} className="text-select-blue" />
-                  <h3 className="text-[12px] font-bold text-textcolor">
-                    Client & Project
-                  </h3>
-                  {boq.client?.id && (
-                    <span className="text-[9.5px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      Linked · {boq.client.id}
-                    </span>
-                  )}
-                </div>
-                <ClientPicker
-                  current={boq.client}
-                  disabled={isLocked}
-                  onPick={(c) => {
-                    const mapped = clientToBoqFields(c);
-                    update({
-                      client: { ...boq.client, ...mapped.client },
-                      project: { ...boq.project, ...mapped.project },
-                    });
-                    showToast(`Linked to ${c.clientName}`, "success");
-                  }}
-                  onClear={() => {
-                    update({ client: {}, project: {} });
-                    showToast("Client link cleared", "info");
-                  }}
-                />
-              </div>
-              <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <Field icon={<User size={11} />} label="Client Name">
-                  <input
-                    type="text"
-                    value={boq.client?.name || ""}
-                    onChange={(e) => updateClient({ name: e.target.value })}
-                    disabled={isLocked}
-                    placeholder="Mr / Ms…"
-                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </Field>
-                <Field icon={<Hash size={11} />} label="GSTIN">
-                  <input
-                    type="text"
-                    value={boq.client?.gstin || ""}
-                    onChange={(e) => updateClient({ gstin: e.target.value })}
-                    disabled={isLocked}
-                    placeholder="22AAAAA0000A1Z5"
-                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </Field>
-                <Field
-                  icon={<Building2 size={11} />}
-                  label="Client State"
-                  hint="Used for GST place of supply when there's no GSTIN"
-                >
-                  <input
-                    type="text"
-                    value={boq.client?.state || ""}
-                    onChange={(e) => updateClient({ state: e.target.value })}
-                    disabled={isLocked}
-                    placeholder="e.g. Tamil Nadu"
-                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </Field>
-                <Field
-                  icon={<Building2 size={11} />}
-                  label="Project / Property"
-                >
-                  <input
-                    type="text"
-                    value={boq.project?.name || ""}
-                    onChange={(e) => updateProject({ name: e.target.value })}
-                    disabled={isLocked}
-                    placeholder="e.g. Sharma Residence"
-                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </Field>
-                <Field icon={<Calendar size={11} />} label="Validity">
-                  <input
-                    type="text"
-                    value={boq.validity || ""}
-                    onChange={(e) => update({ validity: e.target.value })}
-                    disabled={isLocked}
-                    placeholder="30 days from issue"
-                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </Field>
-                <Field icon={<FileText size={11} />} label="BOQ Type">
-                  <select
-                    value={boq.boqType || "client"}
-                    onChange={(e) => update({ boqType: e.target.value })}
-                    disabled={isLocked}
-                    className={`${inputBase} cursor-pointer disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  >
-                    {BOQ_TYPES.map((type) => (
-                      <option key={type.value} value={type.value}>
-                        {type.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field icon={<ShieldCheck size={11} />} label="Warranty / Defect Liability">
-                  <input
-                    type="text"
-                    value={boq.warrantyText || ""}
-                    onChange={(e) => update({ warrantyText: e.target.value })}
-                    disabled={isLocked}
-                    placeholder="e.g. 12 months on hardware, 60 days defect liability"
-                    className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </Field>
-                {(boq.client?.phone ||
-                  boq.client?.email ||
-                  boq.project?.address) && (
-                  <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-text-muted bg-bg-soft/60 border border-bordergray rounded-lg px-3 py-2">
-                    {boq.client?.phone && <span>📞 {boq.client.phone}</span>}
-                    {boq.client?.email && <span>✉️ {boq.client.email}</span>}
-                    {boq.project?.address && (
-                      <span>📍 {boq.project.address}</span>
-                    )}
-                    {boq.project?.propertyType && (
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
-                        {boq.project.propertyType}
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-5 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
+            {/* ── Left: Sections + line items ─────────────────────────────── */}
+            <main className="space-y-5 min-w-0 lg:overflow-y-auto lg:pr-2 lg:pb-6 scroll-hidden-bar">
+              {/* Client & Project meta */}
+              <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
+                <div className="px-5 py-3 border-b border-bordergray flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <User size={13} className="text-select-blue" />
+                    <h3 className="text-[12px] font-bold text-textcolor">
+                      Client & Project
+                    </h3>
+                    {boq.client?.id && (
+                      <span className="text-[9.5px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        Linked · {boq.client.id}
                       </span>
                     )}
+                  </div>
+                </div>
+                <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <Field icon={<User size={11} />} label="Client Name">
+                    <input
+                      type="text"
+                      value={boq.client?.name || ""}
+                      onChange={(e) => updateClient({ name: e.target.value })}
+                      disabled={isLocked}
+                      placeholder="Mr / Ms…"
+                      className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <Field icon={<Hash size={11} />} label="GSTIN">
+                    <input
+                      type="text"
+                      value={boq.client?.gstin || ""}
+                      onChange={(e) => updateClient({ gstin: e.target.value })}
+                      disabled={isLocked}
+                      placeholder="22AAAAA0000A1Z5"
+                      className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <Field
+                    icon={<Building2 size={11} />}
+                    label="Client State"
+                    hint="Used for GST place of supply when there's no GSTIN"
+                  >
+                    <input
+                      type="text"
+                      value={boq.client?.state || ""}
+                      onChange={(e) => updateClient({ state: e.target.value })}
+                      disabled={isLocked}
+                      placeholder="e.g. Tamil Nadu"
+                      className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <Field
+                    icon={<Building2 size={11} />}
+                    label="Project / Property"
+                  >
+                    <input
+                      type="text"
+                      value={boq.project?.name || ""}
+                      onChange={(e) => updateProject({ name: e.target.value })}
+                      disabled={isLocked}
+                      placeholder="e.g. Sharma Residence"
+                      className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <Field icon={<Calendar size={11} />} label="Validity">
+                    <input
+                      type="text"
+                      value={boq.validity || ""}
+                      onChange={(e) => update({ validity: e.target.value })}
+                      disabled={isLocked}
+                      placeholder="30 days from issue"
+                      className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  <Field icon={<FileText size={11} />} label="BOQ Type">
+                    <select
+                      value={boq.boqType || "client"}
+                      onChange={(e) => update({ boqType: e.target.value })}
+                      disabled={isLocked}
+                      className={`${inputBase} cursor-pointer disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    >
+                      {BOQ_TYPES.map((type) => (
+                        <option key={type.value} value={type.value}>
+                          {type.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field
+                    icon={<ShieldCheck size={11} />}
+                    label="Warranty / Defect Liability"
+                  >
+                    <input
+                      type="text"
+                      value={boq.warrantyText || ""}
+                      onChange={(e) => update({ warrantyText: e.target.value })}
+                      disabled={isLocked}
+                      placeholder="e.g. 12 months on hardware, 60 days defect liability"
+                      className={`${inputBase} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </Field>
+                  {(boq.client?.phone ||
+                    boq.client?.email ||
+                    boq.project?.address) && (
+                    <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-text-muted bg-bg-soft/60 border border-bordergray rounded-lg px-3 py-2">
+                      {boq.client?.phone && <span>📞 {boq.client.phone}</span>}
+                      {boq.client?.email && <span>✉️ {boq.client.email}</span>}
+                      {boq.project?.address && (
+                        <span>📍 {boq.project.address}</span>
+                      )}
+                      {boq.project?.propertyType && (
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
+                          {boq.project.propertyType}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* Sections */}
+              <section className="space-y-4">
+                {boq.sections.length === 0 && (
+                  <EmptySectionsState
+                    onAdd={isLocked ? handleCreateRevision : addSection}
+                    onAddFromTemplate={
+                      isLocked
+                        ? handleCreateRevision
+                        : isArchitectureBoq
+                          ? () => setShowArchSectionPicker(true)
+                          : () => setShowSectionPicker(true)
+                    }
+                    isArchitecture={isArchitectureBoq}
+                  />
+                )}
+
+                {/* Find-in-BOQ search */}
+                {boq.sections.length > 0 && (
+                  <div className="sticky top-0 z-20 bg-overallbg py-1.5">
+                  <div className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] px-3 py-2 flex items-center gap-2">
+                    <Search
+                      size={13}
+                      className="text-text-subtle shrink-0 ml-1"
+                    />
+                    <input
+                      type="text"
+                      value={itemSearch}
+                      onChange={(e) => setItemSearch(e.target.value)}
+                      placeholder="Find in BOQ — search section, item description, HSN, material…"
+                      className="flex-1 bg-transparent border-0 text-[12px] text-textcolor placeholder:text-text-subtle focus:outline-none focus:ring-0 px-1 py-1"
+                    />
+                    {itemSearch && (
+                      <>
+                        <span className="text-[10px] font-semibold text-text-muted bg-bg-soft px-2 py-0.5 rounded-md">
+                          {(() => {
+                            const q = itemSearch.toLowerCase();
+                            const matchCount = boq.sections.reduce(
+                              (s, sec) =>
+                                s +
+                                (sec.items || []).filter(
+                                  (it) =>
+                                    (it.description || "")
+                                      .toLowerCase()
+                                      .includes(q) ||
+                                    (it.hsn || "").toLowerCase().includes(q) ||
+                                    (it.materials || []).some(
+                                      (m) =>
+                                        (m.name || "")
+                                          .toLowerCase()
+                                          .includes(q) ||
+                                        (m.spec || "")
+                                          .toLowerCase()
+                                          .includes(q),
+                                    ),
+                                ).length,
+                              0,
+                            );
+                            return `${matchCount} match${matchCount === 1 ? "" : "es"}`;
+                          })()}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setItemSearch("")}
+                          className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-textcolor hover:bg-bg-soft"
+                          title="Clear search"
+                        >
+                          <X size={12} />
+                        </button>
+                      </>
+                    )}
+                    <span className="h-4 w-px bg-bordergray shrink-0 mx-1" />
+                    <div className="flex items-center gap-0.5 bg-bg-soft rounded-md p-0.5 shrink-0">
+                      {[
+                        {
+                          mode: "section",
+                          label: "Section",
+                          icon: <Hash size={11} />,
+                        },
+                        {
+                          mode: "room",
+                          label: "Room",
+                          icon: <Building2 size={11} />,
+                        },
+                        {
+                          mode: "work",
+                          label: "Work",
+                          icon: <Layers size={11} />,
+                        },
+                        {
+                          mode: "all",
+                          label: "All Items",
+                          icon: <List size={11} />,
+                        },
+                      ].map(({ mode, label, icon }) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setGroupMode(mode)}
+                          title={`Group by ${label}`}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-[10.5px] font-semibold transition-all ${
+                            groupMode === mode
+                              ? "bg-white text-textcolor shadow-sm"
+                              : "text-text-muted hover:text-textcolor"
+                          }`}
+                        >
+                          {icon}
+                          <span className="hidden sm:inline">{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   </div>
                 )}
-              </div>
-            </section>
 
-            {/* Sections */}
-            <section className="space-y-4">
-              {boq.sections.length === 0 && (
-                <EmptySectionsState
-                  onAdd={isLocked ? handleCreateRevision : addSection}
-                  onAddFromTemplate={
-                    isLocked ? handleCreateRevision : () => setShowSectionPicker(true)
-                  }
-                  onSeed={isLocked ? handleCreateRevision : () => setShowSeedPicker(true)}
-                />
-              )}
-
-              {/* Find-in-BOQ search */}
-              {boq.sections.length > 0 && (
-                <div className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] px-3 py-2 flex items-center gap-2">
-                  <Search
-                    size={13}
-                    className="text-text-subtle shrink-0 ml-1"
-                  />
-                  <input
-                    type="text"
-                    value={itemSearch}
-                    onChange={(e) => setItemSearch(e.target.value)}
-                    placeholder="Find in BOQ — search section, item description, HSN, material…"
-                    className="flex-1 bg-transparent border-0 text-[12px] text-textcolor placeholder:text-text-subtle focus:outline-none focus:ring-0 px-1 py-1"
-                  />
-                  {itemSearch && (
-                    <>
-                      <span className="text-[10px] font-semibold text-text-muted bg-bg-soft px-2 py-0.5 rounded-md">
-                        {(() => {
-                          const q = itemSearch.toLowerCase();
-                          const matchCount = boq.sections.reduce(
-                            (s, sec) =>
-                              s +
-                              (sec.items || []).filter(
-                                (it) =>
-                                  (it.description || "")
-                                    .toLowerCase()
-                                    .includes(q) ||
-                                  (it.hsn || "").toLowerCase().includes(q) ||
-                                  (it.materials || []).some(
-                                    (m) =>
-                                      (m.name || "")
-                                        .toLowerCase()
-                                        .includes(q) ||
-                                      (m.spec || "").toLowerCase().includes(q),
-                                  ),
-                              ).length,
-                            0,
-                          );
-                          return `${matchCount} match${matchCount === 1 ? "" : "es"}`;
-                        })()}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setItemSearch("")}
-                        className="h-6 w-6 flex items-center justify-center rounded-md text-text-subtle hover:text-textcolor hover:bg-bg-soft"
-                        title="Clear search"
-                      >
-                        <X size={12} />
-                      </button>
-                    </>
-                  )}
-                  <span className="h-4 w-px bg-bordergray shrink-0 mx-1" />
-                  <div className="flex items-center gap-0.5 bg-bg-soft rounded-md p-0.5 shrink-0">
-                    {[
-                      { mode: "section", label: "Section", icon: <Hash size={11} /> },
-                      { mode: "room", label: "Room", icon: <Building2 size={11} /> },
-                      { mode: "work", label: "Work", icon: <Layers size={11} /> },
-                      { mode: "all", label: "All Items", icon: <List size={11} /> },
-                    ].map(({ mode, label, icon }) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => setGroupMode(mode)}
-                        title={`Group by ${label}`}
-                        className={`flex items-center gap-1 px-2 py-1 rounded text-[10.5px] font-semibold transition-all ${
-                          groupMode === mode
-                            ? "bg-white text-textcolor shadow-sm"
-                            : "text-text-muted hover:text-textcolor"
-                        }`}
-                      >
-                        {icon}
-                        <span className="hidden sm:inline">{label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* All Items flat list — read-only */}
-              {groupMode === "all" && boq.sections.length > 0 && (() => {
-                const allItems = boq.sections.flatMap((sec, sIdx) =>
-                  (sec.items || []).map((item, iIdx) => ({
-                    item,
-                    secLabel: sec.name || `Section ${sIdx + 1}`,
-                    ref: `${sIdx + 1}.${iIdx + 1}`,
-                  }))
-                );
-                const grandNet = allItems.reduce((s, { item }) => {
-                  const a = computeItemAmount(item);
-                  return s + a.net;
-                }, 0);
-                return (
-                  <>
-                    <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200/70 rounded-xl text-[11px] text-amber-800">
-                      <Info size={12} className="shrink-0" />
-                      <span>
-                        All Items view is read-only —{" "}
-                        <button
-                          type="button"
-                          onClick={() => setGroupMode("section")}
-                          className="font-bold underline underline-offset-2"
-                        >
-                          switch to Section view
-                        </button>{" "}
-                        to edit.
-                      </span>
-                    </div>
-                    <div className="bg-white border border-bordergray rounded-xl overflow-hidden">
-                      <table className="w-full text-[12px]">
-                        <thead>
-                          <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
-                            <th className="px-3 py-2 text-center w-16">#</th>
-                            <th className="px-3 py-2 text-center w-32">Section</th>
-                            <th className="px-3 py-2 text-center">Description</th>
-                            <th className="px-3 py-2 text-center w-20">Qty</th>
-                            <th className="px-3 py-2 text-center w-16">Unit</th>
-                            <th className="px-3 py-2 text-center w-28">Rate (₹)</th>
-                            <th className="px-3 py-2 text-center w-32">Amount (₹)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {allItems.map(({ item, secLabel, ref }, i) => {
-                            const amt = computeItemAmount(item);
-                            const qty = computeItemQty(item);
-                            return (
-                              <tr
-                                key={item.id || i}
-                                className="border-t border-bordergray hover:bg-bg-soft/30"
-                              >
-                                <td className="px-3 py-2 text-center text-[10.5px] font-bold text-text-muted tabular-nums">
-                                  {ref}
+                {/* All Items flat list — read-only */}
+                {groupMode === "all" &&
+                  boq.sections.length > 0 &&
+                  (() => {
+                    const allItems = boq.sections.flatMap((sec, sIdx) =>
+                      (sec.items || []).map((item, iIdx) => ({
+                        item,
+                        secLabel: sec.name || `Section ${sIdx + 1}`,
+                        ref: `${sIdx + 1}.${iIdx + 1}`,
+                      })),
+                    );
+                    const grandNet = allItems.reduce((s, { item }) => {
+                      const a = computeItemAmount(item);
+                      return s + a.net;
+                    }, 0);
+                    return (
+                      <>
+                        <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200/70 rounded-xl text-[11px] text-amber-800">
+                          <Info size={12} className="shrink-0" />
+                          <span>
+                            All Items view is read-only —{" "}
+                            <button
+                              type="button"
+                              onClick={() => setGroupMode("section")}
+                              className="font-bold underline underline-offset-2"
+                            >
+                              switch to Section view
+                            </button>{" "}
+                            to edit.
+                          </span>
+                        </div>
+                        <div className="bg-white border border-bordergray rounded-xl overflow-hidden">
+                          <table className="w-full text-[12px]">
+                            <thead>
+                              <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                                <th className="px-3 py-2 text-center w-16">
+                                  #
+                                </th>
+                                <th className="px-3 py-2 text-center w-32">
+                                  Section
+                                </th>
+                                <th className="px-3 py-2 text-center">
+                                  Description
+                                </th>
+                                <th className="px-3 py-2 text-center w-20">
+                                  Qty
+                                </th>
+                                <th className="px-3 py-2 text-center w-16">
+                                  Unit
+                                </th>
+                                <th className="px-3 py-2 text-center w-28">
+                                  Rate (₹)
+                                </th>
+                                <th className="px-3 py-2 text-center w-32">
+                                  Amount (₹)
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {allItems.map(({ item, secLabel, ref }, i) => {
+                                const amt = computeItemAmount(item);
+                                const qty = computeItemQty(item);
+                                return (
+                                  <tr
+                                    key={item.id || i}
+                                    className="border-t border-bordergray hover:bg-bg-soft/30"
+                                  >
+                                    <td className="px-3 py-2 text-center text-[10.5px] font-bold text-text-muted tabular-nums">
+                                      {ref}
+                                    </td>
+                                    <td className="px-3 py-2 text-center text-[10.5px] text-text-muted">
+                                      {secLabel}
+                                    </td>
+                                    <td className="px-3 py-2 text-textcolor">
+                                      {item.description || (
+                                        <span className="text-text-subtle italic">
+                                          No description
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2 text-center tabular-nums">
+                                      {qty.toFixed(2).replace(/\.00$/, "")}
+                                    </td>
+                                    <td className="px-3 py-2 text-center text-text-muted">
+                                      {item.unit || "—"}
+                                    </td>
+                                    <td className="px-3 py-2 text-center tabular-nums">
+                                      {formatAmount(item.rate || 0)}
+                                    </td>
+                                    <td className="px-3 py-2 text-center tabular-nums font-semibold">
+                                      {formatAmount(amt.net)}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                            <tfoot>
+                              <tr className="border-t-2 border-bordergray bg-bg-soft/40">
+                                <td
+                                  colSpan={6}
+                                  className="px-3 py-2 text-[10.5px] font-bold text-text-muted text-right"
+                                >
+                                  Grand Total
                                 </td>
-                                <td className="px-3 py-2 text-center text-[10.5px] text-text-muted">
-                                  {secLabel}
-                                </td>
-                                <td className="px-3 py-2 text-textcolor">
-                                  {item.description || (
-                                    <span className="text-text-subtle italic">No description</span>
-                                  )}
-                                </td>
-                                <td className="px-3 py-2 text-center tabular-nums">
-                                  {qty.toFixed(2).replace(/\.00$/, "")}
-                                </td>
-                                <td className="px-3 py-2 text-center text-text-muted">
-                                  {item.unit || "—"}
-                                </td>
-                                <td className="px-3 py-2 text-center tabular-nums">
-                                  {formatAmount(item.rate || 0)}
-                                </td>
-                                <td className="px-3 py-2 text-center tabular-nums font-semibold">
-                                  {formatAmount(amt.net)}
+                                <td className="px-3 py-2 text-center tabular-nums font-bold text-textcolor">
+                                  {formatAmount(grandNet)}
                                 </td>
                               </tr>
-                            );
-                          })}
-                        </tbody>
-                        <tfoot>
-                          <tr className="border-t-2 border-bordergray bg-bg-soft/40">
-                            <td
-                              colSpan={6}
-                              className="px-3 py-2 text-[10.5px] font-bold text-text-muted text-right"
-                            >
-                              Grand Total
-                            </td>
-                            <td className="px-3 py-2 text-center tabular-nums font-bold text-textcolor">
-                              {formatAmount(grandNet)}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  </>
-                );
-              })()}
+                            </tfoot>
+                          </table>
+                        </div>
+                      </>
+                    );
+                  })()}
 
-              {/* Room / Work grouped view — read-only */}
-              {(groupMode === "room" || groupMode === "work") && boq.sections.length > 0 && (() => {
-                const groups = groupMode === "room" ? roomGroups : workGroups;
-                return (
-                  <>
-                    <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200/70 rounded-xl text-[11px] text-amber-800">
-                      <Info size={12} className="shrink-0" />
-                      <span>
-                        Grouped view is read-only —{" "}
-                        <button
-                          type="button"
-                          onClick={() => setGroupMode("section")}
-                          className="font-bold underline underline-offset-2"
-                        >
-                          switch to Section view
-                        </button>{" "}
-                        to edit.
-                      </span>
-                    </div>
-                    {groups.map((group, gIdx) => {
-                      const c = roomColor(group.label);
-                      const groupTotal = group.items.reduce(
-                        (s, it) => s + computeItemAmount(it).total,
-                        0,
-                      );
-                      return (
-                        <div
-                          key={`${groupMode}_${gIdx}`}
-                          className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden"
-                        >
-                          <div className="px-4 py-3 border-b border-bordergray flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span
-                                className={`h-7 w-7 flex items-center justify-center rounded-lg ${c.bg}`}
-                              >
-                                <span className={`h-2.5 w-2.5 rounded-full ${c.dot}`} />
-                              </span>
-                              <span className="text-[13px] font-bold text-textcolor truncate">
-                                {group.label || "Uncategorized"}
-                              </span>
-                              <span className="text-[10px] text-text-muted bg-bg-soft px-1.5 py-0.5 rounded border border-bordergray shrink-0">
-                                {group.items.length} item{group.items.length !== 1 ? "s" : ""}
-                              </span>
-                            </div>
-                            <span className="text-[13px] font-bold text-textcolor tabular-nums shrink-0">
-                              {formatAmount(groupTotal)}
-                            </span>
-                          </div>
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-[12px]">
-                              <thead>
-                                <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
-                                  <th className="px-3 py-2 text-center w-32">
-                                    {groupMode === "room" ? "Section" : "Room / Area"}
-                                  </th>
-                                  <th className="px-3 py-2 text-center">Description</th>
-                                  <th className="px-3 py-2 text-center w-20">Qty</th>
-                                  <th className="px-3 py-2 text-center w-16">Unit</th>
-                                  <th className="px-3 py-2 text-center w-24">Rate (₹)</th>
-                                  <th className="px-3 py-2 text-center w-28">Amount (₹)</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {group.items.map((item, iIdx) => {
-                                  const amt = computeItemAmount(item);
-                                  const qty = computeItemQty(item);
-                                  return (
-                                    <tr
-                                      key={item.id || iIdx}
-                                      className="border-t border-bordergray hover:bg-bg-soft/30"
-                                    >
-                                      <td className="px-3 py-2 text-center text-[10.5px] text-text-muted">
-                                        {item._from || "—"}
+                {/* Room / Work grouped view — read-only */}
+                {(groupMode === "room" || groupMode === "work") &&
+                  boq.sections.length > 0 &&
+                  (() => {
+                    const groups =
+                      groupMode === "room" ? roomGroups : workGroups;
+                    return (
+                      <>
+                        <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200/70 rounded-xl text-[11px] text-amber-800">
+                          <Info size={12} className="shrink-0" />
+                          <span>
+                            Grouped view is read-only —{" "}
+                            <button
+                              type="button"
+                              onClick={() => setGroupMode("section")}
+                              className="font-bold underline underline-offset-2"
+                            >
+                              switch to Section view
+                            </button>{" "}
+                            to edit.
+                          </span>
+                        </div>
+                        {groups.map((group, gIdx) => {
+                          const c = roomColor(group.label);
+                          const groupTotal = group.items.reduce(
+                            (s, it) => s + computeItemAmount(it).total,
+                            0,
+                          );
+                          return (
+                            <div
+                              key={`${groupMode}_${gIdx}`}
+                              className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden"
+                            >
+                              <div className="px-4 py-3 border-b border-bordergray flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span
+                                    className={`h-7 w-7 flex items-center justify-center rounded-lg ${c.bg}`}
+                                  >
+                                    <span
+                                      className={`h-2.5 w-2.5 rounded-full ${c.dot}`}
+                                    />
+                                  </span>
+                                  <span className="text-[13px] font-bold text-textcolor truncate">
+                                    {group.label || "Uncategorized"}
+                                  </span>
+                                  <span className="text-[10px] text-text-muted bg-bg-soft px-1.5 py-0.5 rounded border border-bordergray shrink-0">
+                                    {group.items.length} item
+                                    {group.items.length !== 1 ? "s" : ""}
+                                  </span>
+                                </div>
+                                <span className="text-[13px] font-bold text-textcolor tabular-nums shrink-0">
+                                  {formatAmount(groupTotal)}
+                                </span>
+                              </div>
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-[12px]">
+                                  <thead>
+                                    <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                                      <th className="px-3 py-2 text-center w-32">
+                                        {groupMode === "room"
+                                          ? "Section"
+                                          : "Room / Area"}
+                                      </th>
+                                      <th className="px-3 py-2 text-center">
+                                        Description
+                                      </th>
+                                      <th className="px-3 py-2 text-center w-20">
+                                        Qty
+                                      </th>
+                                      <th className="px-3 py-2 text-center w-16">
+                                        Unit
+                                      </th>
+                                      <th className="px-3 py-2 text-center w-24">
+                                        Rate (₹)
+                                      </th>
+                                      <th className="px-3 py-2 text-center w-28">
+                                        Amount (₹)
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {group.items.map((item, iIdx) => {
+                                      const amt = computeItemAmount(item);
+                                      const qty = computeItemQty(item);
+                                      return (
+                                        <tr
+                                          key={item.id || iIdx}
+                                          className="border-t border-bordergray hover:bg-bg-soft/30"
+                                        >
+                                          <td className="px-3 py-2 text-center text-[10.5px] text-text-muted">
+                                            {item._from || "—"}
+                                          </td>
+                                          <td className="px-3 py-2 text-textcolor">
+                                            {item.description || (
+                                              <span className="text-text-subtle italic">
+                                                No description
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td className="px-3 py-2 text-center tabular-nums">
+                                            {qty
+                                              .toFixed(2)
+                                              .replace(/\.00$/, "")}
+                                          </td>
+                                          <td className="px-3 py-2 text-center text-text-muted">
+                                            {item.unit}
+                                          </td>
+                                          <td className="px-3 py-2 text-center tabular-nums">
+                                            {formatAmount(item.rate || 0)}
+                                          </td>
+                                          <td className="px-3 py-2 text-center tabular-nums font-semibold">
+                                            {formatAmount(amt.total)}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr className="border-t-2 border-bordergray bg-bg-soft/40">
+                                      <td
+                                        colSpan={5}
+                                        className="px-3 py-2 text-[10.5px] font-bold text-text-muted text-center"
+                                      >
+                                        Subtotal
                                       </td>
-                                      <td className="px-3 py-2 text-textcolor">
-                                        {item.description || (
-                                          <span className="text-text-subtle italic">No description</span>
-                                        )}
-                                      </td>
-                                      <td className="px-3 py-2 text-center tabular-nums">
-                                        {qty.toFixed(2).replace(/\.00$/, "")}
-                                      </td>
-                                      <td className="px-3 py-2 text-center text-text-muted">{item.unit}</td>
-                                      <td className="px-3 py-2 text-center tabular-nums">
-                                        {formatAmount(item.rate || 0)}
-                                      </td>
-                                      <td className="px-3 py-2 text-center tabular-nums font-semibold">
-                                        {formatAmount(amt.total)}
+                                      <td className="px-3 py-2 text-center tabular-nums font-bold text-textcolor">
+                                        {formatAmount(groupTotal)}
                                       </td>
                                     </tr>
-                                  );
-                                })}
-                              </tbody>
-                              <tfoot>
-                                <tr className="border-t-2 border-bordergray bg-bg-soft/40">
-                                  <td
-                                    colSpan={5}
-                                    className="px-3 py-2 text-[10.5px] font-bold text-text-muted text-center"
-                                  >
-                                    Subtotal
-                                  </td>
-                                  <td className="px-3 py-2 text-center tabular-nums font-bold text-textcolor">
-                                    {formatAmount(groupTotal)}
-                                  </td>
-                                </tr>
-                              </tfoot>
-                            </table>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </>
-                );
-              })()}
-
-              {/* Section-wise view */}
-              {groupMode === "section" && boq.sections.map((section, sIdx) => {
-                const c = roomColor(section.category);
-                const isOpen = expanded[section.id] !== false;
-                const sectionTotal = (section.items || []).reduce(
-                  (s, it) => s + computeItemAmount(it).total,
-                  0,
-                );
-
-                // Apply item search filter
-                const q = itemSearch.trim().toLowerCase();
-                const itemMatchesSearch = (it) => {
-                  if (!q) return true;
-                  return (
-                    (it.description || "").toLowerCase().includes(q) ||
-                    (it.hsn || "").toLowerCase().includes(q) ||
-                    (it.materials || []).some(
-                      (m) =>
-                        (m.name || "").toLowerCase().includes(q) ||
-                        (m.spec || "").toLowerCase().includes(q),
-                    )
-                  );
-                };
-                const sectionMatchesName =
-                  q && (section.name || "").toLowerCase().includes(q);
-                const visibleItems = q
-                  ? section.items.filter(itemMatchesSearch)
-                  : section.items;
-                // Hide the entire section if a search is active AND nothing inside matches
-                if (q && visibleItems.length === 0 && !sectionMatchesName) {
-                  return null;
-                }
-                return (
-                  <div
-                    key={section.id}
-                    id={`section-${section.id}`}
-                    className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden"
-                  >
-                    {/* Section header */}
-                    <div
-                      className={`px-4 py-3 border-b border-bordergray flex items-center justify-between gap-3 bg-linear-to-r ${c.bg.replace("bg-", "from-")}/40 to-white`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpanded((p) => ({
-                              ...p,
-                              [section.id]: !isOpen,
-                            }))
-                          }
-                          className="h-7 w-7 flex items-center justify-center rounded-md text-text-muted hover:bg-white"
-                          title={isOpen ? "Collapse" : "Expand"}
-                        >
-                          {isOpen ? (
-                            <ChevronDown size={14} />
-                          ) : (
-                            <ChevronRight size={14} />
-                          )}
-                        </button>
-                        <span className="text-[10px] font-bold text-text-muted bg-white px-1.5 py-0.5 rounded border border-bordergray tabular-nums">
-                          {String(sIdx + 1).padStart(2, "0")}
-                        </span>
-                        <span
-                          className={`h-7 w-7 flex items-center justify-center rounded-lg ${c.bg}`}
-                        >
-                          <span
-                            className={`h-2.5 w-2.5 rounded-full ${c.dot}`}
-                          />
-                        </span>
-                        <input
-                          type="text"
-                          value={section.name}
-                          onChange={(e) =>
-                            updateSection(section.id, { name: e.target.value })
-                          }
-                          disabled={isLocked}
-                          placeholder="Section name"
-                          className="text-[13px] font-bold text-textcolor bg-transparent border-0 focus:outline-none focus:bg-white focus:rounded focus:px-2 focus:py-1 px-0 py-1 transition-all min-w-0 flex-1 disabled:cursor-default disabled:focus:bg-transparent"
-                        />
-                        <CategorySelect
-                          value={section.category}
-                          onChange={(v) =>
-                            updateSection(section.id, { category: v })
-                          }
-                          disabled={isLocked}
-                          placeholder="Room…"
-                          className="text-[10.5px] font-semibold bg-white border border-bordergray rounded-md px-1.5 py-1 text-text-muted focus:outline-none focus:border-select-blue cursor-pointer"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="hidden sm:flex flex-col items-end">
-                          <span className="text-[9.5px] font-bold uppercase tracking-wider text-text-subtle">
-                            Section Total
-                          </span>
-                          <span className="text-[13px] font-bold text-textcolor tabular-nums">
-                            {formatAmount(sectionTotal)}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={
-                            isLocked
-                              ? handleCreateRevision
-                              : () => duplicateSection(section.id)
-                          }
-                          className="h-7 w-7 flex items-center justify-center rounded-md text-text-muted hover:bg-white hover:text-textcolor"
-                          title={
-                            isLocked
-                              ? "Create a revision to duplicate this section"
-                              : "Duplicate section"
-                          }
-                        >
-                          <Copy size={13} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={
-                            isLocked
-                              ? handleCreateRevision
-                              : () => removeSection(section.id)
-                          }
-                          className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
-                          title={
-                            isLocked
-                              ? "Create a revision to delete this section"
-                              : "Delete section"
-                          }
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Items table */}
-                    {isOpen && (
-                      <>
-                        {visibleItems.length > 0 && (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-[12px]">
-                              <thead>
-                                <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
-                                  <th className="px-2 py-2 text-center w-8">#</th>
-                                  <th className="px-2 py-2 text-center w-[42%] min-w-[260px]">
-                                    Description
-                                  </th>
-                                  <th className="px-2 py-2 text-center w-20">
-                                    Qty
-                                  </th>
-                                  <th className="px-2 py-2 text-center w-20">
-                                    Unit
-                                  </th>
-                                  <th className="px-2 py-2 text-center w-24">
-                                    Rate (₹)
-                                  </th>
-                                  <th className="px-2 py-2 text-center w-28">
-                                    Amount (₹)
-                                  </th>
-                                  <th className="px-2 py-2 w-24"></th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {visibleItems.map((item) => {
-                                  const realIdx = section.items.findIndex(
-                                    (i) => i.id === item.id,
-                                  );
-                                  const isLinked = !!item.masterId;
-                                  const isCompact =
-                                    isLinked && !expandedLinked[item.id];
-                                  return (
-                                    <ItemRow
-                                      key={item.id}
-                                      item={item}
-                                      idx={realIdx}
-                                      sectionId={section.id}
-                                      onUpdate={(changes) =>
-                                        updateItem(section.id, item.id, changes)
-                                      }
-                                      onRemove={() =>
-                                        removeItem(section.id, item.id)
-                                      }
-                                      onDuplicate={() =>
-                                        duplicateItem(section.id, item.id)
-                                      }
-                                      onEdit={() =>
-                                        setEditingItem({
-                                          sectionId: section.id,
-                                          itemId: item.id,
-                                        })
-                                      }
-                                      accent={c}
-                                      isLinked={isLinked}
-                                      isCompact={isCompact}
-                                      onToggleCompact={() =>
-                                        setExpandedLinked((p) => ({
-                                          ...p,
-                                          [item.id]: !p[item.id],
-                                        }))
-                                      }
-                                      hideArchDetails={isInteriorBoq}
-                                      disabled={isLocked}
-                                    />
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-                        {q &&
-                          visibleItems.length === 0 &&
-                          sectionMatchesName && (
-                            <div className="px-4 py-3 bg-bg-soft/30 text-[11px] text-text-muted border-t border-bordergray">
-                              Section name matched "{itemSearch}" — no items in
-                              this section matched.
+                                  </tfoot>
+                                </table>
+                              </div>
                             </div>
-                          )}
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
 
-                        <div className="px-4 py-3 border-t border-bordergray bg-bg-soft/30 flex items-center justify-between">
-                          <div className="flex items-center gap-2">
+                {/* Section-wise view */}
+                {groupMode === "section" &&
+                  boq.sections.map((section, sIdx) => {
+                    const c = roomColor(section.category);
+                    const isOpen = expanded[section.id] !== false;
+                    const sectionTotal = (section.items || []).reduce(
+                      (s, it) => s + computeItemAmount(it).total,
+                      0,
+                    );
+
+                    // Apply item search filter
+                    const q = itemSearch.trim().toLowerCase();
+                    const itemMatchesSearch = (it) => {
+                      if (!q) return true;
+                      return (
+                        (it.description || "").toLowerCase().includes(q) ||
+                        (it.hsn || "").toLowerCase().includes(q) ||
+                        (it.materials || []).some(
+                          (m) =>
+                            (m.name || "").toLowerCase().includes(q) ||
+                            (m.spec || "").toLowerCase().includes(q),
+                        )
+                      );
+                    };
+                    const sectionMatchesName =
+                      q && (section.name || "").toLowerCase().includes(q);
+                    const visibleItems = q
+                      ? section.items.filter(itemMatchesSearch)
+                      : section.items;
+                    // Hide the entire section if a search is active AND nothing inside matches
+                    if (q && visibleItems.length === 0 && !sectionMatchesName) {
+                      return null;
+                    }
+                    return (
+                      <div
+                        key={section.id}
+                        id={`section-${section.id}`}
+                        className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden"
+                      >
+                        {/* Section header */}
+                        <div
+                          className={`px-4 py-3 border-b border-bordergray flex items-center justify-between gap-3 bg-linear-to-r ${c.bg.replace("bg-", "from-")}/40 to-white`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpanded((p) => ({
+                                  ...p,
+                                  [section.id]: !isOpen,
+                                }))
+                              }
+                              className="h-7 w-7 flex items-center justify-center rounded-md text-text-muted hover:bg-white"
+                              title={isOpen ? "Collapse" : "Expand"}
+                            >
+                              {isOpen ? (
+                                <ChevronDown size={14} />
+                              ) : (
+                                <ChevronRight size={14} />
+                              )}
+                            </button>
+                            <span className="text-[10px] font-bold text-text-muted bg-white px-1.5 py-0.5 rounded border border-bordergray tabular-nums">
+                              {String(sIdx + 1).padStart(2, "0")}
+                            </span>
+                            <span
+                              className={`h-7 w-7 flex items-center justify-center rounded-lg ${c.bg}`}
+                            >
+                              <span
+                                className={`h-2.5 w-2.5 rounded-full ${c.dot}`}
+                              />
+                            </span>
+                            <input
+                              type="text"
+                              value={section.name}
+                              onChange={(e) =>
+                                updateSection(section.id, {
+                                  name: e.target.value,
+                                })
+                              }
+                              disabled={isLocked}
+                              placeholder="Section name"
+                              className="text-[13px] font-bold text-textcolor bg-transparent border-0 focus:outline-none focus:bg-white focus:rounded focus:px-2 focus:py-1 px-0 py-1 transition-all min-w-0 flex-1 disabled:cursor-default disabled:focus:bg-transparent"
+                            />
+                            <CategorySelect
+                              value={section.category}
+                              onChange={(v) =>
+                                updateSection(section.id, { category: v })
+                              }
+                              disabled={isLocked}
+                              placeholder="Room…"
+                              className="text-[10.5px] font-semibold bg-white border border-bordergray rounded-md px-1.5 py-1 text-text-muted focus:outline-none focus:border-select-blue cursor-pointer"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className="hidden sm:flex flex-col items-end">
+                              <span className="text-[9.5px] font-bold uppercase tracking-wider text-text-subtle">
+                                Section Total
+                              </span>
+                              <span className="text-[13px] font-bold text-textcolor tabular-nums">
+                                {formatAmount(sectionTotal)}
+                              </span>
+                            </div>
                             <button
                               type="button"
                               onClick={
                                 isLocked
                                   ? handleCreateRevision
-                                  : () => setItemFormSection(section.id)
+                                  : () => duplicateSection(section.id)
                               }
-                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-select-blue hover:bg-white border border-transparent hover:border-bordergray transition-all"
+                              className="h-7 w-7 flex items-center justify-center rounded-md text-text-muted hover:bg-white hover:text-textcolor"
+                              title={
+                                isLocked
+                                  ? "Create a revision to duplicate this section"
+                                  : "Duplicate section"
+                              }
                             >
-                              <Plus size={12} /> Add Line Item
+                              <Copy size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={
+                                isLocked
+                                  ? handleCreateRevision
+                                  : () => removeSection(section.id)
+                              }
+                              className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50"
+                              title={
+                                isLocked
+                                  ? "Create a revision to delete this section"
+                                  : "Delete section"
+                              }
+                            >
+                              <Trash2 size={13} />
                             </button>
                           </div>
-                          {section.items.length === 0 && (
-                            <span className="text-[10.5px] text-text-subtle">
-                              Empty section — add your first item
-                            </span>
-                          )}
                         </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
 
-              {groupMode === "section" && boq.sections.length > 0 && (
-                <div className="grid grid-cols-1 gap-2">
+                        {/* Items table */}
+                        {isOpen && (
+                          <>
+                            {visibleItems.length > 0 && (
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-[12px]">
+                                  <thead>
+                                    <tr className="bg-bg-soft/60 border-b border-bordergray text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                                      <th className="px-2 py-2 text-center w-8">
+                                        #
+                                      </th>
+                                      <th className="px-2 py-2 text-center w-[42%] min-w-[260px]">
+                                        Description
+                                      </th>
+                                      <th className="px-2 py-2 text-center w-20">
+                                        Qty
+                                      </th>
+                                      <th className="px-2 py-2 text-center w-20">
+                                        Unit
+                                      </th>
+                                      <th className="px-2 py-2 text-center w-24">
+                                        Rate (₹)
+                                      </th>
+                                      <th className="px-2 py-2 text-center w-28">
+                                        Amount (₹)
+                                      </th>
+                                      <th className="px-2 py-2 w-24"></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {visibleItems.map((item) => {
+                                      const realIdx = section.items.findIndex(
+                                        (i) => i.id === item.id,
+                                      );
+                                      const isLinked = !!item.masterId;
+                                      const isCompact =
+                                        isLinked && !expandedLinked[item.id];
+                                      return (
+                                        <ItemRow
+                                          key={item.id}
+                                          item={item}
+                                          idx={realIdx}
+                                          sectionId={section.id}
+                                          onUpdate={(changes) =>
+                                            updateItem(
+                                              section.id,
+                                              item.id,
+                                              changes,
+                                            )
+                                          }
+                                          onRemove={() =>
+                                            removeItem(section.id, item.id)
+                                          }
+                                          onDuplicate={() =>
+                                            duplicateItem(section.id, item.id)
+                                          }
+                                          onEdit={() =>
+                                            setEditingItem({
+                                              sectionId: section.id,
+                                              itemId: item.id,
+                                            })
+                                          }
+                                          accent={c}
+                                          isLinked={isLinked}
+                                          isCompact={isCompact}
+                                          onToggleCompact={() =>
+                                            setExpandedLinked((p) => ({
+                                              ...p,
+                                              [item.id]: !p[item.id],
+                                            }))
+                                          }
+                                          hideArchDetails={isInteriorBoq}
+                                          showTakeoffMeta={isArchitectureBoq}
+                                          disabled={isLocked}
+                                        />
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            {q &&
+                              visibleItems.length === 0 &&
+                              sectionMatchesName && (
+                                <div className="px-4 py-3 bg-bg-soft/30 text-[11px] text-text-muted border-t border-bordergray">
+                                  Section name matched "{itemSearch}" — no items
+                                  in this section matched.
+                                </div>
+                              )}
+
+                            <div className="px-4 py-3 border-t border-bordergray bg-bg-soft/30 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={
+                                    isLocked
+                                      ? handleCreateRevision
+                                      : () => setItemFormSection(section.id)
+                                  }
+                                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-select-blue hover:bg-white border border-transparent hover:border-bordergray transition-all"
+                                >
+                                  <Plus size={12} /> Add Line Item
+                                </button>
+                              </div>
+                              {section.items.length === 0 && (
+                                <span className="text-[10.5px] text-text-subtle">
+                                  Empty section — add your first item
+                                </span>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                {groupMode === "section" && boq.sections.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {isArchitectureBoq && (
+                      <button
+                        type="button"
+                        onClick={isLocked ? handleCreateRevision : () => setShowArchSectionPicker(true)}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-3 rounded-2xl border border-dashed border-bordergray text-[12px] font-semibold text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/40 transition-all"
+                      >
+                        <Building2 size={13} /> Add Work Package
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={isLocked ? handleCreateRevision : addSection}
-                      className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-2xl border border-dashed border-bordergray text-[12px] font-semibold text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/40 transition-all"
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-3 rounded-2xl border border-dashed border-bordergray text-[12px] font-semibold text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/40 transition-all"
                     >
                       <Plus size={13} /> Blank Section
                     </button>
                   </div>
-              )}
-            </section>
-          </main>
-
-          {/* ── Right: Summary, terms, notes ────────────────────────────── */}
-          <aside className="space-y-5 lg:overflow-y-auto lg:pr-1 lg:pb-6 scroll-hidden-bar">
-
-            {/* Totals */}
-            <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-select-blue/5 to-white">
-                <Wallet size={13} className="text-select-blue" />
-                <h3 className="text-[12px] font-bold text-textcolor">
-                  Summary
-                </h3>
-              </div>
-              <div className="p-4 space-y-2 text-[11.5px]">
-                <Row
-                  label="Gross Subtotal"
-                  value={formatAmount(totals.subtotal)}
-                />
-                {totals.lineDiscounts > 0 && (
-                  <Row
-                    label="Line discounts"
-                    value={`- ${formatAmount(totals.lineDiscounts)}`}
-                    accent="text-red-500"
-                  />
                 )}
-                <Row
-                  label="Taxable amount"
-                  value={formatAmount(totals.taxable)}
-                />
+              </section>
+            </main>
 
-                {/* BOQ-level discount */}
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <span className="text-text-muted flex items-center gap-1">
-                    <Percent size={11} /> BOQ Discount
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      value={boq.discount?.value || 0}
-                      onChange={(e) =>
-                        update({
-                          discount: {
-                            ...boq.discount,
-                            value: Number(e.target.value) || 0,
-                          },
-                        })
-                      }
-                      disabled={isLocked}
-                      className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
+            {/* ── Right: Summary, terms, notes ────────────────────────────── */}
+            <aside className="space-y-5 lg:overflow-y-auto lg:pr-1 lg:pb-6 scroll-hidden-bar">
+              {/* Totals */}
+              <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
+                <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-select-blue/5 to-white">
+                  <Wallet size={13} className="text-select-blue" />
+                  <h3 className="text-[12px] font-bold text-textcolor">
+                    Summary
+                  </h3>
+                </div>
+                <div className="p-4 space-y-2 text-[11.5px]">
+                  <Row
+                    label="Gross Subtotal"
+                    value={formatAmount(totals.subtotal)}
+                  />
+                  {totals.lineDiscounts > 0 && (
+                    <Row
+                      label="Line discounts"
+                      value={`- ${formatAmount(totals.lineDiscounts)}`}
+                      accent="text-red-500"
                     />
-                    <select
-                      value={boq.discount?.type || "percent"}
-                      onChange={(e) =>
-                        update({
-                          discount: {
-                            ...boq.discount,
-                            type: e.target.value,
-                          },
-                        })
-                      }
-                      disabled={isLocked}
-                      className="bg-bg-soft border border-bordergray rounded px-1 py-1 text-[10.5px] font-semibold text-text-muted cursor-pointer"
-                    >
-                      <option value="percent">%</option>
-                      <option value="flat">₹</option>
-                    </select>
-                  </div>
-                </div>
-                {totals.boqDiscountAmt > 0 && (
+                  )}
                   <Row
-                    label="Discount value"
-                    value={`- ${formatAmount(totals.boqDiscountAmt)}`}
-                    accent="text-red-500"
+                    label="Taxable amount"
+                    value={formatAmount(totals.taxable)}
                   />
-                )}
 
-                <Row
-                  label="After Discount"
-                  value={formatAmount(totals.afterBoqDiscount)}
-                />
-
-                {/* Contingency is BOQ-level; labour is included in Item Master rates. */}
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <span className="text-text-muted flex items-center gap-1">
-                    <Percent size={11} /> Contingency
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      value={boq.contingencyPercent || 0}
-                      onChange={(e) =>
-                        update({ contingencyPercent: Number(e.target.value) || 0 })
-                      }
-                      disabled={isLocked}
-                      className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
-                    />
-                    <span className="text-[10.5px] font-semibold text-text-muted">%</span>
-                  </div>
-                </div>
-                {totals.contingencyAmt > 0 && (
-                  <Row label="Contingency value" value={formatAmount(totals.contingencyAmt)} />
-                )}
-                {totals.contingencyAmt > 0 && (
-                  <Row
-                    label="Taxable (incl. contingency)"
-                    value={formatAmount(totals.baseForGst)}
-                  />
-                )}
-
-                {/* Average commercial loading across items with a rate build-up */}
-                <div className="border-t border-bordergray pt-2 mt-2 space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
+                  {/* BOQ-level discount */}
+                  <div className="flex items-center justify-between gap-2 pt-1">
                     <span className="text-text-muted flex items-center gap-1">
-                      <Percent size={11} /> Avg Margin %
+                      <Percent size={11} /> BOQ Discount
                     </span>
-                    <span className="font-semibold text-textcolor tabular-nums">
-                      {raAverages.count > 0
-                        ? `${raAverages.marginPct.toFixed(1)}% · ${formatAmount(raAverages.marginAmt)}`
-                        : "—"}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-text-muted flex items-center gap-1">
-                      <Percent size={11} /> Avg PCE %
-                    </span>
-                    <span className="font-semibold text-textcolor tabular-nums">
-                      {raAverages.count > 0
-                        ? `${raAverages.pcePct.toFixed(1)}% · ${formatAmount(raAverages.pceAmt)}`
-                        : "—"}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="border-t border-bordergray pt-2 mt-2 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">
-                      Commercial controls
-                    </span>
-                    <label className="flex items-center gap-1.5 text-[10px] font-semibold text-text-muted">
+                    <div className="flex items-center gap-1">
                       <input
-                        type="checkbox"
-                        checked={!!boq.commercial?.taxInclusive}
+                        type="number"
+                        value={boq.discount?.value || 0}
                         onChange={(e) =>
                           update({
-                            commercial: {
-                              ...(boq.commercial || {}),
-                              taxInclusive: e.target.checked,
+                            discount: {
+                              ...boq.discount,
+                              value: Number(e.target.value) || 0,
                             },
                           })
                         }
                         disabled={isLocked}
-                        className="h-3 w-3 accent-select-blue"
+                        className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
                       />
-                      Tax inclusive
-                    </label>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      ["retentionPercent", "Retention %", "%"],
-                      ["mobilizationAdvance", "Mobilization", "₹"],
-                      ["freightTransport", "Freight", "₹"],
-                      ["loadingUnloading", "Loading", "₹"],
-                      ["roundOff", "Round-off", "₹"],
-                    ].map(([key, label, suffix]) => (
-                      <label key={key} className="block">
-                        <span className="mb-0.5 block text-[9.5px] font-semibold text-text-subtle">
-                          {label}
-                        </span>
-                        <div className="relative">
-                          <input
-                            type="number"
-                            value={boq.commercial?.[key] || 0}
-                            onChange={(e) =>
-                              update({
-                                commercial: {
-                                  ...(boq.commercial || {}),
-                                  [key]: Number(e.target.value) || 0,
-                                },
-                              })
-                            }
-                            disabled={isLocked}
-                            className={`${compactInput} pr-6 text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                          />
-                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-subtle">
-                            {suffix}
-                          </span>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                  {(totals.freightTransport > 0 || totals.loadingUnloading > 0) && (
-                    <Row
-                      label="Commercial additions"
-                      value={formatAmount(totals.commercialAdditions)}
-                    />
-                  )}
-                  {totals.roundOff !== 0 && (
-                    <Row
-                      label="Round-off"
-                      value={formatAmount(totals.roundOff)}
-                    />
-                  )}
-                  {totals.retentionAmt > 0 && (
-                    <Row
-                      label={`Retention (${totals.retentionPercent}%)`}
-                      value={formatAmount(totals.retentionAmt)}
-                    />
-                  )}
-                  {totals.mobilizationAdvanceAmt > 0 && (
-                    <Row
-                      label="After mobilization advance"
-                      value={formatAmount(totals.netPayableAfterAdvance)}
-                    />
-                  )}
-                  <textarea
-                    value={boq.commercial?.priceEscalationClause || ""}
-                    onChange={(e) =>
-                      update({
-                        commercial: {
-                          ...(boq.commercial || {}),
-                          priceEscalationClause: e.target.value,
-                        },
-                      })
-                    }
-                    disabled={isLocked}
-                    rows={2}
-                    placeholder="Price escalation clause"
-                    className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                </div>
-
-                <div className="border-t border-bordergray pt-2 space-y-1">
-                  {Object.entries(totals.gstByRate || {})
-                    .filter(([, v]) => v > 0)
-                    .map(([rate, v]) =>
-                      gst.interState ? (
-                        <Row
-                          key={rate}
-                          label={`IGST @ ${rate}%`}
-                          value={formatAmount(v)}
-                          accent="text-orange-500"
-                        />
-                      ) : (
-                        <div key={rate}>
-                          <Row
-                            label={`CGST @ ${Number(rate) / 2}%`}
-                            value={formatAmount(v / 2)}
-                            accent="text-orange-500"
-                          />
-                          <Row
-                            label={`SGST @ ${Number(rate) / 2}%`}
-                            value={formatAmount(v / 2)}
-                            accent="text-orange-500"
-                          />
-                        </div>
-                      ),
-                    )}
-                  {totals.totalGst > 0 && (
-                    <Row
-                      label="Total GST"
-                      value={formatAmount(totals.totalGst)}
-                      accent="text-orange-500 font-bold"
-                    />
-                  )}
-                  {totals.totalGst > 0 && gst.assumed && (
-                    <p className="flex items-start gap-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mt-1">
-                      <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-                      GST treatment assumed — confirm the client's state for
-                      accurate IGST vs CGST+SGST.
-                    </p>
-                  )}
-                </div>
-
-                <div className="mt-3 -mx-4 -mb-4 px-4 py-3 bg-linear-to-br from-select-blue to-primary text-white">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10.5px] font-bold uppercase tracking-wider opacity-80">
-                      Grand Total
-                    </span>
-                    <span className="text-[18px] font-bold tabular-nums">
-                      {formatAmount(totals.grandTotal)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Room Breakdown */}
-            {roomBreakdown.length > 0 && (
-              <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
-                <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-violet-50 to-white">
-                  <Layers size={13} className="text-violet-600" />
-                  <h3 className="text-[12px] font-bold text-textcolor">Room Breakdown</h3>
-                  <span className="ml-auto text-[10px] text-text-subtle font-medium">{roomBreakdown.length} rooms</span>
-                </div>
-                <div className="p-3 space-y-1">
-                  {roomBreakdown.map((room) => {
-                    const pct = totals.taxable > 0 ? (room.net / totals.taxable) * 100 : 0;
-                    const c = roomColor(room.category);
-                    return (
-                      <button
-                        key={room.category}
-                        type="button"
-                        onClick={() => scrollToSection(room.sectionIds[0])}
-                        className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-bg-soft transition-colors"
+                      <select
+                        value={boq.discount?.type || "percent"}
+                        onChange={(e) =>
+                          update({
+                            discount: {
+                              ...boq.discount,
+                              type: e.target.value,
+                            },
+                          })
+                        }
+                        disabled={isLocked}
+                        className="bg-bg-soft border border-bordergray rounded px-1 py-1 text-[10.5px] font-semibold text-text-muted cursor-pointer"
                       >
-                        <div className="flex items-center justify-between gap-2 mb-1.5">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className={`h-2 w-2 shrink-0 rounded-full ${c.dot}`} />
-                            <span className="text-[12px] font-semibold text-textcolor truncate">{room.category}</span>
-                            <span className="text-[10px] text-text-subtle shrink-0">{room.itemCount}</span>
-                          </div>
-                          <span className="text-[12px] font-bold text-textcolor tabular-nums shrink-0">
-                            {formatAmount(room.net)}
-                          </span>
-                        </div>
-                        <div className="h-1 w-full rounded-full bg-bg-soft overflow-hidden">
-                          <div className={`h-full rounded-full transition-all ${c.bar}`} style={{ width: `${Math.min(100, pct)}%` }} />
-                        </div>
-                      </button>
-                    );
-                  })}
-                  {roomBreakdown.length > 1 && (
-                    <div className="mt-2 flex items-center justify-between border-t border-bordergray pt-2.5 px-3">
-                      <span className="text-[10.5px] font-bold text-text-muted uppercase tracking-wide">Total (pre-GST)</span>
-                      <span className="text-[13px] font-bold text-textcolor tabular-nums">{formatAmount(totals.taxable)}</span>
+                        <option value="percent">%</option>
+                        <option value="flat">₹</option>
+                      </select>
                     </div>
+                  </div>
+                  {totals.boqDiscountAmt > 0 && (
+                    <Row
+                      label="Discount value"
+                      value={`- ${formatAmount(totals.boqDiscountAmt)}`}
+                      accent="text-red-500"
+                    />
                   )}
+
+                  <Row
+                    label="After Discount"
+                    value={formatAmount(totals.afterBoqDiscount)}
+                  />
+
+                  {/* Contingency is BOQ-level; labour is included in Item Master rates. */}
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <span className="text-text-muted flex items-center gap-1">
+                      <Percent size={11} /> Contingency
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={boq.contingencyPercent || 0}
+                        onChange={(e) =>
+                          update({
+                            contingencyPercent: Number(e.target.value) || 0,
+                          })
+                        }
+                        disabled={isLocked}
+                        className="w-16 text-right tabular-nums bg-bg-soft border border-bordergray rounded px-1.5 py-1 text-[11px] focus:outline-none focus:border-select-blue"
+                      />
+                      <span className="text-[10.5px] font-semibold text-text-muted">
+                        %
+                      </span>
+                    </div>
+                  </div>
+                  {totals.contingencyAmt > 0 && (
+                    <Row
+                      label="Contingency value"
+                      value={formatAmount(totals.contingencyAmt)}
+                    />
+                  )}
+                  {totals.contingencyAmt > 0 && (
+                    <Row
+                      label="Taxable (incl. contingency)"
+                      value={formatAmount(totals.baseForGst)}
+                    />
+                  )}
+
+                  {/* Average commercial loading across items with a rate build-up */}
+                  <div className="border-t border-bordergray pt-2 mt-2 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-text-muted flex items-center gap-1">
+                        <Percent size={11} /> Avg Margin %
+                      </span>
+                      <span className="font-semibold text-textcolor tabular-nums">
+                        {raAverages.count > 0
+                          ? `${raAverages.marginPct.toFixed(1)}% · ${formatAmount(raAverages.marginAmt)}`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-text-muted flex items-center gap-1">
+                        <Percent size={11} /> Avg PCE %
+                      </span>
+                      <span className="font-semibold text-textcolor tabular-nums">
+                        {raAverages.count > 0
+                          ? `${raAverages.pcePct.toFixed(1)}% · ${formatAmount(raAverages.pceAmt)}`
+                          : "—"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-bordergray pt-2 mt-2 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                        Commercial controls
+                      </span>
+                      <label className="flex items-center gap-1.5 text-[10px] font-semibold text-text-muted">
+                        <input
+                          type="checkbox"
+                          checked={!!boq.commercial?.taxInclusive}
+                          onChange={(e) =>
+                            update({
+                              commercial: {
+                                ...(boq.commercial || {}),
+                                taxInclusive: e.target.checked,
+                              },
+                            })
+                          }
+                          disabled={isLocked}
+                          className="h-3 w-3 accent-select-blue"
+                        />
+                        Tax inclusive
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        ["retentionPercent", "Retention %", "%"],
+                        ["mobilizationAdvance", "Mobilization", "₹"],
+                        ["freightTransport", "Freight", "₹"],
+                        ["loadingUnloading", "Loading", "₹"],
+                        ["roundOff", "Round-off", "₹"],
+                      ].map(([key, label, suffix]) => (
+                        <label key={key} className="block">
+                          <span className="mb-0.5 block text-[9.5px] font-semibold text-text-subtle">
+                            {label}
+                          </span>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              value={boq.commercial?.[key] || 0}
+                              onChange={(e) =>
+                                update({
+                                  commercial: {
+                                    ...(boq.commercial || {}),
+                                    [key]: Number(e.target.value) || 0,
+                                  },
+                                })
+                              }
+                              disabled={isLocked}
+                              className={`${compactInput} pr-6 text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                            />
+                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-text-subtle">
+                              {suffix}
+                            </span>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                    {(totals.freightTransport > 0 ||
+                      totals.loadingUnloading > 0) && (
+                      <Row
+                        label="Commercial additions"
+                        value={formatAmount(totals.commercialAdditions)}
+                      />
+                    )}
+                    {totals.roundOff !== 0 && (
+                      <Row
+                        label="Round-off"
+                        value={formatAmount(totals.roundOff)}
+                      />
+                    )}
+                    {totals.retentionAmt > 0 && (
+                      <Row
+                        label={`Retention (${totals.retentionPercent}%)`}
+                        value={formatAmount(totals.retentionAmt)}
+                      />
+                    )}
+                    {totals.mobilizationAdvanceAmt > 0 && (
+                      <Row
+                        label="After mobilization advance"
+                        value={formatAmount(totals.netPayableAfterAdvance)}
+                      />
+                    )}
+                    <textarea
+                      value={boq.commercial?.priceEscalationClause || ""}
+                      onChange={(e) =>
+                        update({
+                          commercial: {
+                            ...(boq.commercial || {}),
+                            priceEscalationClause: e.target.value,
+                          },
+                        })
+                      }
+                      disabled={isLocked}
+                      rows={2}
+                      placeholder="Price escalation clause"
+                      className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </div>
+
+                  <div className="border-t border-bordergray pt-2 space-y-1">
+                    {Object.entries(totals.gstByRate || {})
+                      .filter(([, v]) => v > 0)
+                      .map(([rate, v]) =>
+                        gst.interState ? (
+                          <Row
+                            key={rate}
+                            label={`IGST @ ${rate}%`}
+                            value={formatAmount(v)}
+                            accent="text-orange-500"
+                          />
+                        ) : (
+                          <div key={rate}>
+                            <Row
+                              label={`CGST @ ${Number(rate) / 2}%`}
+                              value={formatAmount(v / 2)}
+                              accent="text-orange-500"
+                            />
+                            <Row
+                              label={`SGST @ ${Number(rate) / 2}%`}
+                              value={formatAmount(v / 2)}
+                              accent="text-orange-500"
+                            />
+                          </div>
+                        ),
+                      )}
+                    {totals.totalGst > 0 && (
+                      <Row
+                        label="Total GST"
+                        value={formatAmount(totals.totalGst)}
+                        accent="text-orange-500 font-bold"
+                      />
+                    )}
+                    {totals.totalGst > 0 && gst.assumed && (
+                      <p className="flex items-start gap-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mt-1">
+                        <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                        GST treatment assumed — confirm the client's state for
+                        accurate IGST vs CGST+SGST.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="mt-3 -mx-4 -mb-4 px-4 py-3 bg-linear-to-br from-select-blue to-primary text-white">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10.5px] font-bold uppercase tracking-wider opacity-80">
+                        Grand Total
+                      </span>
+                      <span className="text-[18px] font-bold tabular-nums">
+                        {formatAmount(totals.grandTotal)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </section>
-            )}
 
-            {/* Notes */}
-            <CollapsiblePanel
-              title="Notes / Terms"
-              icon={<StickyNote size={13} className="text-select-blue" />}
-            >
-              <div className="p-3">
-                <textarea
-                  value={boq.notes || ""}
-                  onChange={(e) => update({ notes: e.target.value })}
-                  disabled={isLocked}
-                  rows={5}
-                  placeholder="Special terms, exclusions, site conditions, etc."
-                  className={`${compactInput} resize-none leading-relaxed`}
-                />
-              </div>
-            </CollapsiblePanel>
+              {/* Room Breakdown */}
+              {roomBreakdown.length > 0 && (
+                <section className="bg-white rounded-2xl border border-bordergray shadow-[0_1px_3px_rgba(15,23,42,0.04)] overflow-hidden">
+                  <div className="px-4 py-3 border-b border-bordergray flex items-center gap-2 bg-linear-to-r from-violet-50 to-white">
+                    <Layers size={13} className="text-violet-600" />
+                    <h3 className="text-[12px] font-bold text-textcolor">
+                      Room Breakdown
+                    </h3>
+                    <span className="ml-auto text-[10px] text-text-subtle font-medium">
+                      {roomBreakdown.length} rooms
+                    </span>
+                  </div>
+                  <div className="p-3 space-y-1">
+                    {roomBreakdown.map((room) => {
+                      const pct =
+                        totals.taxable > 0
+                          ? (room.net / totals.taxable) * 100
+                          : 0;
+                      const c = roomColor(room.category);
+                      return (
+                        <button
+                          key={room.category}
+                          type="button"
+                          onClick={() => scrollToSection(room.sectionIds[0])}
+                          className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-bg-soft transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span
+                                className={`h-2 w-2 shrink-0 rounded-full ${c.dot}`}
+                              />
+                              <span className="text-[12px] font-semibold text-textcolor truncate">
+                                {room.category}
+                              </span>
+                              <span className="text-[10px] text-text-subtle shrink-0">
+                                {room.itemCount}
+                              </span>
+                            </div>
+                            <span className="text-[12px] font-bold text-textcolor tabular-nums shrink-0">
+                              {formatAmount(room.net)}
+                            </span>
+                          </div>
+                          <div className="h-1 w-full rounded-full bg-bg-soft overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${c.bar}`}
+                              style={{ width: `${Math.min(100, pct)}%` }}
+                            />
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {roomBreakdown.length > 1 && (
+                      <div className="mt-2 flex items-center justify-between border-t border-bordergray pt-2.5 px-3">
+                        <span className="text-[10.5px] font-bold text-text-muted uppercase tracking-wide">
+                          Total (pre-GST)
+                        </span>
+                        <span className="text-[13px] font-bold text-textcolor tabular-nums">
+                          {formatAmount(totals.taxable)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
 
-            <CollapsiblePanel
-              title="Approval Signoff"
-              icon={<ShieldCheck size={13} className="text-select-blue" />}
-              meta={boq.status === "draft" ? "before issue" : boq.status}
-              defaultOpen={boq.status !== "draft"}
-            >
-              <div className="p-3 space-y-3">
-                {isSignoffLocked && (
-                  <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10.5px] font-semibold text-emerald-700">
-                    Signed approval metadata is locked for this revision.
-                  </p>
-                )}
-                {boq.procurement?.issued && (
-                  <p className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-[10.5px] font-semibold text-indigo-700">
-                    Issued for procurement by{" "}
-                    {boq.procurement.issuedBy || "Authorized user"} on{" "}
-                    {formatSignoffDate(boq.procurement.issuedAt)}
-                    {boq.procurement.contractId
-                      ? ` · Contract ${boq.procurement.contractId}`
-                      : ""}.
-                  </p>
-                )}
-                <div className="grid grid-cols-1 gap-2">
-                  <SignoffField
-                    label="Prepared by"
-                    value={approval.preparedBy}
-                    date={approval.preparedAt}
-                    disabled={isSignoffLocked}
-                    onChange={(value) => updateApproval({ preparedBy: value })}
-                  />
-                  <SignoffField
-                    label="Reviewed by"
-                    value={approval.reviewedBy}
-                    date={approval.reviewedAt}
-                    disabled={isSignoffLocked}
-                    onChange={(value) => updateApproval({ reviewedBy: value })}
-                  />
-                  <SignoffField
-                    label="Approved by"
-                    value={approval.approvedBy}
-                    date={approval.approvedAt}
-                    disabled={isSignoffLocked}
-                    onChange={(value) => updateApproval({ approvedBy: value })}
-                  />
-                  <SignoffField
-                    label="Client acceptance"
-                    value={approval.clientAcceptedBy}
-                    date={approval.clientAcceptedAt}
-                    disabled={isSignoffLocked}
-                    onChange={(value) =>
-                      updateApproval({ clientAcceptedBy: value })
-                    }
+              {/* Notes */}
+              <CollapsiblePanel
+                title="Notes / Terms"
+                icon={<StickyNote size={13} className="text-select-blue" />}
+              >
+                <div className="p-3">
+                  <textarea
+                    value={boq.notes || ""}
+                    onChange={(e) => update({ notes: e.target.value })}
+                    disabled={isLocked}
+                    rows={5}
+                    placeholder="Special terms, exclusions, site conditions, etc."
+                    className={`${compactInput} resize-none leading-relaxed`}
                   />
                 </div>
+              </CollapsiblePanel>
 
-                <div className="rounded-xl border border-bordergray bg-bg-soft/40 p-2.5">
-                  <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-text-muted">
-                    Review checklist
-                  </p>
-                  <div className="grid grid-cols-1 gap-1.5">
-                    <SignoffCheck
-                      label="Measurements checked"
-                      checked={approval.checklist.measurementsChecked}
+              <CollapsiblePanel
+                title="Approval Signoff"
+                icon={<ShieldCheck size={13} className="text-select-blue" />}
+                meta={boq.status === "draft" ? "before issue" : boq.status}
+                defaultOpen={boq.status !== "draft"}
+              >
+                <div className="p-3 space-y-3">
+                  {isSignoffLocked && (
+                    <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10.5px] font-semibold text-emerald-700">
+                      Signed approval metadata is locked for this revision.
+                    </p>
+                  )}
+                  {boq.procurement?.issued && (
+                    <p className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-[10.5px] font-semibold text-indigo-700">
+                      Issued for procurement by{" "}
+                      {boq.procurement.issuedBy || "Authorized user"} on{" "}
+                      {formatSignoffDate(boq.procurement.issuedAt)}
+                      {boq.procurement.contractId
+                        ? ` · Contract ${boq.procurement.contractId}`
+                        : ""}
+                      .
+                    </p>
+                  )}
+                  <div className="grid grid-cols-1 gap-2">
+                    <SignoffField
+                      label="Prepared by"
+                      value={approval.preparedBy}
+                      date={approval.preparedAt}
                       disabled={isSignoffLocked}
-                      onChange={(checked) =>
-                        updateApprovalChecklist("measurementsChecked", checked)
+                      onChange={(value) =>
+                        updateApproval({ preparedBy: value })
                       }
                     />
-                    <SignoffCheck
-                      label="Rates and quantities checked"
-                      checked={approval.checklist.ratesChecked}
+                    <SignoffField
+                      label="Reviewed by"
+                      value={approval.reviewedBy}
+                      date={approval.reviewedAt}
                       disabled={isSignoffLocked}
-                      onChange={(checked) =>
-                        updateApprovalChecklist("ratesChecked", checked)
+                      onChange={(value) =>
+                        updateApproval({ reviewedBy: value })
                       }
                     />
-                    <SignoffCheck
-                      label="GST and tax summary checked"
-                      checked={approval.checklist.taxChecked}
+                    <SignoffField
+                      label="Approved by"
+                      value={approval.approvedBy}
+                      date={approval.approvedAt}
                       disabled={isSignoffLocked}
-                      onChange={(checked) =>
-                        updateApprovalChecklist("taxChecked", checked)
+                      onChange={(value) =>
+                        updateApproval({ approvedBy: value })
                       }
                     />
-                    <SignoffCheck
-                      label="Terms and exclusions checked"
-                      checked={approval.checklist.termsChecked}
+                    <SignoffField
+                      label="Client acceptance"
+                      value={approval.clientAcceptedBy}
+                      date={approval.clientAcceptedAt}
                       disabled={isSignoffLocked}
-                      onChange={(checked) =>
-                        updateApprovalChecklist("termsChecked", checked)
+                      onChange={(value) =>
+                        updateApproval({ clientAcceptedBy: value })
                       }
                     />
                   </div>
+
+                  <div className="rounded-xl border border-bordergray bg-bg-soft/40 p-2.5">
+                    <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                      Review checklist
+                    </p>
+                    <div className="grid grid-cols-1 gap-1.5">
+                      <SignoffCheck
+                        label="Measurements checked"
+                        checked={approval.checklist.measurementsChecked}
+                        disabled={isSignoffLocked}
+                        onChange={(checked) =>
+                          updateApprovalChecklist(
+                            "measurementsChecked",
+                            checked,
+                          )
+                        }
+                      />
+                      <SignoffCheck
+                        label="Rates and quantities checked"
+                        checked={approval.checklist.ratesChecked}
+                        disabled={isSignoffLocked}
+                        onChange={(checked) =>
+                          updateApprovalChecklist("ratesChecked", checked)
+                        }
+                      />
+                      <SignoffCheck
+                        label="GST and tax summary checked"
+                        checked={approval.checklist.taxChecked}
+                        disabled={isSignoffLocked}
+                        onChange={(checked) =>
+                          updateApprovalChecklist("taxChecked", checked)
+                        }
+                      />
+                      <SignoffCheck
+                        label="Terms and exclusions checked"
+                        checked={approval.checklist.termsChecked}
+                        disabled={isSignoffLocked}
+                        onChange={(checked) =>
+                          updateApprovalChecklist("termsChecked", checked)
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <textarea
+                    value={approval.remarks}
+                    onChange={(e) =>
+                      updateApproval({ remarks: e.target.value })
+                    }
+                    onFocus={() => {
+                      if (isSignoffLocked) showSignoffLockedToast();
+                    }}
+                    disabled={isSignoffLocked}
+                    rows={3}
+                    placeholder="Internal approval remarks"
+                    className={`${compactInput} resize-none leading-relaxed disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                  <AuditTrailList
+                    items={boq.auditTrail || []}
+                    revisionHistory={boq.revisionHistory || []}
+                    revisionComparison={boq.revisionComparison || null}
+                    onViewSnapshot={setViewingSnapshot}
+                  />
                 </div>
-
-                <textarea
-                  value={approval.remarks}
-                  onChange={(e) => updateApproval({ remarks: e.target.value })}
-                  onFocus={() => {
-                    if (isSignoffLocked) showSignoffLockedToast();
-                  }}
-                  disabled={isSignoffLocked}
-                  rows={3}
-                  placeholder="Internal approval remarks"
-                  className={`${compactInput} resize-none leading-relaxed disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                />
-                <AuditTrailList
-                  items={boq.auditTrail || []}
-                  revisionHistory={boq.revisionHistory || []}
-                  onViewSnapshot={setViewingSnapshot}
-                />
-              </div>
-            </CollapsiblePanel>
-
-          </aside>
-        </div>
+              </CollapsiblePanel>
+            </aside>
+          </div>
         )}
 
         {editorTab === "rate" && (
@@ -2978,7 +3140,7 @@ const BOQEditor = () => {
         />
       )}
 
-      {/* Section template picker */}
+      {/* Section template picker — interior */}
       {showSectionPicker && (
         <SectionTemplatePicker
           onClose={() => setShowSectionPicker(false)}
@@ -2987,6 +3149,21 @@ const BOQEditor = () => {
             addSection();
           }}
           onAddFromCategory={addSectionFromCategory}
+        />
+      )}
+
+      {/* Architecture work-package section picker */}
+      {showArchSectionPicker && (
+        <ArchSectionTemplatePicker
+          onClose={() => setShowArchSectionPicker(false)}
+          onAddSection={(name, category) => {
+            setShowArchSectionPicker(false);
+            addSectionNamed(name, category);
+          }}
+          onAddBlank={() => {
+            setShowArchSectionPicker(false);
+            addSection();
+          }}
         />
       )}
 
@@ -3018,6 +3195,7 @@ const BOQEditor = () => {
       {viewingSnapshot && (
         <RevisionSnapshotModal
           snapshot={viewingSnapshot}
+          currentSections={boq?.sections}
           onClose={() => setViewingSnapshot(null)}
         />
       )}
@@ -3088,6 +3266,7 @@ const BOQEditor = () => {
           submitLabel="Add to Section"
           showCategory={false}
           showTags={false}
+          discipline={isArchitectureBoq ? "architecture" : "interior"}
         />
       )}
 
@@ -3106,6 +3285,7 @@ const BOQEditor = () => {
               submitLabel="Save Changes"
               showCategory={false}
               showTags={false}
+              discipline={isArchitectureBoq ? "architecture" : "interior"}
             />
           );
         })()}
@@ -3125,6 +3305,7 @@ const ItemRow = ({
   isCompact,
   onToggleCompact,
   hideArchDetails = false,
+  showTakeoffMeta = false,
   disabled = false,
 }) => {
   const r = computeItemAmount(item);
@@ -3164,7 +3345,7 @@ const ItemRow = ({
   const masterHsn = useMemo(
     () =>
       item.masterId
-        ? (listLibrary().find((l) => l.id === item.masterId)?.hsn || "")
+        ? listLibrary().find((l) => l.id === item.masterId)?.hsn || ""
         : "",
     [item.masterId],
   );
@@ -3174,7 +3355,7 @@ const ItemRow = ({
     if (!item.hsn && masterHsn && !disabled) {
       onUpdate({ hsn: masterHsn });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [masterHsn]);
 
   const effectiveHsn = item.hsn || masterHsn;
@@ -3208,7 +3389,11 @@ const ItemRow = ({
               : "Quantity matches the frozen site survey"
           }
         >
-          {hasSurveyDrift ? <AlertTriangle size={9} /> : <ShieldCheck size={9} />}
+          {hasSurveyDrift ? (
+            <AlertTriangle size={9} />
+          ) : (
+            <ShieldCheck size={9} />
+          )}
           {hasSurveyDrift ? "Survey drift" : "Site measured"}
         </span>
       )}
@@ -3268,9 +3453,10 @@ const ItemRow = ({
         </div>
         {item.siteSurveySource && (
           <p className="mt-0.5 text-[10px] text-text-subtle">
-            Quoted: {Number(item.quotedQty || 0).toLocaleString("en-IN")} {unitLabel}
-            {" | "}{formatAmount(item.quotedAmount || 0)}
-            {" | "}Frozen measured: {Number(item.siteMeasuredQty || 0).toLocaleString("en-IN")} {unitLabel}
+            Quoted: {Number(item.quotedQty || 0).toLocaleString("en-IN")}{" "}
+            {unitLabel}
+            {" | "}
+            {formatAmount(item.quotedAmount || 0)}
           </p>
         )}
       </td>
@@ -3359,6 +3545,9 @@ const ItemRow = ({
     return (
       <>
         {compactMainRow}
+        {showTakeoffMeta && (
+          <TakeoffMetaStrip item={item} onUpdate={onUpdate} disabled={disabled} />
+        )}
         {showDims && (
           <DimensionEditor
             item={item}
@@ -3530,11 +3719,17 @@ const ItemRow = ({
         />
       )}
 
+      {/* Architecture take-off metadata strip — always visible for arch BOQs */}
+      {showTakeoffMeta && (
+        <TakeoffMetaStrip item={item} onUpdate={onUpdate} disabled={disabled} />
+      )}
+
       {detailsOpen && (
         <ItemDetailsRow
           item={item}
           onUpdate={onUpdate}
           hideArchDetails={hideArchDetails}
+          hideTakeoffFields={showTakeoffMeta}
           disabled={disabled}
         />
       )}
@@ -3542,10 +3737,61 @@ const ItemRow = ({
   );
 };
 
+// Always-visible metadata strip shown below the main item row for architecture
+// BOQs. Surfaces the take-off fields (hierarchy + drawing ref/rev/spec) inline
+// so they're visible without opening the Details panel.
+const TakeoffMetaStrip = ({ item, onUpdate, disabled }) => {
+  const h = item.hierarchy || {};
+  const d = item.details || {};
+  const pH = (k, v) =>
+    onUpdate({ hierarchy: { ...(item.hierarchy || {}), [k]: v } });
+  const pD = (k, v) =>
+    onUpdate({ details: { ...(item.details || {}), [k]: v } });
+
+  const chip =
+    "w-full bg-white border border-bordergray text-[10.5px] text-textcolor rounded px-2 py-1 focus:outline-none focus:border-select-blue/50 placeholder:text-text-subtle disabled:bg-bg-soft disabled:cursor-not-allowed";
+  const lbl =
+    "block text-[8.5px] font-bold uppercase tracking-wider text-text-subtle mb-0.5";
+
+  const fields = [
+    ["Block / Tower", h.blockTower, (v) => pH("blockTower", v), "Block A"],
+    ["Floor", h.floor, (v) => pH("floor", v), "G/F"],
+    ["Room / Area", h.roomArea, (v) => pH("roomArea", v), "Lobby"],
+    ["Work Category", h.workCategory, (v) => pH("workCategory", v), "Civil"],
+    ["Sub-Category", h.subCategory, (v) => pH("subCategory", v), "Masonry"],
+    ["Drawing Ref", d.drawingRefNo, (v) => pD("drawingRefNo", v), "DWG-101"],
+    ["Drawing Rev", d.drawingRevision, (v) => pD("drawingRevision", v), "R2"],
+    ["Spec Code", d.specificationCode, (v) => pD("specificationCode", v), "SP-CIV-04"],
+  ];
+
+  return (
+    <tr className="border-b border-select-blue/10 bg-select-blue/[0.025]">
+      <td colSpan={7} className="px-3 py-2">
+        <div className="grid grid-cols-2 gap-x-2 gap-y-2 sm:grid-cols-4 lg:grid-cols-8">
+          {fields.map(([label, value, onChange, placeholder]) => (
+            <label key={label} className="block">
+              <span className={lbl}>{label}</span>
+              <input
+                type="text"
+                value={value || ""}
+                onChange={(e) => onChange(e.target.value)}
+                disabled={disabled}
+                placeholder={placeholder}
+                className={chip}
+              />
+            </label>
+          ))}
+        </div>
+      </td>
+    </tr>
+  );
+};
+
 const ItemDetailsRow = ({
   item,
   onUpdate,
   hideArchDetails = false,
+  hideTakeoffFields = false,
   disabled = false,
 }) => {
   // Look up the Item Master entry so we can offer grade re-pricing.
@@ -3560,7 +3806,11 @@ const ItemDetailsRow = ({
   // Grades present in the Item Master recipe (economy / premium / luxury / custom).
   const libGrades = useMemo(() => {
     if (!libItem?.recipes) return [];
-    const baseLabels = { economy: "Economy", premium: "Premium", luxury: "Luxury" };
+    const baseLabels = {
+      economy: "Economy",
+      premium: "Premium",
+      luxury: "Luxury",
+    };
     return Object.keys(libItem.recipes).map((k) => ({
       key: k,
       label:
@@ -3642,163 +3892,202 @@ const ItemDetailsRow = ({
 
         {/* Architecture-only item metadata (floor, work category, drawing ref,
             brand/finish, item/billing/scope type, execution, remarks & spec).
-            Interior BOQs keep the line-item view lean and hide this block. */}
+            Interior BOQs keep the line-item view lean and hide this block.
+            Location/drawing fields are hidden here when TakeoffMetaStrip
+            is already showing them inline above the item row. */}
         {!hideArchDetails && (
-        <>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-          <Field icon={<Building2 size={11} />} label="Floor">
-            <input
-              type="text"
-              value={hierarchy.floor || ""}
-              onChange={(e) => patchHierarchy({ floor: e.target.value })}
-              disabled={disabled}
-              placeholder="Ground floor"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
-          <Field icon={<MapPin size={11} />} label="Room / Area">
-            <input
-              type="text"
-              value={hierarchy.roomArea || ""}
-              onChange={(e) => patchHierarchy({ roomArea: e.target.value })}
-              disabled={disabled}
-              placeholder="Living room"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
-          <Field icon={<BookOpen size={11} />} label="Work Category">
-            <input
-              type="text"
-              value={hierarchy.workCategory || ""}
-              onChange={(e) => patchHierarchy({ workCategory: e.target.value })}
-              disabled={disabled}
-              placeholder="Civil / Carpentry / Electrical"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
-          <Field icon={<List size={11} />} label="Sub-category">
-            <input
-              type="text"
-              value={hierarchy.subCategory || ""}
-              onChange={(e) => patchHierarchy({ subCategory: e.target.value })}
-              disabled={disabled}
-              placeholder="Wardrobe / false ceiling"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
-          <Field icon={<FileText size={11} />} label="Drawing Ref / Rev">
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="text"
-                value={details.drawingRefNo || ""}
-                onChange={(e) => patchDetails({ drawingRefNo: e.target.value })}
-                disabled={disabled}
-                placeholder="DRG-101"
-                className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-              />
-              <input
-                type="text"
-                value={details.drawingRevision || ""}
-                onChange={(e) => patchDetails({ drawingRevision: e.target.value })}
-                disabled={disabled}
-                placeholder="R2"
-                className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-              />
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+              {!hideTakeoffFields && (
+                <Field icon={<Building2 size={11} />} label="Floor">
+                  <input
+                    type="text"
+                    value={hierarchy.floor || ""}
+                    onChange={(e) => patchHierarchy({ floor: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Ground floor"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                </Field>
+              )}
+              {!hideTakeoffFields && (
+                <Field icon={<MapPin size={11} />} label="Room / Area">
+                  <input
+                    type="text"
+                    value={hierarchy.roomArea || ""}
+                    onChange={(e) => patchHierarchy({ roomArea: e.target.value })}
+                    disabled={disabled}
+                    placeholder="Living room"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                </Field>
+              )}
+              {!hideTakeoffFields && (
+                <Field icon={<BookOpen size={11} />} label="Work Category">
+                  <input
+                    type="text"
+                    value={hierarchy.workCategory || ""}
+                    onChange={(e) =>
+                      patchHierarchy({ workCategory: e.target.value })
+                    }
+                    disabled={disabled}
+                    placeholder="Civil / Carpentry / Electrical"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                </Field>
+              )}
+              {!hideTakeoffFields && (
+                <Field icon={<List size={11} />} label="Sub-category">
+                  <input
+                    type="text"
+                    value={hierarchy.subCategory || ""}
+                    onChange={(e) =>
+                      patchHierarchy({ subCategory: e.target.value })
+                    }
+                    disabled={disabled}
+                    placeholder="Wardrobe / false ceiling"
+                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  />
+                </Field>
+              )}
+              {!hideTakeoffFields && (
+                <Field icon={<FileText size={11} />} label="Drawing Ref / Rev">
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      value={details.drawingRefNo || ""}
+                      onChange={(e) =>
+                        patchDetails({ drawingRefNo: e.target.value })
+                      }
+                      disabled={disabled}
+                      placeholder="DRG-101"
+                      className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                    <input
+                      type="text"
+                      value={details.drawingRevision || ""}
+                      onChange={(e) =>
+                        patchDetails({ drawingRevision: e.target.value })
+                      }
+                      disabled={disabled}
+                      placeholder="R2"
+                      className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                    />
+                  </div>
+                </Field>
+              )}
+              <Field icon={<Package size={11} />} label="Brand / Make / Model">
+                <input
+                  type="text"
+                  value={details.brandMakeModel || ""}
+                  onChange={(e) =>
+                    patchDetails({ brandMakeModel: e.target.value })
+                  }
+                  disabled={disabled}
+                  placeholder="Hettich / Asian Paints"
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+              </Field>
+              <Field
+                icon={<Sparkles size={11} />}
+                label="Finish / Color / Grade"
+              >
+                <input
+                  type="text"
+                  value={details.finishColorGrade || ""}
+                  onChange={(e) =>
+                    patchDetails({ finishColorGrade: e.target.value })
+                  }
+                  disabled={disabled}
+                  placeholder="Matte white / BWP"
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+              </Field>
+              <Field icon={<PackageCheck size={11} />} label="Item Type">
+                <select
+                  value={details.itemType || ITEM_TYPES[2]}
+                  onChange={(e) => patchDetails({ itemType: e.target.value })}
+                  disabled={disabled}
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                >
+                  {ITEM_TYPES.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field icon={<Calculator size={11} />} label="Billing Type">
+                <select
+                  value={details.billingType || BILLING_TYPES[1]}
+                  onChange={(e) =>
+                    patchDetails({ billingType: e.target.value })
+                  }
+                  disabled={disabled}
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                >
+                  {BILLING_TYPES.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field icon={<ShieldCheck size={11} />} label="Scope Type">
+                <select
+                  value={details.scopeType || SCOPE_TYPES[0]}
+                  onChange={(e) => patchDetails({ scopeType: e.target.value })}
+                  disabled={disabled}
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                >
+                  {SCOPE_TYPES.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field icon={<User size={11} />} label="Execution By">
+                <select
+                  value={details.executionBy || EXECUTION_BY[0]}
+                  onChange={(e) =>
+                    patchDetails({ executionBy: e.target.value })
+                  }
+                  disabled={disabled}
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                >
+                  {EXECUTION_BY.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field icon={<StickyNote size={11} />} label="Item Remarks">
+                <input
+                  type="text"
+                  value={details.remarks || ""}
+                  onChange={(e) => patchDetails({ remarks: e.target.value })}
+                  disabled={disabled}
+                  placeholder="Client/internal remark"
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+              </Field>
             </div>
-          </Field>
-          <Field icon={<Package size={11} />} label="Brand / Make / Model">
-            <input
-              type="text"
-              value={details.brandMakeModel || ""}
-              onChange={(e) => patchDetails({ brandMakeModel: e.target.value })}
-              disabled={disabled}
-              placeholder="Hettich / Asian Paints"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
-          <Field icon={<Sparkles size={11} />} label="Finish / Color / Grade">
-            <input
-              type="text"
-              value={details.finishColorGrade || ""}
-              onChange={(e) => patchDetails({ finishColorGrade: e.target.value })}
-              disabled={disabled}
-              placeholder="Matte white / BWP"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
-          <Field icon={<PackageCheck size={11} />} label="Item Type">
-            <select
-              value={details.itemType || ITEM_TYPES[2]}
-              onChange={(e) => patchDetails({ itemType: e.target.value })}
-              disabled={disabled}
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            >
-              {ITEM_TYPES.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-          </Field>
-          <Field icon={<Calculator size={11} />} label="Billing Type">
-            <select
-              value={details.billingType || BILLING_TYPES[1]}
-              onChange={(e) => patchDetails({ billingType: e.target.value })}
-              disabled={disabled}
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            >
-              {BILLING_TYPES.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-          </Field>
-          <Field icon={<ShieldCheck size={11} />} label="Scope Type">
-            <select
-              value={details.scopeType || SCOPE_TYPES[0]}
-              onChange={(e) => patchDetails({ scopeType: e.target.value })}
-              disabled={disabled}
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            >
-              {SCOPE_TYPES.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-          </Field>
-          <Field icon={<User size={11} />} label="Execution By">
-            <select
-              value={details.executionBy || EXECUTION_BY[0]}
-              onChange={(e) => patchDetails({ executionBy: e.target.value })}
-              disabled={disabled}
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            >
-              {EXECUTION_BY.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-          </Field>
-          <Field icon={<StickyNote size={11} />} label="Item Remarks">
-            <input
-              type="text"
-              value={details.remarks || ""}
-              onChange={(e) => patchDetails({ remarks: e.target.value })}
-              disabled={disabled}
-              placeholder="Client/internal remark"
-              className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-            />
-          </Field>
-        </div>
 
-        <div className="grid grid-cols-1 gap-3">
-          <Field icon={<FileText size={11} />} label="Specification">
-            <textarea
-              value={item.spec || ""}
-              onChange={(e) => onUpdate({ spec: e.target.value })}
-              disabled={disabled}
-              placeholder="Brand, model, finish, quality notes"
-              className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-              rows={2}
-            />
-          </Field>
-        </div>
-        </>
+            <div className="grid grid-cols-1 gap-3">
+              <Field icon={<FileText size={11} />} label="Specification">
+                <textarea
+                  value={item.spec || ""}
+                  onChange={(e) => onUpdate({ spec: e.target.value })}
+                  disabled={disabled}
+                  placeholder="Brand, model, finish, quality notes"
+                  className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  rows={2}
+                />
+              </Field>
+            </div>
+          </>
         )}
         {/* Scope-of-work details is intentionally lean now: Rate Analysis has
             its own editor tab; the Measurement Sheet is viewed via the header
@@ -3905,228 +4194,238 @@ const MaterialEditor = ({ item, onUpdate, disabled = false }) => {
 
   return (
     <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
-        <div className="flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => setOpen((p) => !p)}
-            className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted hover:text-select-blue"
-          >
-            {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-            Materials & Specifications
-            {materials.length > 0 && (
-              <span className="text-[9.5px] font-bold text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
-                {materials.length}
-              </span>
-            )}
-            {!open && materials.length > 0 && (
-              <span className="text-[10px] text-text-subtle truncate max-w-[400px] ml-1">
-                {materials
-                  .map((m) => `${m.name}${m.spec ? ` (${m.spec})` : ""}`)
-                  .filter(Boolean)
-                  .join(" · ")}
-              </span>
-            )}
-          </button>
-          {open && (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => {
-                  if (disabled) return;
-                  setPickerOpen((prev) => !prev);
-                  setMaterialQuery("");
-                }}
-                disabled={disabled}
-                className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Package size={11} /> Pick from Library
-              </button>
-              {pickerOpen && !disabled && (
-                <div className="absolute right-0 z-30 mt-2 w-[360px] max-w-[calc(100vw-3rem)] rounded-xl border border-bordergray bg-white shadow-xl p-2">
-                  <div className="flex items-center gap-1.5 border border-bordergray rounded-lg px-2 py-1.5">
-                    <Search size={12} className="text-text-subtle shrink-0" />
-                    <input
-                      value={materialQuery}
-                      onChange={(e) => setMaterialQuery(e.target.value)}
-                      placeholder="Search material library..."
-                      className="w-full text-[11.5px] text-textcolor outline-none placeholder:text-text-subtle"
-                      autoFocus
-                    />
-                  </div>
-                  <div className="mt-2 max-h-64 overflow-y-auto space-y-1">
-                    {filteredMaterials.length === 0 ? (
-                      <p className="px-2 py-3 text-[11px] text-text-subtle text-center">
-                        No materials found in library.
-                      </p>
-                    ) : (
-                      filteredMaterials.map((material, materialIdx) => (
-                        <button
-                          key={
-                            material.id ||
-                            `${material.name}-${material.specifications}-${materialIdx}`
-                          }
-                          type="button"
-                          onClick={() => pickMaterial(material)}
-                          className="w-full text-left rounded-lg px-2 py-2 hover:bg-bg-soft border border-transparent hover:border-bordergray"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="text-[11.5px] font-semibold text-textcolor truncate">
-                                {material.name || "Unnamed material"}
-                              </p>
-                              <p className="text-[10.5px] text-text-muted line-clamp-2">
-                                {material.specifications || material.spec || "-"}
-                              </p>
-                            </div>
-                            <div className="text-right shrink-0">
-                              <p className="text-[11px] font-semibold text-select-blue tabular-nums">
-                                {Number(material.rate) > 0
-                                  ? formatAmount(material.rate)
-                                  : "-"}
-                              </p>
-                              <p className="text-[10px] text-text-subtle">
-                                {material.unit || "unit"}
-                              </p>
-                            </div>
-                          </div>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => setOpen((p) => !p)}
+          className="flex items-center gap-1.5 text-[10.5px] font-semibold text-text-muted hover:text-select-blue"
+        >
+          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          Materials & Specifications
+          {materials.length > 0 && (
+            <span className="text-[9.5px] font-bold text-select-blue bg-white px-1.5 py-0.5 rounded border border-bordergray">
+              {materials.length}
+            </span>
           )}
-        </div>
+          {!open && materials.length > 0 && (
+            <span className="text-[10px] text-text-subtle truncate max-w-[400px] ml-1">
+              {materials
+                .map((m) => `${m.name}${m.spec ? ` (${m.spec})` : ""}`)
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+          )}
+        </button>
         {open && (
-          <div className="mt-2 space-y-1.5 pl-5">
-            {materials.length === 0 && (
-              <p className="text-[10.5px] text-text-subtle">
-                No materials specified. Pick from the Material Library to bring
-                in the name, specification, unit, and rate.
-              </p>
-            )}
-            {materials.length > 0 && (
-              <div className="hidden md:grid grid-cols-[130px_1fr_70px_76px_70px_92px_28px] gap-2 mb-0.5 px-0.5">
-                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Material</span>
-                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Specification</span>
-                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Unit</span>
-                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Qty / Unit</span>
-                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Waste %</span>
-                <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">Rate (₹)</span>
-                <span />
-              </div>
-            )}
-            {materials.map((m, idx) => {
-              const unit = m.unit || item.unit || "nos";
-              return (
-                <div
-                  key={idx}
-                  className="grid grid-cols-1 md:grid-cols-[130px_1fr_70px_76px_70px_92px_28px] gap-2 items-start"
-                >
-                  <textarea
-                    value={m.name}
-                    onChange={(e) => change(idx, "name", e.target.value)}
-                    disabled={disabled}
-                    placeholder="Plywood"
-                    className={`${compactInput} font-medium resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    rows={1}
-                  />
-                  <textarea
-                    value={m.spec}
-                    onChange={(e) => change(idx, "spec", e.target.value)}
-                    disabled={disabled}
-                    placeholder="BWP 19mm Greenply"
-                    className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    rows={1}
-                  />
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                if (disabled) return;
+                setPickerOpen((prev) => !prev);
+                setMaterialQuery("");
+              }}
+              disabled={disabled}
+              className="flex items-center gap-1 text-[10.5px] font-semibold text-select-blue hover:text-primary disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Package size={11} /> Pick from Library
+            </button>
+            {pickerOpen && !disabled && (
+              <div className="absolute right-0 z-30 mt-2 w-[360px] max-w-[calc(100vw-3rem)] rounded-xl border border-bordergray bg-white shadow-xl p-2">
+                <div className="flex items-center gap-1.5 border border-bordergray rounded-lg px-2 py-1.5">
+                  <Search size={12} className="text-text-subtle shrink-0" />
                   <input
-                    type="text"
-                    value={unit}
-                    onChange={(e) => change(idx, "unit", e.target.value)}
-                    disabled={disabled}
-                    placeholder="Unit"
-                    className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    title="Material unit"
+                    value={materialQuery}
+                    onChange={(e) => setMaterialQuery(e.target.value)}
+                    placeholder="Search material library..."
+                    className="w-full text-[11.5px] text-textcolor outline-none placeholder:text-text-subtle"
+                    autoFocus
                   />
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={m.qty ?? m.perUnitQty ?? m.consumptionQty ?? 1}
-                    onChange={(e) =>
-                      patch(idx, {
-                        qty: Number(e.target.value) || 0,
-                        consumptionMode: "per_unit",
-                      })
-                    }
-                    disabled={disabled}
-                    placeholder="Qty/unit"
-                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    title="Material quantity consumed per BOQ unit"
-                  />
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={m.wastagePct ?? 0}
-                    onChange={(e) =>
-                      patch(idx, {
-                        wastagePct: Number(e.target.value) || 0,
-                        consumptionMode: "per_unit",
-                      })
-                    }
-                    disabled={disabled}
-                    placeholder="Waste %"
-                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                    title="Wastage percentage"
-                  />
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={m.rate || 0}
-                    onChange={(e) =>
-                      change(idx, "rate", Number(e.target.value) || 0)
-                    }
-                    disabled={disabled}
-                    placeholder="Rate"
-                    className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => remove(idx)}
-                    disabled={disabled}
-                    className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Remove material"
-                  >
-                    <Trash2 size={11} />
-                  </button>
                 </div>
-              );
-            })}
-            {materials.length > 0 && derivedRate > 0 && (
-              <div className="mt-2 flex items-center gap-2 flex-wrap border-t border-bordergray/50 pt-2">
-                <span className="text-[10px] text-text-muted">
-                  Material cost:{" "}
-                  <span className="font-bold text-textcolor tabular-nums">
-                    {formatAmount(derivedRate)}
-                  </span>
-                  /unit
-                </span>
-
-                <span className="text-[9.5px] text-text-subtle">
-                  excludes labour & overhead
-                </span>
+                <div className="mt-2 max-h-64 overflow-y-auto space-y-1">
+                  {filteredMaterials.length === 0 ? (
+                    <p className="px-2 py-3 text-[11px] text-text-subtle text-center">
+                      No materials found in library.
+                    </p>
+                  ) : (
+                    filteredMaterials.map((material, materialIdx) => (
+                      <button
+                        key={
+                          material.id ||
+                          `${material.name}-${material.specifications}-${materialIdx}`
+                        }
+                        type="button"
+                        onClick={() => pickMaterial(material)}
+                        className="w-full text-left rounded-lg px-2 py-2 hover:bg-bg-soft border border-transparent hover:border-bordergray"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-[11.5px] font-semibold text-textcolor truncate">
+                              {material.name || "Unnamed material"}
+                            </p>
+                            <p className="text-[10.5px] text-text-muted line-clamp-2">
+                              {material.specifications || material.spec || "-"}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-[11px] font-semibold text-select-blue tabular-nums">
+                              {Number(material.rate) > 0
+                                ? formatAmount(material.rate)
+                                : "-"}
+                            </p>
+                            <p className="text-[10px] text-text-subtle">
+                              {material.unit || "unit"}
+                            </p>
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
               </div>
             )}
           </div>
         )}
+      </div>
+      {open && (
+        <div className="mt-2 space-y-1.5 pl-5">
+          {materials.length === 0 && (
+            <p className="text-[10.5px] text-text-subtle">
+              No materials specified. Pick from the Material Library to bring in
+              the name, specification, unit, and rate.
+            </p>
+          )}
+          {materials.length > 0 && (
+            <div className="hidden md:grid grid-cols-[130px_1fr_70px_76px_70px_92px_28px] gap-2 mb-0.5 px-0.5">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                Material
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                Specification
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                Unit
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                Qty / Unit
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                Waste %
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-text-subtle">
+                Rate (₹)
+              </span>
+              <span />
+            </div>
+          )}
+          {materials.map((m, idx) => {
+            const unit = m.unit || item.unit || "nos";
+            return (
+              <div
+                key={idx}
+                className="grid grid-cols-1 md:grid-cols-[130px_1fr_70px_76px_70px_92px_28px] gap-2 items-start"
+              >
+                <textarea
+                  value={m.name}
+                  onChange={(e) => change(idx, "name", e.target.value)}
+                  disabled={disabled}
+                  placeholder="Plywood"
+                  className={`${compactInput} font-medium resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  rows={1}
+                />
+                <textarea
+                  value={m.spec}
+                  onChange={(e) => change(idx, "spec", e.target.value)}
+                  disabled={disabled}
+                  placeholder="BWP 19mm Greenply"
+                  className={`${compactInput} resize-none disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  rows={1}
+                />
+                <input
+                  type="text"
+                  value={unit}
+                  onChange={(e) => change(idx, "unit", e.target.value)}
+                  disabled={disabled}
+                  placeholder="Unit"
+                  className={`${compactInput} disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  title="Material unit"
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={m.qty ?? m.perUnitQty ?? m.consumptionQty ?? 1}
+                  onChange={(e) =>
+                    patch(idx, {
+                      qty: Number(e.target.value) || 0,
+                      consumptionMode: "per_unit",
+                    })
+                  }
+                  disabled={disabled}
+                  placeholder="Qty/unit"
+                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  title="Material quantity consumed per BOQ unit"
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={m.wastagePct ?? 0}
+                  onChange={(e) =>
+                    patch(idx, {
+                      wastagePct: Number(e.target.value) || 0,
+                      consumptionMode: "per_unit",
+                    })
+                  }
+                  disabled={disabled}
+                  placeholder="Waste %"
+                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                  title="Wastage percentage"
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={m.rate || 0}
+                  onChange={(e) =>
+                    change(idx, "rate", Number(e.target.value) || 0)
+                  }
+                  disabled={disabled}
+                  placeholder="Rate"
+                  className={`${compactInput} text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
+                />
+                <button
+                  type="button"
+                  onClick={() => remove(idx)}
+                  disabled={disabled}
+                  className="h-7 w-7 flex items-center justify-center rounded-md text-text-subtle hover:text-red-500 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Remove material"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            );
+          })}
+          {materials.length > 0 && derivedRate > 0 && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap border-t border-bordergray/50 pt-2">
+              <span className="text-[10px] text-text-muted">
+                Material cost:{" "}
+                <span className="font-bold text-textcolor tabular-nums">
+                  {formatAmount(derivedRate)}
+                </span>
+                /unit
+              </span>
+
+              <span className="text-[9.5px] text-text-subtle">
+                excludes labour & overhead
+              </span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
-
-
 
 const rateRowAmount = (row) => {
   const quantity = Number(row.quantity) || 0;
@@ -4175,7 +4474,13 @@ const RaValueCell = ({ children, className = "", strong = false, title }) => (
 // Master. Selecting fills unit/rate/HSN/GST and seeds wastage; free typing keeps
 // the row as a custom (unlinked) entry. The menu is fixed-positioned so it isn't
 // clipped by the sheet's horizontal scroll container.
-const MaterialPickerCell = ({ row, disabled, materials, onChange, onSelect }) => {
+const MaterialPickerCell = ({
+  row,
+  disabled,
+  materials,
+  onChange,
+  onSelect,
+}) => {
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState(null);
   const inputRef = useRef(null);
@@ -4274,7 +4579,15 @@ const MaterialPickerCell = ({ row, disabled, materials, onChange, onSelect }) =>
 
 // Editable item row (material or contract). idx is the running Sl within block.
 // When `materials` is supplied, the Description cell becomes a Master picker.
-const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOptions = [] }) => (
+const RaItemRow = ({
+  row,
+  idx,
+  disabled,
+  onChange,
+  onRemove,
+  materials,
+  unitOptions = [],
+}) => (
   <div className={`${RA_COLS} border-t border-bordergray/60`}>
     <div className="flex items-center justify-center bg-white text-[10px] font-semibold tabular-nums text-text-subtle">
       {idx + 1}
@@ -4329,7 +4642,8 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOpti
       inputMode="decimal"
       value={row.rate ?? ""}
       onChange={(e) => {
-        if (DECIMAL_ONLY.test(e.target.value)) onChange({ rate: e.target.value });
+        if (DECIMAL_ONLY.test(e.target.value))
+          onChange({ rate: e.target.value });
       }}
       disabled={disabled}
       title="Rate per unit"
@@ -4341,7 +4655,8 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOpti
       inputMode="decimal"
       value={row.quantity ?? ""}
       onChange={(e) => {
-        if (DECIMAL_ONLY.test(e.target.value)) onChange({ quantity: e.target.value });
+        if (DECIMAL_ONLY.test(e.target.value))
+          onChange({ quantity: e.target.value });
       }}
       disabled={disabled}
       placeholder="0"
@@ -4352,7 +4667,8 @@ const RaItemRow = ({ row, idx, disabled, onChange, onRemove, materials, unitOpti
       inputMode="decimal"
       value={row.wastagePercent ?? ""}
       onChange={(e) => {
-        if (DECIMAL_ONLY.test(e.target.value)) onChange({ wastagePercent: e.target.value });
+        if (DECIMAL_ONLY.test(e.target.value))
+          onChange({ wastagePercent: e.target.value });
       }}
       disabled={disabled}
       placeholder="0"
@@ -4439,7 +4755,9 @@ const RaCascadeRow = ({
       )}
     </div>
     <div className="col-span-6 flex items-center gap-2 px-1.5 py-1.5">
-      <span className={`text-[11px] ${strong ? "font-bold text-textcolor" : "font-semibold text-text-muted"}`}>
+      <span
+        className={`text-[11px] ${strong ? "font-bold text-textcolor" : "font-semibold text-text-muted"}`}
+      >
         {label}
       </span>
       {onPercentChange && (
@@ -4449,7 +4767,8 @@ const RaCascadeRow = ({
             inputMode="decimal"
             value={percentValue ?? ""}
             onChange={(e) => {
-              if (DECIMAL_ONLY.test(e.target.value)) onPercentChange(e.target.value);
+              if (DECIMAL_ONLY.test(e.target.value))
+                onPercentChange(e.target.value);
             }}
             disabled={disabled}
             placeholder="0"
@@ -4472,7 +4791,9 @@ const RaCascadeRow = ({
 // Scope of Work, wired to the same updateItem path, so edits stay in sync across
 // both tabs (there's one source of truth per item).
 const RateAnalysisTab = ({ boq, onUpdateItem, disabled = false }) => {
-  const sections = (boq.sections || []).filter((s) => (s.items || []).length > 0);
+  const sections = (boq.sections || []).filter(
+    (s) => (s.items || []).length > 0,
+  );
   const allItems = sections.flatMap((s) => s.items || []);
   const enabledCount = allItems.filter((it) => it.rateAnalysis?.enabled).length;
 
@@ -4498,7 +4819,9 @@ const RateAnalysisTab = ({ boq, onUpdateItem, disabled = false }) => {
         <div className="flex items-center gap-2">
           <Calculator size={15} className="text-select-blue" />
           <div>
-            <p className="text-[12.5px] font-bold text-textcolor">Rate Analysis</p>
+            <p className="text-[12.5px] font-bold text-textcolor">
+              Rate Analysis
+            </p>
             <p className="text-[11px] text-text-muted">
               Build up and validate unit rates for every line item before
               finalizing.
@@ -4515,7 +4838,7 @@ const RateAnalysisTab = ({ boq, onUpdateItem, disabled = false }) => {
           <div className="flex items-center gap-2">
             <span className="h-4 w-1 rounded bg-select-blue" />
             <h3 className="text-[12px] font-bold text-textcolor">
-              {section.title || "Untitled section"}
+              {section.name || section.title || "Untitled Section"}
             </h3>
             <span className="text-[10.5px] text-text-subtle">
               {section.items.length} item{section.items.length > 1 ? "s" : ""}
@@ -4543,7 +4866,9 @@ const RateAnalysisTab = ({ boq, onUpdateItem, disabled = false }) => {
               </div>
               <RateAnalysisEditor
                 item={item}
-                onUpdate={(changes) => onUpdateItem(section.id, item.id, changes)}
+                onUpdate={(changes) =>
+                  onUpdateItem(section.id, item.id, changes)
+                }
                 disabled={disabled}
               />
             </div>
@@ -4582,7 +4907,9 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
     const next = computeRateAnalysis({ ...current, ...values }, item.unit);
     onUpdate({
       rateAnalysis: next,
-      ...(next.enabled && next.useFinalRate ? { rate: next.roundedFinalRate } : {}),
+      ...(next.enabled && next.useFinalRate
+        ? { rate: next.roundedFinalRate }
+        : {}),
     });
   };
   const changeRows = (key, rows) => applyRa({ [key]: rows });
@@ -4599,7 +4926,10 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
       { ...blankRateAnalysisRow(), unit: item.unit || "" },
     ]);
   const removeRow = (key, idx) =>
-    changeRows(key, (current[key] || []).filter((_, i) => i !== idx));
+    changeRows(
+      key,
+      (current[key] || []).filter((_, i) => i !== idx),
+    );
 
   return (
     <div className="mt-3 rounded-xl border border-bordergray bg-white px-3 py-2">
@@ -4653,13 +4983,11 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
           {/* RA quantity + unit — the basis the per-unit rate is divided by. */}
           <div className="flex flex-wrap items-end gap-3 rounded-lg border border-bordergray/70 bg-bg-soft/30 px-3 py-2">
             <Field icon={<Hash size={10} />} label="RA Qty">
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={current.raQuantity || 0}
-                onChange={(e) => applyRa({ raQuantity: Number(e.target.value) || 0 })}
+              <NumericInput
+                value={current.raQuantity || ""}
+                onChange={(val) => applyRa({ raQuantity: Number(val) || 0 })}
                 disabled={ro}
+                placeholder="0"
                 className={`${compactInput} w-24 text-right tabular-nums disabled:bg-bg-soft disabled:text-text-subtle disabled:cursor-not-allowed`}
               />
             </Field>
@@ -4692,17 +5020,31 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
           <div className="overflow-x-auto rounded-lg border border-bordergray">
             <div className="min-w-[640px]">
               {/* Column header */}
-              <div className={`${RA_COLS} bg-primary/5 text-[8.5px] font-bold uppercase tracking-wider text-text-muted`}>
-                <span className="flex items-center justify-center py-1.5">Sl</span>
-                <span className="flex items-center px-1.5 py-1.5">Description</span>
+              <div
+                className={`${RA_COLS} bg-primary/5 text-[8.5px] font-bold uppercase tracking-wider text-text-muted`}
+              >
+                <span className="flex items-center justify-center py-1.5">
+                  Sl
+                </span>
+                <span className="flex items-center px-1.5 py-1.5">
+                  Description
+                </span>
                 <span className="flex items-center px-1.5 py-1.5">Unit</span>
                 <span className="flex items-center justify-end px-1.5 py-1.5">
                   Rate/{unitLabel}
                 </span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">Qty</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">Waste%</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">QWW</span>
-                <span className="flex items-center justify-end px-1.5 py-1.5">Amount</span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">
+                  Qty
+                </span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">
+                  Waste%
+                </span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">
+                  QWW
+                </span>
+                <span className="flex items-center justify-end px-1.5 py-1.5">
+                  Amount
+                </span>
                 <span className="py-1.5" />
               </div>
 
@@ -4728,7 +5070,9 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
                     disabled={ro}
                     materials={materials}
                     unitOptions={unitOptions}
-                    onChange={(values) => patchRow("materialItems", idx, values)}
+                    onChange={(values) =>
+                      patchRow("materialItems", idx, values)
+                    }
                     onRemove={() => removeRow("materialItems", idx)}
                   />
                 ))
@@ -4759,7 +5103,9 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
                     idx={idx}
                     disabled={ro}
                     unitOptions={unitOptions}
-                    onChange={(values) => patchRow("contractItems", idx, values)}
+                    onChange={(values) =>
+                      patchRow("contractItems", idx, values)
+                    }
                     onRemove={() => removeRow("contractItems", idx)}
                   />
                 ))
@@ -4770,7 +5116,9 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
               />
 
               {/* Price Calculation band */}
-              <div className={`${RA_COLS} border-t-2 border-bordergray bg-primary/5`}>
+              <div
+                className={`${RA_COLS} border-t-2 border-bordergray bg-primary/5`}
+              >
                 <div className="col-span-9 px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-text-muted">
                   Price Calculation
                 </div>
@@ -4778,10 +5126,18 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
 
               {/* Optional cost lines that aren't material/contract rows */}
               {current.subtotalConsumables > 0 && (
-                <RaCascadeRow letter="" label="Consumables" value={current.subtotalConsumables} />
+                <RaCascadeRow
+                  letter=""
+                  label="Consumables"
+                  value={current.subtotalConsumables}
+                />
               )}
               {/* Labour — mapped from the build-up and shown as a cost line. */}
-              <RaCascadeRow letter="" label="Labour (lump sum)" value={current.labourRate} />
+              <RaCascadeRow
+                letter=""
+                label="Labour (lump sum)"
+                value={current.labourRate}
+              />
 
               {/* C — Total of Material + Contracts (A+B) */}
               <RaCascadeRow
@@ -4838,13 +5194,11 @@ const RateAnalysisEditor = ({ item, onUpdate, disabled = false }) => {
               {formatAmount(current.roundedFinalRate)}
             </span>
           </div>
-
         </div>
       )}
     </div>
   );
 };
-
 
 const ClientPicker = ({ current, onPick, onClear, disabled = false }) => {
   const [open, setOpen] = useState(false);
@@ -5082,9 +5436,18 @@ const formatSignoffDate = (iso) => {
   });
 };
 
-
-const AuditTrailList = ({ items = [], revisionHistory = [], onViewSnapshot }) => {
+const AuditTrailList = ({
+  items = [],
+  revisionHistory = [],
+  revisionComparison = null,
+  onViewSnapshot,
+}) => {
   const latest = [...items].reverse();
+  // The stored revisionComparison applies to the current revision — show its
+  // summary alongside the "sent" or "approved" entry for that same revision.
+  const diffRevision = revisionComparison?.currentRevision ?? null;
+  const hasDiff =
+    diffRevision !== null && (revisionComparison?.changes || []).length > 0;
 
   return (
     <div className="rounded-xl border border-bordergray bg-white">
@@ -5107,6 +5470,12 @@ const AuditTrailList = ({ items = [], revisionHistory = [], onViewSnapshot }) =>
               entry.action === "revision_created"
                 ? revisionHistory.find((r) => r.revision === entry.revision)
                 : null;
+            // Show the diff summary on the sent/approved entry for the matching revision
+            const showDiff =
+              hasDiff &&
+              entry.revision === diffRevision &&
+              (entry.action === "sent" || entry.action === "approved");
+            const s = revisionComparison?.summary || {};
             return (
               <div
                 key={entry.id}
@@ -5142,6 +5511,31 @@ const AuditTrailList = ({ items = [], revisionHistory = [], onViewSnapshot }) =>
                     {entry.details}
                   </p>
                 )}
+                {showDiff && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {s.itemsAdded > 0 && (
+                      <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                        +{s.itemsAdded} added
+                      </span>
+                    )}
+                    {s.itemsRemoved > 0 && (
+                      <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-red-50 text-red-600 border border-red-100">
+                        −{s.itemsRemoved} removed
+                      </span>
+                    )}
+                    {s.itemsChanged > 0 && (
+                      <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-amber-50 text-amber-700 border border-amber-100">
+                        ~{s.itemsChanged} changed
+                      </span>
+                    )}
+                    {s.amountDelta !== 0 && (
+                      <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-semibold border ${s.amountDelta > 0 ? "bg-blue-50 text-blue-700 border-blue-100" : "bg-orange-50 text-orange-700 border-orange-100"}`}>
+                        {s.amountDelta > 0 ? "+" : ""}
+                        ₹{Math.abs(Math.round(s.amountDelta)).toLocaleString("en-IN")}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -5151,11 +5545,23 @@ const AuditTrailList = ({ items = [], revisionHistory = [], onViewSnapshot }) =>
   );
 };
 
-const RevisionSnapshotModal = ({ snapshot, onClose }) => {
+const RevisionSnapshotModal = ({ snapshot, currentSections, onClose }) => {
+  const [activeTab, setActiveTab] = useState("snapshot");
   const totalItems = (snapshot.sections || []).reduce(
     (s, sec) => s + (sec.items?.length || 0),
     0,
   );
+  // Compute what changed between this snapshot (prev) and the current live
+  // sections (next) — only when currentSections is provided and differs.
+  const diff = useMemo(
+    () =>
+      currentSections && snapshot.sections
+        ? diffBoqRevisions(snapshot.sections, currentSections)
+        : null,
+    [snapshot.sections, currentSections],
+  );
+  const hasChanges = diff && diff.changes.length > 0;
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-overallbg">
       {/* Header */}
@@ -5171,6 +5577,11 @@ const RevisionSnapshotModal = ({ snapshot, onClose }) => {
           <span className="text-[10.5px] text-text-subtle">
             · {snapshot.sections?.length || 0} sections · {totalItems} items
           </span>
+          {hasChanges && (
+            <span className="rounded-full bg-amber-100 text-amber-700 border border-amber-200 px-2 py-0.5 text-[9.5px] font-bold">
+              {diff.changes.length} change{diff.changes.length !== 1 ? "s" : ""} since this revision
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10.5px] text-text-subtle">
@@ -5192,65 +5603,222 @@ const RevisionSnapshotModal = ({ snapshot, onClose }) => {
         </div>
       </div>
 
+      {/* Tabs */}
+      {hasChanges && (
+        <div className="modal-no-print flex border-b border-bordergray bg-white px-4 shrink-0">
+          {[
+            { id: "snapshot", label: "Snapshot" },
+            { id: "changes", label: `Change Register (${diff.changes.length})` },
+          ].map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setActiveTab(t.id)}
+              className={`px-4 py-2.5 text-[11.5px] font-semibold border-b-2 -mb-px transition-colors ${
+                activeTab === t.id
+                  ? "border-select-blue text-select-blue"
+                  : "border-transparent text-text-muted hover:text-textcolor"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {(!snapshot.sections || snapshot.sections.length === 0) ? (
-          <div className="text-center py-16 text-text-subtle text-[13px]">
-            No sections were captured in this snapshot.
+        {activeTab === "changes" && diff ? (
+          <div className="mx-auto max-w-4xl">
+            {/* Summary row */}
+            <div className="mb-4 flex flex-wrap gap-2">
+              {diff.summary.sectionsAdded > 0 && (
+                <span className="rounded-lg px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                  +{diff.summary.sectionsAdded} section{diff.summary.sectionsAdded !== 1 ? "s" : ""} added
+                </span>
+              )}
+              {diff.summary.sectionsRemoved > 0 && (
+                <span className="rounded-lg px-2.5 py-1 text-[11px] font-semibold bg-red-50 text-red-600 border border-red-100">
+                  −{diff.summary.sectionsRemoved} section{diff.summary.sectionsRemoved !== 1 ? "s" : ""} removed
+                </span>
+              )}
+              {diff.summary.itemsAdded > 0 && (
+                <span className="rounded-lg px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                  +{diff.summary.itemsAdded} item{diff.summary.itemsAdded !== 1 ? "s" : ""} added
+                </span>
+              )}
+              {diff.summary.itemsRemoved > 0 && (
+                <span className="rounded-lg px-2.5 py-1 text-[11px] font-semibold bg-red-50 text-red-600 border border-red-100">
+                  −{diff.summary.itemsRemoved} item{diff.summary.itemsRemoved !== 1 ? "s" : ""} removed
+                </span>
+              )}
+              {diff.summary.itemsChanged > 0 && (
+                <span className="rounded-lg px-2.5 py-1 text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-100">
+                  ~{diff.summary.itemsChanged} item{diff.summary.itemsChanged !== 1 ? "s" : ""} changed
+                </span>
+              )}
+              {diff.summary.amountDelta !== 0 && (
+                <span className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold border ${diff.summary.amountDelta > 0 ? "bg-blue-50 text-blue-700 border-blue-100" : "bg-orange-50 text-orange-700 border-orange-100"}`}>
+                  Net change {diff.summary.amountDelta > 0 ? "+" : ""}
+                  ₹{Math.abs(Math.round(diff.summary.amountDelta)).toLocaleString("en-IN")}
+                </span>
+              )}
+            </div>
+
+            {/* Change register table */}
+            <div className="rounded-xl border border-bordergray bg-white overflow-hidden">
+              <table className="w-full text-[11.5px]">
+                <thead>
+                  <tr className="text-[9.5px] font-bold uppercase tracking-wider text-text-muted bg-bg-soft border-b border-bordergray">
+                    <th className="px-4 py-2 text-left w-20">Change</th>
+                    <th className="px-4 py-2 text-left">Description</th>
+                    <th className="px-4 py-2 text-left w-32">Section</th>
+                    <th className="px-4 py-2 text-right w-24">Old Amount</th>
+                    <th className="px-4 py-2 text-right w-24">New Amount</th>
+                    <th className="px-4 py-2 text-right w-24">Δ Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {diff.changes.map((c, ci) => {
+                    const typeStyle =
+                      c.type === "added"
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : c.type === "removed"
+                        ? "bg-red-50 text-red-600 border-red-200"
+                        : "bg-amber-50 text-amber-700 border-amber-200";
+                    const typeLabel =
+                      c.type === "added" ? "Added" : c.type === "removed" ? "Removed" : "Changed";
+                    const prevAmt = c.type === "added" ? 0 : (c.prevAmount ?? c.amount ?? 0);
+                    const nextAmt = c.type === "removed" ? 0 : (c.nextAmount ?? c.amount ?? 0);
+                    const delta = nextAmt - prevAmt;
+                    return (
+                      <tr
+                        key={c.itemId || ci}
+                        className="border-b border-bordergray/60 last:border-b-0 hover:bg-bg-soft/30"
+                      >
+                        <td className="px-4 py-2">
+                          <span className={`inline-block rounded px-1.5 py-0.5 text-[9px] font-bold border ${typeStyle}`}>
+                            {typeLabel}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">
+                          <p className="font-medium text-textcolor">{c.description || "—"}</p>
+                          {c.type === "changed" && c.fields?.map((f) => (
+                            <p key={f.field} className="text-[10px] text-text-muted mt-0.5">
+                              {f.field}:{" "}
+                              <span className="line-through text-red-500">
+                                {typeof f.oldValue === "number" ? Number(f.oldValue).toLocaleString("en-IN") : f.oldValue}
+                              </span>
+                              {" → "}
+                              <span className="text-emerald-600 font-semibold">
+                                {typeof f.newValue === "number" ? Number(f.newValue).toLocaleString("en-IN") : f.newValue}
+                              </span>
+                            </p>
+                          ))}
+                        </td>
+                        <td className="px-4 py-2 text-text-muted">{c.section || "—"}</td>
+                        <td className="px-4 py-2 text-right text-text-muted tabular-nums">
+                          {prevAmt > 0 ? `₹${Math.round(prevAmt).toLocaleString("en-IN")}` : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right text-textcolor tabular-nums">
+                          {nextAmt > 0 ? `₹${Math.round(nextAmt).toLocaleString("en-IN")}` : "—"}
+                        </td>
+                        <td className={`px-4 py-2 text-right font-semibold tabular-nums ${delta > 0 ? "text-emerald-600" : delta < 0 ? "text-red-500" : "text-text-muted"}`}>
+                          {delta !== 0
+                            ? `${delta > 0 ? "+" : ""}₹${Math.round(delta).toLocaleString("en-IN")}`
+                            : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-4xl space-y-4">
-            {snapshot.sections.map((sec, si) => (
-              <div key={sec.id || si} className="rounded-xl border border-bordergray bg-white overflow-hidden">
-                <div className="flex items-center gap-2 bg-bg-soft px-4 py-2.5 border-b border-bordergray">
-                  <span className="text-[11px] font-bold text-textcolor">{sec.name || "Untitled Section"}</span>
-                  {sec.category && (
-                    <span className="text-[10px] text-text-muted">· {sec.category}</span>
+          !snapshot.sections || snapshot.sections.length === 0 ? (
+            <div className="text-center py-16 text-text-subtle text-[13px]">
+              No sections were captured in this snapshot.
+            </div>
+          ) : (
+            <div className="mx-auto max-w-4xl space-y-4">
+              {snapshot.sections.map((sec, si) => (
+                <div
+                  key={sec.id || si}
+                  className="rounded-xl border border-bordergray bg-white overflow-hidden"
+                >
+                  <div className="flex items-center gap-2 bg-bg-soft px-4 py-2.5 border-b border-bordergray">
+                    <span className="text-[11px] font-bold text-textcolor">
+                      {sec.name || "Untitled Section"}
+                    </span>
+                    {sec.category && (
+                      <span className="text-[10px] text-text-muted">
+                        · {sec.category}
+                      </span>
+                    )}
+                    <span className="ml-auto text-[10px] text-text-subtle">
+                      {sec.items?.length || 0} items
+                    </span>
+                  </div>
+                  {!sec.items || sec.items.length === 0 ? (
+                    <p className="px-4 py-3 text-[11px] text-text-subtle">
+                      No items.
+                    </p>
+                  ) : (
+                    <table className="w-full text-[11.5px]">
+                      <thead>
+                        <tr className="text-[10px] text-text-muted uppercase tracking-wide border-b border-bordergray">
+                          <th className="px-4 py-2 text-center font-semibold w-8">#</th>
+                          <th className="px-4 py-2 text-center font-semibold">Description</th>
+                          <th className="px-4 py-2 text-center font-semibold">Qty</th>
+                          <th className="px-4 py-2 text-center font-semibold">Unit</th>
+                          <th className="px-4 py-2 text-center font-semibold">Rate</th>
+                          <th className="px-4 py-2 text-center font-semibold">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sec.items.map((item, ii) => {
+                          const qty = computeItemQty(item);
+                          const amt = qty * (Number(item.rate) || 0);
+                          return (
+                            <tr
+                              key={item.id || ii}
+                              className="border-b border-bordergray/60 last:border-b-0 hover:bg-bg-soft/40"
+                            >
+                              <td className="px-4 py-2 text-text-subtle">{ii + 1}</td>
+                              <td className="px-4 py-2">
+                                <p className="font-medium text-textcolor">
+                                  {item.description || "—"}
+                                </p>
+                                {item.spec && (
+                                  <p className="text-[10px] text-text-muted mt-0.5">
+                                    {item.spec}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="px-4 py-2 text-right text-textcolor">
+                                {Number(qty).toFixed(2)}
+                              </td>
+                              <td className="px-4 py-2 text-text-muted">{item.unit || "—"}</td>
+                              <td className="px-4 py-2 text-right text-textcolor">
+                                {Number(item.rate || 0).toLocaleString("en-IN")}
+                              </td>
+                              <td className="px-4 py-2 text-right font-semibold text-textcolor">
+                                {amt.toLocaleString("en-IN", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   )}
-                  <span className="ml-auto text-[10px] text-text-subtle">{sec.items?.length || 0} items</span>
                 </div>
-                {(!sec.items || sec.items.length === 0) ? (
-                  <p className="px-4 py-3 text-[11px] text-text-subtle">No items.</p>
-                ) : (
-                  <table className="w-full text-[11.5px]">
-                    <thead>
-                      <tr className="text-[10px] text-text-muted uppercase tracking-wide border-b border-bordergray">
-                        <th className="px-4 py-2 text-center font-semibold w-8">#</th>
-                        <th className="px-4 py-2 text-center font-semibold">Description</th>
-                        <th className="px-4 py-2 text-center font-semibold">Qty</th>
-                        <th className="px-4 py-2 text-center font-semibold">Unit</th>
-                        <th className="px-4 py-2 text-center font-semibold">Rate</th>
-                        <th className="px-4 py-2 text-center font-semibold">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sec.items.map((item, ii) => {
-                        const qty = computeItemQty(item);
-                        const amt = qty * (Number(item.rate) || 0);
-                        return (
-                          <tr key={item.id || ii} className="border-b border-bordergray/60 last:border-b-0 hover:bg-bg-soft/40">
-                            <td className="px-4 py-2 text-text-subtle">{ii + 1}</td>
-                            <td className="px-4 py-2">
-                              <p className="font-medium text-textcolor">{item.description || "—"}</p>
-                              {item.spec && <p className="text-[10px] text-text-muted mt-0.5">{item.spec}</p>}
-                            </td>
-                            <td className="px-4 py-2 text-right text-textcolor">{Number(qty).toFixed(2)}</td>
-                            <td className="px-4 py-2 text-text-muted">{item.unit || "—"}</td>
-                            <td className="px-4 py-2 text-right text-textcolor">
-                              {Number(item.rate || 0).toLocaleString("en-IN")}
-                            </td>
-                            <td className="px-4 py-2 text-right font-semibold text-textcolor">
-                              {amt.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )
         )}
       </div>
     </div>
@@ -5642,31 +6210,35 @@ const SectionTemplatePicker = ({ onClose, onAddBlank, onAddFromCategory }) => {
   );
 };
 
-const EmptySectionsState = ({ onAdd, onAddFromTemplate, onSeed }) => (
+const EmptySectionsState = ({
+  onAdd,
+  onAddFromTemplate,
+  isArchitecture = false,
+}) => (
   <div className="bg-white rounded-2xl border border-dashed border-bordergray text-center py-12 px-6">
     <div className="h-14 w-14 rounded-2xl bg-linear-to-br from-select-blue/10 to-active-bg flex items-center justify-center mx-auto mb-3 border border-bordergray">
-      <Layers size={20} className="text-select-blue" />
+      {isArchitecture ? (
+        <Building2 size={20} className="text-select-blue" />
+      ) : (
+        <Layers size={20} className="text-select-blue" />
+      )}
     </div>
     <p className="text-[14px] font-bold text-textcolor">Start your BOQ</p>
     <p className="text-[12px] text-text-muted mt-1 max-w-sm mx-auto">
-      Pick a category to auto-create a section with all matching items from the
-      Item Master, or seed a whole BOQ from a Proposal Master preset.
+      {isArchitecture
+        ? "Add a work package section (Civil, MEP, Finishes, etc.) or a blank section — quantities come from approved drawings and the site survey take-off."
+        : "Pick a category to auto-create a section with all matching items from the Item Master, or seed a whole BOQ from a Proposal Master preset."}
     </p>
     <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
-      <button
-        type="button"
-        onClick={onAddFromTemplate}
-        className="flex items-center gap-1.5 px-3 py-2 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md shadow-select-blue/20 hover:shadow-lg"
-      >
-        <Sparkles size={13} /> Add Section from Library
-      </button>
-      <button
-        type="button"
-        onClick={onSeed}
-        className="flex items-center gap-1.5 px-3 py-2 bg-white border border-bordergray rounded-lg text-[12px] font-semibold text-textcolor hover:bg-bg-soft"
-      >
-        <FileText size={13} /> Seed from Preset
-      </button>
+      {isArchitecture ? (
+        <button
+          type="button"
+          onClick={onAddFromTemplate}
+          className="flex items-center gap-1.5 px-3 py-2 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[12px] font-semibold shadow-md shadow-select-blue/20 hover:shadow-lg"
+        >
+          <Building2 size={13} /> Add Work Package Section
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={onAdd}
@@ -5674,6 +6246,71 @@ const EmptySectionsState = ({ onAdd, onAddFromTemplate, onSeed }) => (
       >
         <Plus size={13} /> Blank Section
       </button>
+    </div>
+  </div>
+);
+
+const ArchSectionTemplatePicker = ({ onClose, onAddSection, onAddBlank }) => (
+  <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[88vh] overflow-hidden flex flex-col">
+      <div className="px-5 py-4 border-b border-bordergray flex items-center justify-between">
+        <div>
+          <h3 className="text-[14px] font-bold text-textcolor">Add Work Package</h3>
+          <p className="text-[10.5px] text-text-muted mt-0.5">
+            Select a package — line items are added from approved GFC drawings
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="overflow-y-auto flex-1 p-4 space-y-1.5">
+        {ARCH_WORK_CATEGORIES.map((cat, idx) => {
+          const c = roomColor(cat.value);
+          return (
+            <button
+              key={cat.value}
+              type="button"
+              onClick={() => onAddSection(cat.label, cat.value)}
+              className="w-full text-left rounded-xl border border-bordergray bg-white hover:border-select-blue/40 hover:shadow-sm transition-all group overflow-hidden"
+            >
+              <div className={`px-3 py-2.5 flex items-center gap-2.5 bg-linear-to-r ${c.bg.replace("bg-", "from-")}/40 to-white`}>
+                <span className="text-[10px] font-bold text-text-muted bg-white px-1.5 py-0.5 rounded border border-bordergray tabular-nums shrink-0">
+                  {String(idx + 1).padStart(2, "0")}
+                </span>
+                <span className={`h-6 w-6 flex items-center justify-center rounded-md shrink-0 ${c.bg}`}>
+                  <span className={`h-2 w-2 rounded-full ${c.dot}`} />
+                </span>
+                <span className="text-[12.5px] font-bold text-textcolor group-hover:text-select-blue transition-colors min-w-0 truncate flex-1">
+                  {cat.label}
+                </span>
+                <span className="text-[10px] text-text-subtle hidden sm:block truncate max-w-[220px] shrink-0">
+                  {cat.description}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+
+        <div className="pt-2 flex items-center gap-2 text-[10px] uppercase tracking-wider text-text-subtle">
+          <span className="flex-1 h-px bg-bordergray" />
+          or
+          <span className="flex-1 h-px bg-bordergray" />
+        </div>
+
+        <button
+          type="button"
+          onClick={onAddBlank}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-dashed border-bordergray text-[12px] font-semibold text-text-muted hover:border-select-blue hover:text-select-blue hover:bg-active-bg/30 transition-all"
+        >
+          <Plus size={13} /> Blank Section
+        </button>
+      </div>
     </div>
   </div>
 );
@@ -5700,7 +6337,9 @@ const SurveyLinker = ({ onClose, onPick }) => {
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-bordergray">
           <div>
-            <p className="text-[14px] font-bold text-textcolor">Link a Site Survey</p>
+            <p className="text-[14px] font-bold text-textcolor">
+              Link a Site Survey
+            </p>
             <p className="text-[11.5px] text-text-muted mt-0.5">
               Pick a site with a frozen survey to generate from
             </p>
@@ -5728,7 +6367,9 @@ const SurveyLinker = ({ onClose, onPick }) => {
                   className="w-full flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-left hover:bg-active-bg transition-colors"
                 >
                   <div>
-                    <p className="text-[13px] font-semibold text-textcolor">{s.name}</p>
+                    <p className="text-[13px] font-semibold text-textcolor">
+                      {s.name}
+                    </p>
                     <p className="text-[11px] text-text-muted">{s.siteID}</p>
                   </div>
                   <Ruler size={14} className="text-text-subtle shrink-0" />

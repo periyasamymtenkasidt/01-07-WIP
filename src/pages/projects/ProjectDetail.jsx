@@ -554,6 +554,7 @@ const ProjectDetail = () => {
   const isLost = status === "lost";
   const isOnHold = status === "on hold";
   const isConverted = status === "won" && !!lead.convertedClientID;
+  const isArch = lead.serviceTrack === "Architecture";
 
   const client = lead.convertedClientID
     ? [
@@ -592,22 +593,6 @@ const ProjectDetail = () => {
               Read-only view • Proposal ID #{lead.proposalId}
             </p>
           </div>
-        </div>
-        <div className="flex gap-3 flex-wrap justify-end">
-          <Link
-            to={`/leads/${lead.proposalId}`}
-            className="flex items-center gap-2 px-5 py-2.5 bg-select-blue text-white rounded-xl text-sm font-semibold hover:bg-blue-950 shadow-sm"
-          >
-            <FiExternalLink size={16} /> Open Lead to Edit
-          </Link>
-          {isConverted && client && (
-            <Link
-              to={`/clients/${client.clientID}`}
-              className="flex items-center gap-2 px-5 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-sm font-semibold text-emerald-700 hover:bg-emerald-100 shadow-sm"
-            >
-              <FiUserCheck size={16} /> View Client
-            </Link>
-          )}
         </div>
       </div>
 
@@ -653,27 +638,6 @@ const ProjectDetail = () => {
               </div>
             </div>
 
-            <div className="mt-12">
-              <p className="text-[10px] text-text-subtle font-bold uppercase tracking-wider mb-4">
-                Sales
-              </p>
-              <StepperRow
-                steps={SALES_STEPS}
-                currentIdx={adjustedSalesIdx}
-                dimmed={isLost}
-              />
-            </div>
-
-            <div className="mt-14">
-              <p className="text-[10px] text-text-subtle font-bold uppercase tracking-wider mb-4">
-                Delivery
-              </p>
-              <StepperRow
-                steps={DELIVERY_STEPS}
-                currentIdx={deliveryIdx}
-                dimmed={!deliveryActive || isLost}
-              />
-            </div>
 
             {status === "negotiation" && lead.negotiationNote && (
               <div className="mt-12 flex items-start gap-3 bg-amber-50 border border-amber-100 rounded-xl p-4">
@@ -725,12 +689,12 @@ const ProjectDetail = () => {
             )}
           </div>
 
-          {/* Card 2: Investment + Info Grid */}
+          {/* Card 2: Budget/Investment + Info Grid */}
           <div className="flex flex-col md:flex-row gap-6 shrink-0">
             <div className="bg-white rounded-[20px] p-7 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.1)] w-full md:w-[35%] flex flex-col justify-between">
               <div>
                 <p className="text-[11px] text-gray-400 font-bold uppercase tracking-wider mb-3">
-                  Investment Range
+                  {isArch ? "Construction Budget" : "Investment Range"}
                 </p>
                 <h3 className="text-3xl font-bold text-select-blue leading-tight">
                   {lead.investment?.includes("-") ? (
@@ -746,49 +710,89 @@ const ProjectDetail = () => {
               <div className="mt-10 border-t border-gray-100 text-left pt-5 space-y-3.5">
                 <div className="flex justify-between items-center text-[13px]">
                   <span className="text-gray-500 font-medium">
-                    Property Type
+                    {isArch ? "Building Use" : "Property Type"}
                   </span>
                   <span className="font-bold text-gray-900">
-                    {lead.propertyType || "—"}
+                    {isArch ? (lead.buildingUse || lead.propertyType || "—") : (lead.propertyType || "—")}
                   </span>
                 </div>
+                {isArch && lead.plotArea && (
+                  <div className="flex justify-between items-center text-[13px]">
+                    <span className="text-gray-500 font-medium">Plot Area</span>
+                    <span className="font-bold text-gray-900">{lead.plotArea}</span>
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="w-full md:w-[65%] grid grid-cols-2 gap-4">
-              <InfoCard
-                icon={<FiHome size={18} />}
-                label="Property Type"
-                value={lead.propertyType}
-              />
-              <InfoCard
-                icon={<FiCalendar size={18} />}
-                label="Possession Date"
-                value={lead.possessionDate}
-              />
-              <InfoCard
-                icon={<FiLayers size={18} />}
-                label="Project Scope"
-                value={(() => {
-                  const presetKey = lead.quotePreset || "";
-                  const propType = lead.propertyType || "";
-                  if (!presetKey) return lead.scope || "—";
-                  const formattedPresetKey = presetKey.replace(/^(\d+)(BHK)$/i, "$1 BHK");
-                  return `${formattedPresetKey} / ${propType}`;
-                })()}
-              />
-              <InfoCard
-                icon={<FiMessageCircle size={18} />}
-                label="Inquiry Source"
-                value={lead.inquirySource}
-              />
-              <div className="col-span-2">
-                <InfoCard
-                  icon={<FiPhone size={18} />}
-                  label="Phone Number"
-                  value={lead.phone}
-                />
-              </div>
+              {isArch ? (
+                <>
+                  <InfoCard
+                    icon={<FiHome size={18} />}
+                    label="Project Intent"
+                    value={lead.projectIntent}
+                  />
+                  <InfoCard
+                    icon={<FiLayers size={18} />}
+                    label="Requirement Type"
+                    value={lead.requirementType}
+                  />
+                  <InfoCard
+                    icon={<FiMapPin size={18} />}
+                    label="Plot Area"
+                    value={lead.plotArea}
+                  />
+                  <InfoCard
+                    icon={<FiMessageCircle size={18} />}
+                    label="Inquiry Source"
+                    value={lead.inquirySource}
+                  />
+                  <div className="col-span-2">
+                    <InfoCard
+                      icon={<FiPhone size={18} />}
+                      label="Phone Number"
+                      value={lead.phone}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <InfoCard
+                    icon={<FiHome size={18} />}
+                    label="Property Type"
+                    value={lead.propertyType}
+                  />
+                  <InfoCard
+                    icon={<FiCalendar size={18} />}
+                    label="Possession Date"
+                    value={lead.possessionDate}
+                  />
+                  <InfoCard
+                    icon={<FiLayers size={18} />}
+                    label="Project Scope"
+                    value={(() => {
+                      const presetKey = lead.quotePreset || "";
+                      const propType = lead.propertyType || "";
+                      if (!presetKey) return lead.scope || "—";
+                      const formattedPresetKey = presetKey.replace(/^(\d+)(BHK)$/i, "$1 BHK");
+                      return `${formattedPresetKey} / ${propType}`;
+                    })()}
+                  />
+                  <InfoCard
+                    icon={<FiMessageCircle size={18} />}
+                    label="Inquiry Source"
+                    value={lead.inquirySource}
+                  />
+                  <div className="col-span-2">
+                    <InfoCard
+                      icon={<FiPhone size={18} />}
+                      label="Phone Number"
+                      value={lead.phone}
+                    />
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -947,14 +951,6 @@ const ProjectDetail = () => {
                   },
                 )}
               </div>
-              {client && (
-                <Link
-                  to={`/clients/${client.clientID}`}
-                  className="mt-4 w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-dark-blue text-white text-[12px] font-semibold hover:bg-blue-950 transition-all"
-                >
-                  Manage in Client page <FiExternalLink size={12} />
-                </Link>
-              )}
             </div>
           )}
 

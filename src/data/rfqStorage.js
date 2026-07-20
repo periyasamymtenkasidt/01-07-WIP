@@ -10,6 +10,7 @@
 import { createPurchaseOrder } from "./procurementStorage";
 import { listContracts } from "./contractStorage";
 import { listVendors } from "./vendorStorage";
+import { getBoq } from "./boqStorage";
 
 const KEY = (contractId) => `rfqs_${contractId}`;
 
@@ -21,9 +22,9 @@ const readJson = (key, fallback) => {
   }
 };
 
-export const generateRfqId = (contractId) => {
+export const generateRfqId = () => {
   const year = new Date().getFullYear();
-  const n = listRfqs(contractId).length + 1;
+  const n = listAllRfqs().length + 1;
   return `RFQ-${year}-${String(n).padStart(3, "0")}`;
 };
 
@@ -35,7 +36,11 @@ const writeAll = (contractId, list) => {
   return list;
 };
 
-const lineAmount = (l) => (Number(l.qty) || 0) * (Number(l.rate) || 0);
+const lineAmount = (l) => {
+  const basic = (Number(l.qty) || 0) * (Number(l.rate) || 0);
+  const gst = Number(l.gst) || 0;
+  return basic + (basic * gst) / 100;
+};
 
 // Normalized identity for a line item — the trimmed lowercase name, which is the
 // stable human identity of the material. The Material-Master id is only a
@@ -79,7 +84,7 @@ const blankQuote = (vendorId) => ({
 // vendor already appearing in some other RFQ is NOT a trigger — the request
 // (contract + open + scope) is the identity — so distinct scopes stay separate
 // and awarded/closed RFQs are left untouched.
-export const createRfq = (contractId, { items = [], vendorIds = [] } = {}) => {
+export const createRfq = (contractId, { items = [], vendorIds = [], expectedDeliveryDate = "", clientName = "" } = {}) => {
   const normalizedItems = items.map((l) => ({
     materialId: l.materialId || null,
     name: l.name || "",
@@ -121,13 +126,15 @@ export const createRfq = (contractId, { items = [], vendorIds = [] } = {}) => {
   }
 
   const rfq = {
-    id: generateRfqId(contractId),
+    id: generateRfqId(),
     contractId,
+    clientName,
     items: normalizedItems,
     quotes: vendorIds.map(blankQuote),
     status: "sent", // sent → quoted → awarded → closed
     awardedVendorId: null,
     poId: null,
+    expectedDeliveryDate,
     createdAt: new Date().toISOString(),
   };
   writeAll(contractId, [rfq, ...existing]);
@@ -140,7 +147,7 @@ export const recordVendorQuote = (
   contractId,
   rfqId,
   vendorId,
-  { lines = [], notes = "" } = {},
+  { lines = [], notes = "", committedDeliveryDate = "" } = {},
 ) => {
   const next = listRfqs(contractId).map((rfq) => {
     if (rfq.id !== rfqId) return rfq;
@@ -151,12 +158,13 @@ export const recordVendorQuote = (
       qty: Number(l.qty) || 0,
       unit: l.unit || "nos",
       rate: Number(l.rate) || 0,
+      gst: Number(l.gst) || 0,
       amount: lineAmount(l),
     }));
     const total = quoteLines.reduce((s, l) => s + l.amount, 0);
     const quotes = rfq.quotes.map((q) =>
       q.vendorId === vendorId
-        ? { ...q, lines: quoteLines, total, notes, quotedAt: new Date().toISOString() }
+        ? { ...q, lines: quoteLines, total, notes, committedDeliveryDate, quotedAt: new Date().toISOString() }
         : q,
     );
     const anyQuoted = quotes.some((q) => q.quotedAt);
@@ -166,6 +174,14 @@ export const recordVendorQuote = (
       status: rfq.status === "sent" && anyQuoted ? "quoted" : rfq.status,
     };
   });
+  writeAll(contractId, next);
+  return next.find((r) => r.id === rfqId) || null;
+};
+
+export const updateRfqExpectedDeliveryDate = (contractId, rfqId, expectedDeliveryDate) => {
+  const next = listRfqs(contractId).map((rfq) =>
+    rfq.id === rfqId ? { ...rfq, expectedDeliveryDate } : rfq,
+  );
   writeAll(contractId, next);
   return next.find((r) => r.id === rfqId) || null;
 };
@@ -181,7 +197,7 @@ export const awardRfq = (contractId, rfqId, vendorId) => {
 // Convert an awarded RFQ straight into a Purchase Order, carrying the winning
 // vendor's quoted lines/rates over via the existing PO creator. Marks the
 // RFQ closed and links the new PO's id.
-export const convertRfqToPo = (contractId, rfqId, { expectedOn = "" } = {}) => {
+export const convertRfqToPo = (contractId, rfqId) => {
   const rfq = listRfqs(contractId).find((r) => r.id === rfqId);
   if (!rfq || !rfq.awardedVendorId) return null;
   const winning = rfq.quotes.find((q) => q.vendorId === rfq.awardedVendorId);
@@ -191,8 +207,9 @@ export const convertRfqToPo = (contractId, rfqId, { expectedOn = "" } = {}) => {
   const po = createPurchaseOrder(contractId, {
     vendorId: rfq.awardedVendorId,
     vendorName: vendor?.name || "",
-    expectedOn,
+    expectedOn: winning.committedDeliveryDate || "",
     items: winning.lines,
+    clientName: rfq.clientName || "",
   });
 
   const next = listRfqs(contractId).map((r) =>
@@ -202,16 +219,87 @@ export const convertRfqToPo = (contractId, rfqId, { expectedOn = "" } = {}) => {
   return po;
 };
 
-// Every RFQ across all contracts, tagged with the project/client it belongs
-// to — the data behind the top-level RFQs tab list.
-export const listAllRfqs = () =>
-  listContracts().flatMap((c) =>
+// Every RFQ across all contracts AND BOQ-keyed buckets (used when no contract
+// is linked), tagged with clientName for the RFQs table.
+export const listAllRfqs = () => {
+  const contracts = listContracts();
+  const contractKeySet = new Set(contracts.map((c) => KEY(c.id)));
+
+  // Contract-backed RFQs — clientName comes from the contract record.
+  const contractRfqs = contracts.flatMap((c) =>
     listRfqs(c.id).map((rfq) => ({
       ...rfq,
-      clientName: c.clientName,
+      clientName: c.clientName || rfq.clientName || "—",
       contractId: c.id,
     })),
   );
+
+  const seenIds = new Set(contractRfqs.map((r) => r.id));
+
+  // BOQ-backed RFQs (rfqs_<boqId>) — clientName stored in the record, or
+  // resolved live from the BOQ for records written before the field was added.
+  const boqRfqs = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith("rfqs_") || contractKeySet.has(key)) continue;
+    const records = readJson(key, []);
+    records.forEach((rfq) => {
+      if (seenIds.has(rfq.id)) return;
+      seenIds.add(rfq.id);
+      const resolvedName =
+        rfq.clientName ||
+        getBoq(rfq.contractId)?.client?.name ||
+        "—";
+      boqRfqs.push({ ...rfq, clientName: resolvedName });
+    });
+  }
+
+  return [...contractRfqs, ...boqRfqs];
+};
+
+// One-time migration: reassign globally unique IDs to any RFQs that share
+// the same id across contracts (artifact of the old per-contract counter).
+export const migrateRfqIds = () => {
+  const year = new Date().getFullYear();
+  const contracts = listContracts();
+
+  // Collect all RFQs with their contract context
+  const all = contracts.flatMap((c) =>
+    listRfqs(c.id).map((rfq) => ({ rfq, contractId: c.id })),
+  );
+
+  // Build the full set of existing IDs so new ones never clash
+  const usedIds = new Set(all.map(({ rfq }) => rfq.id));
+
+  const nextUniqueId = () => {
+    let n = all.length + 1;
+    let candidate;
+    do {
+      candidate = `RFQ-${year}-${String(n).padStart(3, "0")}`;
+      n += 1;
+    } while (usedIds.has(candidate));
+    usedIds.add(candidate);
+    return candidate;
+  };
+
+  // Per-contract mutable lists
+  const lists = {};
+  contracts.forEach((c) => { lists[c.id] = listRfqs(c.id); });
+
+  const seen = new Set();
+  all.forEach(({ rfq, contractId }) => {
+    if (seen.has(rfq.id)) {
+      const newId = nextUniqueId();
+      lists[contractId] = lists[contractId].map((r) =>
+        r.id === rfq.id ? { ...r, id: newId } : r,
+      );
+    } else {
+      seen.add(rfq.id);
+    }
+  });
+
+  contracts.forEach((c) => writeAll(c.id, lists[c.id]));
+};
 
 // Single RFQ lookup by id, tagged with its project/client — backs the public
 // vendor quote form (which only has the RFQ id from its shared link).

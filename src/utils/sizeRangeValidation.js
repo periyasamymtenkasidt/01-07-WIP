@@ -146,22 +146,37 @@ export const scopeAreaSqft = (scopeItems = []) =>
   );
 
 /**
- * Render a size adjusted by the net change in scope area, showing the final
- * value too. `original` is the base property size; `delta` is how much the
- * CURRENT scope's sqft differs from the ORIGINAL scope's sqft.
- * Positive → "original + added = final Sq Ft" (e.g. 525 + 200 = 725 Sq Ft);
- * negative → "original - removed = final Sq Ft" (e.g. 525 - 100 = 425 Sq Ft);
- * zero → the plain size.
+ * Render the effective project size.
+ * Baseline reductions (removed master scope) are absorbed directly into the
+ * base number. User-added scope is shown as "+ Added X Sq Ft".
+ *
+ * Examples:
+ *   base=525, reduced=25, added=0  → "500 Sq Ft"
+ *   base=525, reduced=25, added=50 → "500 + Added 50 Sq Ft"
+ *   base=525, reduced=0,  added=50 → "525 + Added 50 Sq Ft"
+ *
+ * Pass `reduced = null` for backward compat with older saved quotes that only
+ * stored a single net-delta in sizeAddedSqft.
  */
-export const formatSizeWithAddition = (original, delta) => {
+export const formatSizeWithAddition = (original, added, reduced = null) => {
   const orig = sizeToNumber(original);
-  const d = Math.round(Number(delta) || 0);
-  if (Number.isFinite(orig) && orig > 0 && d !== 0) {
-    const final = orig + d;
-    return d > 0
-      ? `Base ${orig} Sq Ft + Added ${d} Sq Ft = ${final} Sq Ft (Extended)`
-      : `Base ${orig} Sq Ft - Removed ${Math.abs(d)} Sq Ft = ${final} Sq Ft (Reduced)`;
+  const a = Math.round(Number(added) || 0);
+
+  if (!Number.isFinite(orig) || orig <= 0) return formatSizeRange(original);
+
+  if (reduced !== null) {
+    const r = Math.round(Number(reduced) || 0);
+    if (a === 0 && r === 0) return formatSizeRange(original);
+    const effectiveBase = orig - r;
+    if (a === 0) return `Base ${effectiveBase} Sq Ft`;
+    return `Base ${effectiveBase} + Added ${a} = ${effectiveBase + a} Sq Ft (Extended)`;
   }
-  return formatSizeRange(original);
+
+  // Old path: `added` is the net delta (positive = extended, negative = reduced).
+  if (a === 0) return formatSizeRange(original);
+  const final = orig + a;
+  return a > 0
+    ? `Base ${orig} + Added ${a} = ${final} Sq Ft (Extended)`
+    : `Base ${final} Sq Ft`;
 };
  

@@ -68,8 +68,26 @@ const ProjectQuotes = () => {
   const [selectedQuoteForPreview, setSelectedQuoteForPreview] = useState(null);
 
   const parentId = client.sourceLeadId || client.clientID;
-  const [list, setList] = useState(() => getQuotesForParent(parentId));
-  const refresh = () => setList(getQuotesForParent(parentId));
+
+  // Proposal quotes may be stored under the lead's proposalId (sourceLeadId)
+  // while final BOQ quotes sometimes land under clientID — read both keys,
+  // merge, deduplicate by quoteId, and sort newest-first.
+  const getAllQuotes = () => {
+    const q1 = getQuotesForParent(client.sourceLeadId);
+    const q2 = getQuotesForParent(client.clientID);
+    const seen = new Set();
+    return [...q1, ...q2]
+      .filter((q) => {
+        if (!q.quoteId || seen.has(q.quoteId)) return false;
+        if (q.source !== "boq") return false;
+        seen.add(q.quoteId);
+        return true;
+      })
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  };
+
+  const [list, setList] = useState(() => getAllQuotes());
+  const refresh = () => setList(getAllQuotes());
 
   // Accept / request-changes flow state.
   const [action, setAction] = useState(null); // { quote, type: "accept" | "request" }
@@ -123,6 +141,10 @@ const ProjectQuotes = () => {
 
   const isAccept = action?.type === "accept";
   const canSubmit = isAccept ? !!name.trim() && agree : !!name.trim();
+
+  // Only the single newest actionable quote gets action buttons.
+  // Superseded / changes_requested quotes are read-only history.
+  const activeQuoteId = list.find((q) => isQuoteActionable(q))?.quoteId ?? null;
 
   return (
     <div className="p-6 sm:p-8 space-y-6 flex-1 flex flex-col justify-between">
@@ -206,38 +228,36 @@ const ProjectQuotes = () => {
                     </div>
                   </div>
 
-                  {/* Approval action bar */}
-                  {actionable ? (
-                    <div className="mt-4 pt-4 border-t border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <p className="text-[11.5px] text-text-muted">
-                        {q.status === "changes_requested"
-                          ? "You requested changes — your architect will revise and re-issue."
-                          : "Please review and approve this quote to proceed, or request changes."}
-                      </p>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          onClick={() => openAction(q, "request")}
-                          className="py-2 px-3.5 bg-white hover:bg-bg-soft text-grey hover:text-darkgray border border-bordergray rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
-                        >
-                          <MessageSquarePlus size={13} /> Request changes
-                        </button>
-                        <button
-                          onClick={() => openAction(q, "accept")}
-                          className="py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
-                        >
-                          <Check size={13} /> Accept quote
-                        </button>
+                  {/* Action bar — only on the single newest actionable quote */}
+                  {q.quoteId === activeQuoteId ? (
+                      <div className="mt-4 pt-4 border-t border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <p className="text-[11.5px] text-text-muted">
+                          Please review and approve this quote to proceed, or request changes.
+                        </p>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => openAction(q, "request")}
+                            className="py-2 px-3.5 bg-white hover:bg-bg-soft text-grey hover:text-darkgray border border-bordergray rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                          >
+                            <MessageSquarePlus size={13} /> Request changes
+                          </button>
+                          <button
+                            onClick={() => openAction(q, "accept")}
+                            className="py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                          >
+                            <Check size={13} /> Accept quote
+                          </button>
+                        </div>
                       </div>
-                    </div>
                   ) : q.status === "accepted" ? (
-                    <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-2 text-[11.5px] text-emerald-700">
-                      <CheckCircle2 size={14} className="shrink-0" />
-                      <span>
-                        Accepted by{" "}
-                        <span className="font-bold">{q.acceptedBy || "you"}</span>{" "}
-                        on {fmtDate(q.acceptedAt)}.
-                      </span>
-                    </div>
+                      <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-2 text-[11.5px] text-emerald-700">
+                        <CheckCircle2 size={14} className="shrink-0" />
+                        <span>
+                          Accepted by{" "}
+                          <span className="font-bold">{q.acceptedBy || "you"}</span>{" "}
+                          on {fmtDate(q.acceptedAt)}.
+                        </span>
+                      </div>
                   ) : null}
                 </div>
               );

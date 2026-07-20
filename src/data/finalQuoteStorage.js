@@ -44,7 +44,7 @@ const buildMaterialSummary = (boq) =>
     .filter((t) => (t.name || t.spec) && Number(t.estimatedQty) > 0)
     .map((t) => ({
       name: t.name || "",
-      spec: t.spec || "",
+      spec: (t.spec || "").replace(/\[Image\s*#?\s*\d*\]/gi, "").replace(/\s{2,}/g, " ").trim(),
       qty: Number(t.estimatedQty) || 0,
       unit: unitLabelOf(t.unit),
       rate: Number(t.rate) || 0,
@@ -183,6 +183,17 @@ export const createFinalQuoteFromBoq = (boq, { quoteId } = {}) => {
   const gst = Math.round((subtotal * GST_RATE) / 100);
   const grandTotal = subtotal + gst;
 
+  // BOQs created from the design pipeline only store siteID in project — fall
+  // back to the linked client record to recover propertyType and sizeRange.
+  const linkedClient = getClient(boq?.client?.id);
+  const resolvedPropertyType =
+    boq?.project?.propertyType ||
+    linkedClient?.propertyType ||
+    linkedClient?.location ||
+    "";
+  const resolvedSizeRange =
+    boq?.project?.sizeRange || linkedClient?.sizeRange || "";
+
   return {
     quoteId: quoteId || generateQuoteId(),
     parentId: resolveQuoteParentId(boq),
@@ -195,8 +206,10 @@ export const createFinalQuoteFromBoq = (boq, { quoteId } = {}) => {
     recipientName: boq?.client?.name || "",
     recipientEmail: boq?.client?.email || "",
     recipientPhone: boq?.client?.phone || "",
-    propertyType: boq?.project?.propertyType || "",
-    sizeRange: boq?.project?.sizeRange || "",
+    propertyType: resolvedPropertyType,
+    sizeRange: resolvedSizeRange,
+    sizeAddedSqft: 0,
+    sizeReducedSqft: 0,
     validityDays: parseValidityDays(boq?.validity) || 30,
     scopeItems,
     // Rolled-up material take-off shown as a "Material Summary" table after the

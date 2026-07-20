@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
 import { useParams } from "react-router-dom";
-import { CheckCircle2, FileX, Send, ArrowLeft, X } from "lucide-react";
+import { CheckCircle2, FileX, Send } from "lucide-react";
 import { getRfqById, recordVendorQuote } from "../../data/rfqStorage";
-import { listVendors } from "../../data/vendorStorage";
+import { listVendors, getVendorByAccessCode } from "../../data/vendorStorage";
 import NumericInput from "../../components/NumericInput";
 import wipLogo from "../../assets/images/Logo.png";
 
@@ -20,39 +20,36 @@ const Shell = ({ children }) => (
   </div>
 );
 
-// Small success modal that appears after submitting a quote.
-const SuccessModal = ({ open, onClose, rfqId, vendorName }) => {
+// Confirmation modal before submitting.
+const ConfirmModal = ({ open, onClose, onConfirm, rfqId }) => {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl overflow-hidden animate-[fadeInScale_0.25s_ease-out]">
-        <div className="flex items-center justify-end px-4 pt-3">
-          <button
-            onClick={onClose}
-            className="text-text-muted hover:text-textcolor transition-colors"
-          >
-            <X size={16} />
-          </button>
-        </div>
-        <div className="px-6 pb-6 pt-1 text-center">
-          <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-emerald-100 flex items-center justify-center">
-            <CheckCircle2 size={24} className="text-emerald-600" />
-          </div>
-          <h3 className="text-[15px] font-bold text-textcolor mb-1">
-            Quote Submitted Successfully
+        <div className="px-6 pt-6 pb-4">
+          <h3 className="text-[15px] font-bold text-textcolor mb-2">
+            Submit Quotation?
           </h3>
           <p className="text-[12.5px] text-text-muted leading-relaxed">
-            Your quote for <span className="font-semibold text-textcolor">{rfqId}</span> has been
-            recorded{vendorName ? ` for ${vendorName}` : ""}. You can update it
-            any time before the request is awarded.
+            Are you sure you want to submit this quotation for{" "}
+            <span className="font-semibold text-textcolor">{rfqId}</span>? Once
+            submitted, it will be shared with the procurement team.
           </p>
         </div>
-        <div className="px-6 pb-5 flex justify-center">
+        <div className="px-6 pb-5 flex justify-end gap-2.5">
           <button
+            type="button"
             onClick={onClose}
-            className="px-6 py-2 rounded-lg text-[13px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors"
+            className="px-4 py-2 rounded-lg text-[13px] font-semibold text-text-muted hover:bg-bg-soft transition-colors"
           >
-            Got it
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="px-5 py-2 rounded-lg text-[13px] font-semibold text-white bg-select-blue hover:bg-blue-950 transition-colors"
+          >
+            Confirm & Submit
           </button>
         </div>
       </div>
@@ -62,32 +59,47 @@ const SuccessModal = ({ open, onClose, rfqId, vendorName }) => {
 
 const VendorQuoteForm = () => {
   const { rfqId } = useParams();
-  const [version, setVersion] = useState(0);
-  // version bumps force a re-read of the RFQ after this vendor submits.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const rfq = useMemo(() => getRfqById(rfqId), [rfqId, version]);
+  const rfq = useMemo(() => getRfqById(rfqId), [rfqId]);
   const vendors = listVendors();
-
-  const invitedVendors = useMemo(() => {
-    if (!rfq) return [];
-    return rfq.quotes
-      .map((q) => vendors.find((v) => v.id === q.vendorId))
-      .filter(Boolean);
-  }, [rfq, vendors]);
 
   const [vendorId, setVendorId] = useState("");
   const [rates, setRates] = useState({});
+  const [gsts, setGsts] = useState({});
   const [notes, setNotes] = useState("");
-  const [showSuccess, setShowSuccess] = useState(false);
+  const [committedDeliveryDate, setCommittedDeliveryDate] = useState("");
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [pin, setPin] = useState("");
+  const [pinError, setPinError] = useState("");
 
   if (!rfq) {
     return (
       <Shell>
         <div className="bg-white border border-bordergray rounded-2xl p-8 text-center">
           <FileX size={26} className="mx-auto mb-3 text-text-subtle" />
-          <h1 className="text-[15px] font-bold text-textcolor">Link not found</h1>
+          <h1 className="text-[15px] font-bold text-textcolor">
+            Link not found
+          </h1>
           <p className="text-[12.5px] text-text-muted mt-1">
             This quote request link is invalid, or the request no longer exists.
+          </p>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (submitted) {
+    return (
+      <Shell>
+        <div className="bg-white border border-bordergray rounded-2xl p-8 text-center">
+          <CheckCircle2 size={32} className="mx-auto mb-3 text-emerald-500" />
+          <h1 className="text-[15px] font-bold text-textcolor">
+            Quote Submitted
+          </h1>
+          <p className="text-[12.5px] text-text-muted mt-2">
+            Your quotation for{" "}
+            <span className="font-semibold text-textcolor">{rfq.id}</span> has
+            been received. The procurement team will be in touch.
           </p>
         </div>
       </Shell>
@@ -98,31 +110,47 @@ const VendorQuoteForm = () => {
 
   const selectVendor = (id) => {
     const existing = rfq.quotes.find((q) => q.vendorId === id);
-    const seeded = {};
+    const seededRates = {};
+    const seededGsts = {};
     // Match by array position — lines are always built in the same order as
     // rfq.items, so this is exact (matching by name breaks when two items
     // share a name, e.g. same material in different specs).
     rfq.items.forEach((item, idx) => {
       const line = existing?.lines[idx];
-      seeded[idx] = line ? String(line.rate) : "";
+      seededRates[idx] = line ? String(line.rate) : "";
+      seededGsts[idx] = line ? String(line.gst ?? 18) : "18";
     });
     setVendorId(id);
-    setRates(seeded);
+    setRates(seededRates);
+    setGsts(seededGsts);
     setNotes(existing?.notes || "");
-    setShowSuccess(false);
   };
 
   const setRate = (idx, val) => setRates((r) => ({ ...r, [idx]: val }));
+  const setGst = (idx, val) => setGsts((g) => ({ ...g, [idx]: val }));
 
-  const total = rfq.items.reduce(
-    (sum, item, idx) => sum + (Number(rates[idx]) || 0) * (Number(item.qty) || 0),
-    0,
-  );
+  const total = rfq.items.reduce((sum, item, idx) => {
+    const qty = Number(item.qty) || 0;
+    const rate = Number(rates[idx]) || 0;
+    const gst = Number(gsts[idx]) || 0;
+    return sum + qty * rate * (1 + gst / 100);
+  }, 0);
 
-  const canSubmit = !closed && rfq.items.some((_, idx) => Number(rates[idx]) > 0);
+  const today = new Date().toISOString().split("T")[0];
+  const deliveryDateValid = !!committedDeliveryDate && committedDeliveryDate >= today;
+
+  const canSubmit =
+    !closed &&
+    rfq.items.some((_, idx) => Number(rates[idx]) > 0) &&
+    deliveryDateValid;
 
   const submit = () => {
     if (!canSubmit) return;
+    setShowConfirm(true);
+  };
+
+  const handleConfirmSubmit = () => {
+    setShowConfirm(false);
     const lines = rfq.items.map((item, idx) => ({
       materialId: item.materialId,
       name: item.name,
@@ -130,15 +158,31 @@ const VendorQuoteForm = () => {
       qty: item.qty,
       unit: item.unit,
       rate: Number(rates[idx]) || 0,
+      gst: Number(gsts[idx]) || 0,
     }));
-    recordVendorQuote(rfq.contractId, rfq.id, vendorId, { lines, notes });
-    setVersion((v) => v + 1);
-    setShowSuccess(true);
+    recordVendorQuote(rfq.contractId, rfq.id, vendorId, { lines, notes, committedDeliveryDate });
+    setSubmitted(true);
   };
 
   const currentVendorName = vendors.find((v) => v.id === vendorId)?.name || "";
 
-  // Step 1 — identify which invited vendor you are.
+  const handlePinSubmit = (e) => {
+    e.preventDefault();
+    const matched = getVendorByAccessCode(pin);
+    if (!matched) {
+      setPinError("Invalid code. Please check and try again.");
+      return;
+    }
+    const invited = rfq.quotes.find((q) => q.vendorId === matched.id);
+    if (!invited) {
+      setPinError("Your company is not invited on this quote request.");
+      return;
+    }
+    setPinError("");
+    selectVendor(matched.id);
+  };
+
+  // Step 1 — vendor identifies themselves with their PIN.
   if (!vendorId) {
     return (
       <Shell>
@@ -155,47 +199,49 @@ const VendorQuoteForm = () => {
                 </h1>
                 <p className="text-[11.5px] text-text-muted">
                   {rfq.clientName ? `Project: ${rfq.clientName} · ` : ""}
-                  {rfq.items.length} material{rfq.items.length === 1 ? "" : "s"} requested
+                  {rfq.items.length} material{rfq.items.length === 1 ? "" : "s"}{" "}
+                  requested
                 </p>
               </div>
             </div>
           </div>
 
           {/* ── Body ── */}
-          <div className="p-6 flex-1 min-h-0 overflow-y-auto scroll-hidden-bar">
-            <p className="text-[12.5px] text-text-muted mb-4">
-              Select your company to continue and submit your quotation.
-            </p>
-            {invitedVendors.length === 0 ? (
-              <p className="text-[12.5px] text-text-subtle">No vendors were invited on this request.</p>
-            ) : (
-              <div className="space-y-2">
-                {invitedVendors.map((v) => {
-                  const q = rfq.quotes.find((qq) => qq.vendorId === v.id);
-                  return (
-                    <button
-                      key={v.id}
-                      type="button"
-                      onClick={() => selectVendor(v.id)}
-                      className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-bordergray hover:border-select-blue/50 hover:bg-bg-soft/50 transition-all text-left"
-                    >
-                      <span className="text-[13px] font-semibold text-textcolor">{v.name}</span>
-                      {q?.quotedAt && (
-                        <span className="text-[10px] font-bold uppercase text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded">
-                          Already quoted
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+          <div className="p-6 flex-1 flex flex-col justify-center items-center gap-5">
+            <div className="text-center">
+              <p className="text-[13px] font-semibold text-textcolor">Enter your access code</p>
+              <p className="text-[11.5px] text-text-muted mt-1">
+                Your access code was shared by the procurement team when you were onboarded.
+              </p>
+            </div>
+            <form onSubmit={handlePinSubmit} className="w-full max-w-xs space-y-3">
+              <input
+                type="text"
+                value={pin}
+                onChange={(e) => { setPin(e.target.value.toUpperCase()); setPinError(""); }}
+                placeholder="e.g. GRE-4821"
+                maxLength={8}
+                autoFocus
+                className="w-full text-center font-mono tracking-[0.3em] text-[18px] font-bold border border-bordergray rounded-xl px-4 py-3 bg-white focus:outline-none focus:border-select-blue uppercase"
+              />
+              {pinError && (
+                <p className="text-[11.5px] text-red-500 text-center font-medium">{pinError}</p>
+              )}
+              <button
+                type="submit"
+                disabled={pin.trim().length < 6}
+                className="w-full py-2.5 bg-select-blue hover:bg-blue-950 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-[13px] font-semibold transition-colors"
+              >
+                Continue
+              </button>
+            </form>
           </div>
 
           {/* ── Footer ── */}
           <div className="px-6 py-3 border-t border-bordergray bg-bg-soft/40 shrink-0">
             <p className="text-[10.5px] text-text-subtle text-center">
-              This is a secure quote submission portal. Your rates will only be visible to the requesting team.
+              This is a secure quote submission portal. Your rates will only be
+              visible to the requesting team.
             </p>
           </div>
         </div>
@@ -220,23 +266,19 @@ const VendorQuoteForm = () => {
                 </h1>
                 <p className="text-[11.5px] text-text-muted">
                   Quoting as{" "}
-                  <span className="font-semibold text-textcolor">{currentVendorName}</span>
+                  <span className="font-semibold text-textcolor">
+                    {currentVendorName}
+                  </span>
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setVendorId("")}
-              className="flex items-center gap-1 text-[11.5px] font-semibold text-text-muted hover:text-textcolor transition-colors"
-            >
-              <ArrowLeft size={12} /> Not you?
-            </button>
           </div>
         </div>
 
         {closed && (
           <div className="px-6 py-3 bg-amber-50 border-b border-amber-100 text-amber-700 text-[12.5px] font-semibold shrink-0">
-            This request has already been awarded and closed — quotes can no longer be changed.
+            This request has already been awarded and closed — quotes can no
+            longer be changed.
           </div>
         )}
 
@@ -245,53 +287,126 @@ const VendorQuoteForm = () => {
           <table className="w-full text-[13px]">
             <thead>
               <tr className="bg-bg-soft text-text-muted text-[11px] uppercase tracking-wider">
-                <th className="text-left font-bold px-3 py-2.5 rounded-l-lg">Material</th>
+                <th className="text-left font-bold px-3 py-2.5 rounded-l-lg">
+                  Material
+                </th>
                 <th className="text-right font-bold px-3 py-2.5">Qty</th>
                 <th className="text-left font-bold px-3 py-2.5">Unit</th>
-                <th className="text-right font-bold px-3 py-2.5">Your Rate (₹)</th>
-                <th className="text-right font-bold px-3 py-2.5 rounded-r-lg">Amount</th>
+                <th className="text-right font-bold px-3 py-2.5">
+                  Your Rate (₹)
+                </th>
+                <th className="text-center font-bold px-3 py-2.5">GST (%)</th>
+                <th className="text-right font-bold px-3 py-2.5 rounded-r-lg">
+                  Amount
+                </th>
               </tr>
             </thead>
             <tbody>
-              {rfq.items.map((item, idx) => (
-                <tr key={idx} className="border-t border-bordergray">
-                  <td className="px-3 py-2.5 font-medium text-textcolor">
-                    {item.name}
-                    {item.spec && <span className="block text-[10.5px] text-text-subtle">{item.spec}</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-text-muted">{item.qty}</td>
-                  <td className="px-3 py-2.5 text-text-muted">{item.unit}</td>
-                  <td className="px-3 py-2.5 text-right">
-                    <NumericInput
-                      value={rates[idx] ?? ""}
-                      onChange={(val) => setRate(idx, val)}
-                      disabled={closed}
-                      placeholder="0"
-                      className="w-24 border border-bordergray rounded-lg px-2 py-1.5 text-[13px] text-right disabled:bg-bg-soft"
-                    />
-                  </td>
-                  <td className="px-3 py-2.5 text-right font-semibold text-textcolor">
-                    {fmtINR((Number(rates[idx]) || 0) * (Number(item.qty) || 0))}
-                  </td>
-                </tr>
-              ))}
+              {rfq.items.map((item, idx) => {
+                const qty = Number(item.qty) || 0;
+                const rate = Number(rates[idx]) || 0;
+                const gst = Number(gsts[idx]) || 0;
+                const amount = qty * rate * (1 + gst / 100);
+
+                return (
+                  <tr key={idx} className="border-t border-bordergray">
+                    <td className="px-3 py-2.5 font-medium text-textcolor">
+                      {item.name}
+                      {item.spec && (
+                        <span className="block text-[10.5px] text-text-subtle">
+                          {item.spec}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-text-muted">
+                      {item.qty}
+                    </td>
+                    <td className="px-3 py-2.5 text-text-muted">{item.unit}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <NumericInput
+                        value={rates[idx] ?? ""}
+                        onChange={(val) => setRate(idx, val)}
+                        disabled={closed}
+                        placeholder="0"
+                        className="w-24 border border-bordergray rounded-lg px-2 py-1.5 text-[13px] text-right disabled:bg-bg-soft"
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 text-center">
+                      <NumericInput
+                        value={gsts[idx] ?? ""}
+                        onChange={(val) => setGst(idx, val)}
+                        disabled={closed}
+                        placeholder="18"
+                        className="w-16 border border-bordergray rounded-lg px-2 py-1.5 text-[13px] text-center disabled:bg-bg-soft"
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-semibold text-textcolor">
+                      {fmtINR(amount)}
+                    </td>
+                  </tr>
+                );
+              })}
               <tr className="border-t-2 border-bordergray">
-                <td colSpan={4} className="px-3 py-2.5 text-right font-bold text-textcolor">
-                  Total
+                <td
+                  colSpan={5}
+                  className="px-3 py-2.5 text-right font-bold text-textcolor"
+                >
+                  Total (incl. GST)
                 </td>
-                <td className="px-3 py-2.5 text-right font-extrabold text-textcolor">{fmtINR(total)}</td>
+                <td className="px-3 py-2.5 text-right font-extrabold text-textcolor">
+                  {fmtINR(total)}
+                </td>
               </tr>
             </tbody>
           </table>
 
-          <label className="block mt-4">
-            <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider">Notes (optional)</span>
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider">
+                Expected Delivery Date
+              </span>
+              <input
+                type="date"
+                value={rfq.expectedDeliveryDate || ""}
+                readOnly
+                className="mt-1 w-full border border-bordergray rounded-lg px-3 py-2 text-[12.5px] bg-bg-soft text-text-muted cursor-default select-none"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider">
+                Committed Delivery Date <span className="text-red-500">*</span>
+              </span>
+              <input
+                type="date"
+                required
+                min={today}
+                value={committedDeliveryDate}
+                onChange={(e) => setCommittedDeliveryDate(e.target.value)}
+                disabled={closed}
+                className={`mt-1 w-full border rounded-lg px-3 py-2 text-[12.5px] disabled:bg-bg-soft focus:outline-none focus:border-select-blue ${
+                  committedDeliveryDate && !deliveryDateValid
+                    ? "border-red-300 bg-red-50"
+                    : "border-bordergray"
+                }`}
+              />
+              {committedDeliveryDate && !deliveryDateValid && (
+                <p className="mt-1 text-[11px] text-red-500 font-normal">
+                  Delivery date cannot be in the past.
+                </p>
+              )}
+            </label>
+          </div>
+
+          <label className="block mt-3">
+            <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider">
+              Notes (optional)
+            </span>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               disabled={closed}
               rows={2}
-              placeholder="Delivery lead time, validity, terms…"
+              placeholder="Validity, terms…"
               className="mt-1 w-full border border-bordergray rounded-lg px-3 py-2 text-[12.5px] disabled:bg-bg-soft resize-none"
             />
           </label>
@@ -301,7 +416,8 @@ const VendorQuoteForm = () => {
         {!closed && (
           <div className="px-6 py-4 border-t border-bordergray bg-bg-soft/40 flex items-center justify-between shrink-0">
             <span className="text-[12px] text-text-muted">
-              Total: <span className="font-bold text-textcolor">{fmtINR(total)}</span>
+              Total:{" "}
+              <span className="font-bold text-textcolor">{fmtINR(total)}</span>
             </span>
             <button
               onClick={submit}
@@ -322,15 +438,15 @@ const VendorQuoteForm = () => {
         )}
       </div>
 
-      {/* ── Success Modal ── */}
-      <SuccessModal
-        open={showSuccess}
-        onClose={() => setShowSuccess(false)}
+      {/* ── Confirm Modal ── */}
+      <ConfirmModal
+        open={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        onConfirm={handleConfirmSubmit}
         rfqId={rfq.id}
-        vendorName={currentVendorName}
       />
     </Shell>
   );
 };
 
-export default VendorQuoteForm;
+export default VendorQuoteForm; 

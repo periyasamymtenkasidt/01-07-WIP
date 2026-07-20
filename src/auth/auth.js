@@ -18,6 +18,7 @@ import {
   verifyOrgAdmin,
   startLocalStaffSession,
   registerOrganisation,
+  clearCurrentUser,
 } from "./orgAccounts";
 import { saveOrgProfile, hydrateOrgProfile } from "../data/orgProfile";
 import { seedDefaultTerms } from "../data/termsStorage";
@@ -147,6 +148,7 @@ export function isAuthenticated() {
 export function logout() {
   logoutRequest();
   resetMastersBootstrap();
+  clearCurrentUser();
 }
 
 // Back-compat shim: older flows called login() with a placeholder token. Tokens

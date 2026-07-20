@@ -574,14 +574,6 @@ const ProjectSchedule = ({ lead }) => {
         <div>
           <h3 className="flex items-center gap-2 text-[16px] font-bold text-darkgray">
             <FiCalendar size={18} className="text-gray-500" /> Schedule
-            <button
-              type="button"
-              onClick={resyncFromProposal}
-              title="Rebuild rooms from the current proposal scope"
-              className="flex items-center gap-1 px-2 py-1 rounded-lg border border-bordergray text-[11px] font-semibold text-text-muted hover:text-select-blue hover:border-select-blue/40 transition-colors"
-            >
-              <FiRefreshCw size={11} /> Re-sync
-            </button>
           </h3>
           <p className="text-[12px] text-text-muted mt-0.5">
             All rooms run in parallel from the start

@@ -14,6 +14,12 @@ const readJson = (key, fallback) => {
 const genId = () =>
   `ven_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
+const generateAccessCode = (name = "") => {
+  const prefix = name.replace(/[^A-Za-z]/g, "").toUpperCase().slice(0, 3).padEnd(3, "X");
+  const suffix = Math.floor(1000 + Math.random() * 9000);
+  return `${prefix}-${suffix}`;
+};
+
 const DEFAULT_VENDORS = [
   {
     id: "ven_default_1",
@@ -107,14 +113,24 @@ export const MSME_CATEGORIES = ["Micro", "Small", "Medium"];
 
 export const listVendors = () => {
   const stored = localStorage.getItem(KEY);
-  if (!stored) {
-    localStorage.setItem(KEY, JSON.stringify(DEFAULT_VENDORS));
-    return DEFAULT_VENDORS;
+  const list = stored
+    ? readJson(KEY, DEFAULT_VENDORS)
+    : (() => { localStorage.setItem(KEY, JSON.stringify(DEFAULT_VENDORS)); return DEFAULT_VENDORS; })();
+
+  if (list.some((v) => !v.accessCode)) {
+    const updated = list.map((v) =>
+      v.accessCode ? v : { ...v, accessCode: generateAccessCode(v.name) }
+    );
+    localStorage.setItem(KEY, JSON.stringify(updated));
+    return updated;
   }
-  return readJson(KEY, DEFAULT_VENDORS);
+  return list;
 };
 
 export const getVendor = (id) => listVendors().find((v) => v.id === id) || null;
+
+export const getVendorByAccessCode = (code) =>
+  listVendors().find((v) => v.accessCode === code.trim().toUpperCase()) || null;
 
 const writeAll = (list) => {
   localStorage.setItem(KEY, JSON.stringify(list));
@@ -124,6 +140,7 @@ const writeAll = (list) => {
 export const addVendor = (vendor) => {
   const v = {
     id: genId(),
+    accessCode: generateAccessCode(vendor.name),
     name: vendor.name || "",
     category: vendor.category || "",
     contactPerson: vendor.contactPerson || "",

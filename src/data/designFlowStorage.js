@@ -9,6 +9,7 @@
 // modules (readJson/writeJson + a change event).
 
 import { saveSite, getSite } from "./siteStorage";
+import { getClient } from "./clientStorage";
 import {
   readDims,
   getElementMeasurement,
@@ -45,7 +46,10 @@ import {
 const buildupSeedForRow = (row, libById, matById) => {
   const lib = row?.masterId ? libById[row.masterId] : null;
   const grade =
-    row?.selectedMaterial?.grade || row?.grade || lib?.defaultGrade || "economy";
+    row?.selectedMaterial?.grade ||
+    row?.grade ||
+    lib?.defaultGrade ||
+    "economy";
   const recipe = lib?.recipes?.[grade] || null;
   if (!recipe) return { materials: null, buildup: null };
   return {
@@ -147,7 +151,19 @@ export const ARCHITECTURE_PIPELINE = [
     label: "Construction Administration",
     question: "Progress & payment certificates",
     deliverableTypes: ["Site Report", "Payment Cert", "RFI"],
-    feeWeight: 20,
+    feeWeight: 15,
+  },
+  {
+    key: "HANDOVER",
+    label: "Completion & Handover",
+    question: "Final completion & handover sign-off",
+    deliverableTypes: [
+      "Completion Certificate",
+      "As-Built Drawing",
+      "Handover Document",
+      "Snag List",
+    ],
+    feeWeight: 5,
   },
 ];
 
@@ -253,7 +269,10 @@ export const revisionBilling = (flow, stage) => {
 
 // Sum of all accepted chargeable-revision fees across the design phase.
 export const totalRevisionCharges = (flow) =>
-  (flow?.revisionCharges || []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  (flow?.revisionCharges || []).reduce(
+    (s, c) => s + (Number(c.amount) || 0),
+    0,
+  );
 
 const stamp = () => {
   const d = new Date();
@@ -492,6 +511,12 @@ export const unfreezeSurvey = (siteID) => {
 const writeFlow = (siteID, flow) => {
   writeJson(designFlowKey(siteID), flow);
   window.dispatchEvent(new Event("designFlowChanged"));
+  // Notify other tabs in the same browser immediately via BroadcastChannel.
+  try {
+    const bc = new BroadcastChannel("designFlow");
+    bc.postMessage({ siteID, type: "changed" });
+    bc.close();
+  } catch (_) {}
   return flow;
 };
 
@@ -536,7 +561,11 @@ export const submitStage = (siteID, stageKey) => {
 };
 
 // Client approves the stage → unlock the next one (or complete the pipeline).
-export const approveStage = (siteID, stageKey, { by = "Client", comment = "" } = {}) => {
+export const approveStage = (
+  siteID,
+  stageKey,
+  { by = "Client", comment = "" } = {},
+) => {
   const flow = getDesignFlow(siteID);
   const idx = flow?.stages?.findIndex((s) => s.key === stageKey) ?? -1;
   if (idx < 0) return flow;
@@ -557,6 +586,8 @@ export const approveStage = (siteID, stageKey, { by = "Client", comment = "" } =
     flow.stage = `DESIGN_${next.key}`;
   } else if (!next) {
     flow.stage = "DESIGN_COMPLETE";
+    saveSite({ siteID, status: "Completed" });
+    window.dispatchEvent(new Event("siteDataChanged"));
   }
   flow.history.unshift({
     at: stamp(),
@@ -674,10 +705,21 @@ export const checklistAllYes = (stage) => {
 export const openCommentsCount = (stage) =>
   (stage?.comments || []).filter((c) => c.status !== "Closed").length;
 
-// The Principal can only authorise when the checklist is done and no comment
-// is left open.
+// Every "no" row must carry a non-empty reason before the Principal can authorise.
+export const noItemsAllHaveReason = (stage) => {
+  const checklist = stage?.internal?.checklist || [];
+  return DESIGN_REVIEW_CHECKLIST.every((_, i) => {
+    const row = checklist[i];
+    return row?.value !== "no" || (row.comment && row.comment.trim().length > 0);
+  });
+};
+
+// The Principal can only authorise when the checklist is done, every "no" has
+// a reason, and no comment is left open.
 export const canFinalizeInternal = (stage) =>
-  checklistComplete(stage) && openCommentsCount(stage) === 0;
+  checklistComplete(stage) &&
+  noItemsAllHaveReason(stage) &&
+  openCommentsCount(stage) === 0;
 
 // Firm submits a drafted stage into internal review (never straight to client).
 export const submitForInternalReview = (siteID, stageKey) => {
@@ -724,18 +766,20 @@ export const markAllChecklistYes = (siteID, stageKey) => {
 // One reviewer signs off. Non-final steps advance the chain; the final step
 // (Principal) authorises and hands the stage to the client — but only when the
 // checklist is complete and every comment is closed.
-export const internalApprove = (siteID, stageKey, { role, comment = "" } = {}) => {
+export const internalApprove = (
+  siteID,
+  stageKey,
+  { role, comment = "" } = {},
+) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
   const internal = ensureInternal(stage);
   const step = internal.step || 0;
   const isFinal = step >= INTERNAL_ROLES.length - 1;
-  // Gate: every reviewer must give Yes to ALL checklist items before the stage
-  // can move to the next person. The final (Principal) step additionally needs
-  // every design comment closed. Otherwise the approval is rejected (no-op).
-  if (!checklistAllYes(stage)) return flow;
-  if (isFinal && openCommentsCount(stage) !== 0) return flow;
+  // Gate: the Principal Architect must have every item answered, every "no"
+  // explained with a reason, and all comments closed before authorising.
+  if (isFinal && !canFinalizeInternal(stage)) return flow;
   const actingRole = role || INTERNAL_ROLES[step];
   internal.signoffs.unshift({
     role: actingRole,
@@ -766,7 +810,11 @@ export const internalApprove = (siteID, stageKey, { role, comment = "" } = {}) =
 
 // Any reviewer can kick the stage back to the team — resets the chain to step 0
 // so a full re-review is required on resubmit.
-export const internalRequestChanges = (siteID, stageKey, { role, comment = "" } = {}) => {
+export const internalRequestChanges = (
+  siteID,
+  stageKey,
+  { role, comment = "" } = {},
+) => {
   const flow = getDesignFlow(siteID);
   const stage = getStage(flow, stageKey);
   if (!stage) return flow;
@@ -889,18 +937,20 @@ export const buildBoq = (flow) => {
       // re-price by a measured sqft figure — carry its quoted amount through
       // unchanged instead of multiplying sqft × a rupee total.
       const hasRate = el.hasRate || (!el.amount && Number(el.rate) > 0);
-      const quotedRate = hasRate ? Number(el.rate) || masterRateFor(el.name) : 0;
+      const quotedRate = hasRate
+        ? Number(el.rate) || masterRateFor(el.name)
+        : 0;
       const selectedMaterial = d.selectedMaterial?.grade
         ? d.selectedMaterial
         : null;
-      const rate = hasRate
-        ? Number(selectedMaterial?.rate) || quotedRate
-        : 0;
+      const rate = hasRate ? Number(selectedMaterial?.rate) || quotedRate : 0;
       const proposalAmount = Number(el.amount) || 0;
       const quotedAmount = el.isCustom
         ? 0
         : proposalAmount || (hasRate ? quotedQty * quotedRate : 0);
-      const measuredAmount = hasRate ? measuredQty * rate : Number(el.amount) || 0;
+      const measuredAmount = hasRate
+        ? measuredQty * rate
+        : Number(el.amount) || 0;
       return {
         scopeItemId: el.scopeItemId || null,
         masterId: el.masterId || null,
@@ -921,13 +971,18 @@ export const buildBoq = (flow) => {
                 name: material.name || "Material",
                 spec: material.spec || "",
               }))
-            : [{
-                id: selectedMaterial.id,
-                name: selectedMaterial.name,
-                spec: selectedMaterial.specifications || selectedMaterial.spec || "",
-                rate: Number(selectedMaterial.rate) || 0,
-                unit: selectedMaterial.unit || el.unit,
-              }]
+            : [
+                {
+                  id: selectedMaterial.id,
+                  name: selectedMaterial.name,
+                  spec:
+                    selectedMaterial.specifications ||
+                    selectedMaterial.spec ||
+                    "",
+                  rate: Number(selectedMaterial.rate) || 0,
+                  unit: selectedMaterial.unit || el.unit,
+                },
+              ]
           : el.materials || [],
         // Full proposal materials (per-unit qty, rate, wastage, GST) kept
         // alongside the display `materials` so the BOQ rate analysis can map
@@ -950,8 +1005,7 @@ export const buildBoq = (flow) => {
   const measuredSubtotal = areas.reduce((s, a) => s + a.measuredSubtotal, 0);
   const gst = (measuredSubtotal * GST_PERCENT) / 100;
   const quotedGst =
-    Number(basis.proposalBaseline?.gst) ||
-    (quotedSubtotal * GST_PERCENT) / 100;
+    Number(basis.proposalBaseline?.gst) || (quotedSubtotal * GST_PERCENT) / 100;
   const quotedTotal =
     Number(basis.proposalBaseline?.grandTotal) || quotedSubtotal + quotedGst;
   const measuredTotal = measuredSubtotal + gst;
@@ -1004,12 +1058,17 @@ export const generateStageBoq = (siteID) => {
     let targetBoq = existingBoqSummary ? getBoq(existingBoqSummary.id) : null;
 
     if (!targetBoq) {
+      const linkedClient = clientID ? getClient(clientID) : null;
       targetBoq = createBoq({
         title: `BOQ for ${clientName}`,
         parentType: "client",
         parentId: clientID,
         client: { name: clientName },
-        project: { siteID },
+        project: {
+          siteID,
+          propertyType: site?.siteType || linkedClient?.propertyType || linkedClient?.location || "",
+          sizeRange: linkedClient?.sizeRange || "",
+        },
       });
       targetBoq.id = boqId;
     }
@@ -1053,7 +1112,9 @@ export const generateStageBoq = (siteID) => {
     targetBoq.status = "draft";
 
     targetBoq.siteID = siteID;
-    targetBoq.proposalBaseline = { ...(flow.siteBasis?.proposalBaseline || {}) };
+    targetBoq.proposalBaseline = {
+      ...(flow.siteBasis?.proposalBaseline || {}),
+    };
     targetBoq.quotedSubtotal = boq.quotedSubtotal;
     targetBoq.quotedTotal = boq.quotedTotal;
     targetBoq.measuredSubtotal = boq.measuredSubtotal;
@@ -1067,7 +1128,9 @@ export const generateStageBoq = (siteID) => {
     const libById = Object.fromEntries(listLibrary().map((l) => [l.id, l]));
     const matById = materialsById(listMaterials());
     const generatedSections = boq.areas.map((area) => {
-      const existingSection = targetBoq.sections?.find((s) => s.name === area.area);
+      const existingSection = targetBoq.sections?.find(
+        (s) => s.name === area.area,
+      );
       const matchedItemIds = new Set();
       const generatedItems = area.rows.map((row) => {
         const existingItem = existingSection?.items?.find(
@@ -1207,12 +1270,18 @@ export const generateBoqFromSurvey = (siteID) => {
     let targetBoq = existingBoqSummary ? getBoq(existingBoqSummary.id) : null;
 
     if (!targetBoq) {
+      const linkedClient = clientID ? getClient(clientID) : null;
       targetBoq = createBoq({
         title: `BOQ — ${clientName}`,
         parentType: "client",
         parentId: clientID,
         client: { name: clientName, id: clientID },
-        project: { siteID, name: site?.fullAddress || "" },
+        project: {
+          siteID,
+          name: site?.fullAddress || "",
+          propertyType: site?.siteType || linkedClient?.propertyType || linkedClient?.location || "",
+          sizeRange: linkedClient?.sizeRange || "",
+        },
       });
       targetBoq.id = boqId;
     }
@@ -1254,7 +1323,9 @@ export const generateBoqFromSurvey = (siteID) => {
 
     targetBoq.status = "draft";
     targetBoq.siteID = siteID;
-    targetBoq.proposalBaseline = { ...(flow.siteBasis?.proposalBaseline || {}) };
+    targetBoq.proposalBaseline = {
+      ...(flow.siteBasis?.proposalBaseline || {}),
+    };
     targetBoq.quotedTotal = boq.quotedTotal;
     targetBoq.surveyFrozenAt = flow.siteBasis?.frozenAt || null;
     targetBoq.surveyVariance = boq.variance;
@@ -1264,7 +1335,9 @@ export const generateBoqFromSurvey = (siteID) => {
     const libById = Object.fromEntries(listLibrary().map((l) => [l.id, l]));
     const matById = materialsById(listMaterials());
     const generatedSections = boq.areas.map((area) => {
-      const existingSection = (targetBoq.sections || []).find((s) => s.name === area.area);
+      const existingSection = (targetBoq.sections || []).find(
+        (s) => s.name === area.area,
+      );
       const matchedIds = new Set();
       const items = area.rows.map((row) => {
         const existing = (existingSection?.items || []).find(
@@ -1287,12 +1360,17 @@ export const generateBoqFromSurvey = (siteID) => {
           scopeItemId: row.scopeItemId || existing?.scopeItemId || null,
           masterId: row.masterId || existing?.masterId || null,
           description: row.name,
-          spec: row.selectedMaterial?.specifications || row.selectedMaterial?.spec || existing?.spec || "",
+          spec:
+            row.selectedMaterial?.specifications ||
+            row.selectedMaterial?.spec ||
+            existing?.spec ||
+            "",
           hsn: row.selectedMaterial?.hsn || existing?.hsn || "",
           qty: row.measuredQty,
           unit: row.unit,
           rate: row.rate,
-          gstPercent: row.selectedMaterial?.gstPercent ?? existing?.gstPercent ?? 18,
+          gstPercent:
+            row.selectedMaterial?.gstPercent ?? existing?.gstPercent ?? 18,
           discount: existing?.discount || { type: "percent", value: 0 },
           materials: row.materials || existing?.materials || [],
           // Auto-map materials + per-unit quantity + wastage AND the commercial
@@ -1427,43 +1505,140 @@ const docPage = (label) =>
 
 const SAMPLE_BY_STAGE = {
   CONCEPT: [
-    { type: "Mood Board", name: "Living — Warm Minimal.svg", make: () => moodBoard("Mood Board · Warm Minimal", 28) },
-    { type: "Mood Board", name: "Bedroom — Calm Neutrals.svg", make: () => moodBoard("Mood Board · Calm Neutrals", 210) },
+    {
+      type: "Mood Board",
+      name: "Living — Warm Minimal.svg",
+      make: () => moodBoard("Mood Board · Warm Minimal", 28),
+    },
+    {
+      type: "Mood Board",
+      name: "Bedroom — Calm Neutrals.svg",
+      make: () => moodBoard("Mood Board · Calm Neutrals", 210),
+    },
   ],
   DEVELOPMENT: [
-    { type: "3D Render", name: "Living Room — View 1.svg", make: () => render3d("3D Render · Living", 28) },
-    { type: "3D Render", name: "Kitchen — View 1.svg", make: () => render3d("3D Render · Kitchen", 150) },
-    { type: "Material List", name: "Finishes Schedule.svg", make: () => moodBoard("Finishes & Materials", 200) },
+    {
+      type: "3D Render",
+      name: "Living Room — View 1.svg",
+      make: () => render3d("3D Render · Living", 28),
+    },
+    {
+      type: "3D Render",
+      name: "Kitchen — View 1.svg",
+      make: () => render3d("3D Render · Kitchen", 150),
+    },
+    {
+      type: "Material List",
+      name: "Finishes Schedule.svg",
+      make: () => moodBoard("Finishes & Materials", 200),
+    },
   ],
   DRAWINGS: [
-    { type: "2D Drawing", name: "Furniture Layout Plan.svg", make: () => floorPlan("Furniture Layout — GFC") },
-    { type: "2D Drawing", name: "False Ceiling Plan.svg", make: () => floorPlan("False Ceiling — GFC") },
+    {
+      type: "2D Drawing",
+      name: "Furniture Layout Plan.svg",
+      make: () => floorPlan("Furniture Layout — GFC"),
+    },
+    {
+      type: "2D Drawing",
+      name: "False Ceiling Plan.svg",
+      make: () => floorPlan("False Ceiling — GFC"),
+    },
   ],
 
   // ── Architecture stages ────────────────────────────────────────────────────
   SCHEMATIC: [
-    { type: "Site Plan", name: "Site Plan.svg", make: () => floorPlan("Site Plan — Schematic") },
-    { type: "Massing", name: "Massing Study.svg", make: () => render3d("Massing Study", 210) },
-    { type: "Concept", name: "Concept Board.svg", make: () => moodBoard("Concept Direction", 200) },
+    {
+      type: "Site Plan",
+      name: "Site Plan.svg",
+      make: () => floorPlan("Site Plan — Schematic"),
+    },
+    {
+      type: "Massing",
+      name: "Massing Study.svg",
+      make: () => render3d("Massing Study", 210),
+    },
+    {
+      type: "Concept",
+      name: "Concept Board.svg",
+      make: () => moodBoard("Concept Direction", 200),
+    },
   ],
   DESIGN_DEV: [
-    { type: "Plans", name: "Floor Plan.svg", make: () => floorPlan("Floor Plan — DD") },
-    { type: "Sections", name: "Section A-A.svg", make: () => floorPlan("Section A-A") },
-    { type: "Elevations", name: "Front Elevation.svg", make: () => render3d("Front Elevation", 30) },
+    {
+      type: "Plans",
+      name: "Floor Plan.svg",
+      make: () => floorPlan("Floor Plan — DD"),
+    },
+    {
+      type: "Sections",
+      name: "Section A-A.svg",
+      make: () => floorPlan("Section A-A"),
+    },
+    {
+      type: "Elevations",
+      name: "Front Elevation.svg",
+      make: () => render3d("Front Elevation", 30),
+    },
   ],
   APPROVALS: [
-    { type: "Sanction Drawing", name: "Sanction Plan.svg", make: () => floorPlan("Sanction Drawing") },
-    { type: "Form", name: "Building Permit Form.svg", make: () => docPage("Building Permit Form") },
+    {
+      type: "Sanction Drawing",
+      name: "Sanction Plan.svg",
+      make: () => floorPlan("Sanction Drawing"),
+    },
+    {
+      type: "Form",
+      name: "Building Permit Form.svg",
+      make: () => docPage("Building Permit Form"),
+    },
     { type: "NOC", name: "Fire NOC.svg", make: () => docPage("Fire NOC") },
   ],
   CONSTRUCTION_DOCS: [
-    { type: "GFC Drawing", name: "GFC Plan.svg", make: () => floorPlan("GFC Plan") },
-    { type: "Detail", name: "Joinery Detail.svg", make: () => floorPlan("Joinery Detail") },
-    { type: "Spec", name: "Material Spec.svg", make: () => docPage("Material Spec") },
+    {
+      type: "GFC Drawing",
+      name: "GFC Plan.svg",
+      make: () => floorPlan("GFC Plan"),
+    },
+    {
+      type: "Detail",
+      name: "Joinery Detail.svg",
+      make: () => floorPlan("Joinery Detail"),
+    },
+    {
+      type: "Spec",
+      name: "Material Spec.svg",
+      make: () => docPage("Material Spec"),
+    },
   ],
   CONSTRUCTION_ADMIN: [
-    { type: "Site Report", name: "Site Progress Report.svg", make: () => docPage("Site Progress Report") },
-    { type: "Payment Cert", name: "Payment Certificate.svg", make: () => docPage("Payment Certificate") },
+    {
+      type: "Site Report",
+      name: "Site Progress Report.svg",
+      make: () => docPage("Site Progress Report"),
+    },
+    {
+      type: "Payment Cert",
+      name: "Payment Certificate.svg",
+      make: () => docPage("Payment Certificate"),
+    },
+  ],
+  HANDOVER: [
+    {
+      type: "Completion Certificate",
+      name: "Completion Certificate.svg",
+      make: () => docPage("Completion Certificate"),
+    },
+    {
+      type: "As-Built Drawing",
+      name: "As-Built Set.svg",
+      make: () => floorPlan("As-Built Drawing"),
+    },
+    {
+      type: "Handover Document",
+      name: "Handover Document.svg",
+      make: () => docPage("Handover Document"),
+    },
   ],
 };
 

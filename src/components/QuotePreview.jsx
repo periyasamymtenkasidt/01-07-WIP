@@ -4,7 +4,20 @@ import { formatSizeWithAddition } from "../utils/sizeRangeValidation";
 import { GST_RATE, computeTotals } from "../data/QuotePresets";
 import { assignCategoryNames, refreshScopeItemsFromMaster } from "../utils/scopeNaming";
 import { getGlobalTerms, getTermsCategories } from "../data/termsStorage";
+import { gradeLabel } from "../data/rateBuildup";
 import wipLogo from "../assets/images/Logo.png";
+
+const gradeShorthand = (gradeKey) => {
+  if (!gradeKey) return "";
+  const label = gradeLabel(gradeKey);
+  if (!label) return "";
+  return label
+    .trim()
+    .split(/\s+/)
+    .slice(0, 3)
+    .map((w) => w.slice(0, 2).toUpperCase())
+    .join("");
+};
 
 const formatDate = (iso) => {
   if (!iso) return "—";
@@ -158,7 +171,7 @@ const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) 
             Size :
           </span>
           <span className="font-medium text-black">
-            {formatSizeWithAddition(quote.sizeRange, quote.sizeAddedSqft)}
+            {formatSizeWithAddition(quote.sizeRange, quote.sizeAddedSqft, quote.sizeReducedSqft ?? null)}
           </span>
         </div>
       </div>
@@ -167,17 +180,17 @@ const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) 
       <table className="w-full border-collapse">
         <thead>
           <tr className="bg-black text-white uppercase text-[8px] tracking-[0.15em]">
-            <th className="py-3 px-2 text-left w-8">#</th>
-            <th className="py-3 px-2 text-left">OBJECTS</th>
-            <th className="py-3 px-2 text-left">DESCRIPTION</th>
+            <th className="py-3.5 px-3 text-left w-8 whitespace-nowrap">#</th>
+            <th className="py-3.5 px-3 text-left whitespace-nowrap">OBJECTS</th>
+            <th className="py-3.5 px-3 text-left whitespace-nowrap">DESCRIPTION</th>
             {showMeasurement && (
-              <th className="py-3 px-2 text-center whitespace-nowrap">
+              <th className="py-3.5 px-3 text-center whitespace-nowrap">
                 SIZE (L × B × H)
               </th>
             )}
-            <th className="py-3 px-2 text-center">RATE/UNIT</th>
-            <th className="py-3 px-2 text-center">QTY</th>
-            <th className="py-3 px-2 text-right">AMOUNT (INR)</th>
+            <th className="py-3.5 px-3 text-center whitespace-nowrap">RATE/UNIT</th>
+            <th className="py-3.5 px-3 text-center whitespace-nowrap">QTY</th>
+            <th className="py-3.5 px-3 text-right whitespace-nowrap">AMOUNT (INR)</th>
           </tr>
         </thead>
         <tbody>
@@ -187,10 +200,10 @@ const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) 
               return groupedPreviewItems.map((group) => (
                 <Fragment key={group.baseCat}>
                   {/* Base category section header */}
-                  <tr className="bg-slate-50/50">
+                  <tr className="bg-slate-50/50 break-inside-avoid break-after-avoid">
                     <td
                       colSpan={showMeasurement ? 7 : 6}
-                      className="py-2 px-2 font-bold uppercase tracking-wider text-[9px] text-gray-800 bg-paleorange/10 border-b border-black/10"
+                      className="py-2 px-3 font-bold uppercase tracking-wider text-[9px] text-gray-800 bg-paleorange/10 border-b border-black/10"
                     >
                       {group.baseCat}
                     </td>
@@ -205,13 +218,18 @@ const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) 
                     return (
                       <tr
                         key={`${globalIndex}`}
-                        className={`border-b border-black align-top ${
+                        className={`border-b border-black align-top break-inside-avoid ${
                           highlightAdded && item._userAdded ? "bg-active-bg" : ""
                         }`}
                       >
                         <td className="py-4 px-2 font-bold">{globalIndex}</td>
                         <td className="py-4 px-2 font-bold uppercase text-[9px] leading-tight w-1/4">
                           {item._displayCategory || item.area || "—"}
+                          {item.grade && gradeShorthand(item.grade) && (
+                            <span className="ml-1 font-normal normal-case text-[8px] text-gray-400 tracking-normal">
+                              ({gradeShorthand(item.grade)})
+                            </span>
+                          )}
                         </td>
                         <td className="py-4 px-2 text-[11px] leading-snug">
                           <p className="text-gray-700">
@@ -298,57 +316,38 @@ const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) 
           <h2 className="text-[12px] font-extrabold tracking-widest text-black uppercase border-b-2 border-black pb-1.5 mb-4">
             Material Summary
           </h2>
-          <table className="w-full border-collapse">
+          <table className="w-full border-collapse text-[10px] border border-black/20">
             <thead>
-              <tr className="bg-black text-white uppercase text-[8px] tracking-[0.15em]">
-                <th className="py-3 px-2 text-left w-8">#</th>
-                <th className="py-3 px-2 text-left">Material</th>
-                <th className="py-3 px-2 text-left">Specification</th>
-                <th className="py-3 px-2 text-center">Quantity</th>
-                <th className="py-3 px-2 text-center">Rate/Unit</th>
-                <th className="py-3 px-2 text-right">Amount (INR)</th>
+              <tr className="bg-black text-white uppercase text-[8px] tracking-[0.2em]">
+                <th className="py-3.5 px-3 text-center w-10 font-bold border-r border-white/10 whitespace-nowrap">#</th>
+                <th className="py-3.5 px-4 text-left w-[30%] font-bold border-r border-white/10 whitespace-nowrap">Material</th>
+                <th className="py-3.5 px-4 text-left font-bold whitespace-nowrap">Specification</th>
               </tr>
             </thead>
             <tbody>
-              {quote.materialSummary.map((m, i) => (
-                <tr key={i} className="border-b border-black/15 align-top">
-                  <td className="py-3 px-2 font-bold">{i + 1}</td>
-                  <td className="py-3 px-2 font-bold uppercase text-[9px] leading-tight w-1/6">
-                    {m.name || "—"}
-                  </td>
-                  <td className="py-3 px-2 text-[11px] text-gray-600 leading-snug">
-                    {m.spec || "—"}
-                  </td>
-                  <td className="py-3 px-2 text-center whitespace-nowrap tabular-nums">
-                    {Number(m.qty).toFixed(2)} {m.unit}
-                  </td>
-                  <td className="py-3 px-2 text-center whitespace-nowrap tabular-nums">
-                    {formatAmount(m.rate)}/{m.unit}
-                  </td>
-                  <td className="py-3 px-2 text-right font-bold tabular-nums">
-                    {formatAmount(m.amount)}
-                  </td>
-                </tr>
-              ))}
+              {quote.materialSummary.map((m, i) => {
+                const spec = (m.spec || "")
+                  .replace(/\[Image\s*#?\s*\d*\]/gi, "")
+                  .replace(/\s{2,}/g, " ")
+                  .trim();
+                return (
+                  <tr
+                    key={i}
+                    className={`border-b border-black/10 ${i % 2 === 0 ? "bg-white" : "bg-[#f9f9f9]"}`}
+                  >
+                    <td className="py-2.5 px-3 text-center text-[9px] text-black/50 font-bold tabular-nums border-r border-black/8">
+                      {i + 1}
+                    </td>
+                    <td className="py-2.5 px-4 font-bold uppercase tracking-[0.08em] text-[9px] text-black border-r border-black/8">
+                      {m.name || "—"}
+                    </td>
+                    <td className="py-2.5 px-4 text-[10px] text-gray-600 leading-snug">
+                      {spec || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
-            <tfoot>
-              <tr className="border-t-2 border-black">
-                <td
-                  colSpan={5}
-                  className="py-3 px-2 text-right font-bold uppercase text-[10px] tracking-widest"
-                >
-                  Total Material Value
-                </td>
-                <td className="py-3 px-2 text-right font-bold tabular-nums">
-                  {formatAmount(
-                    quote.materialSummary.reduce(
-                      (sum, m) => sum + (Number(m.amount) || 0),
-                      0,
-                    ),
-                  )}
-                </td>
-              </tr>
-            </tfoot>
           </table>
         </div>
       )}
@@ -394,7 +393,7 @@ const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) 
         if (categoriesToRender.length === 0) return null;
 
         return (
-          <div className="mt-8 space-y-6 break-inside-avoid">
+          <div className="mt-8 space-y-4 break-inside-avoid">
             <div>
               <h2 className="text-[12px] font-extrabold tracking-widest text-black uppercase border-b-2 border-black pb-1.5 mb-4">
                 TERMS & CONDITIONS
@@ -464,7 +463,7 @@ const QuotePreview = ({ quote, syncFromMaster = true, highlightAdded = false }) 
       )}
 
       {/* Signature */}
-      <div className="grid grid-cols-2 gap-6 mt-10 pt-6 border-t border-border">
+      <div className="grid grid-cols-2 gap-6 mt-8 break-inside-avoid">
         <div>
           <div className="border-b border-text-subtle h-10" />
           <p className="text-[10px] uppercase tracking-widest text-text-subtle font-bold mt-1.5">

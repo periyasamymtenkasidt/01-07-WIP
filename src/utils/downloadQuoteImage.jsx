@@ -39,7 +39,7 @@ export async function downloadQuoteAsImage(quote, fileName, element) {
 
       root = createRoot(printContainer);
       flushSync(() => {
-        root.render(<QuotePreview quote={quote} />);
+        root.render(<QuotePreview quote={quote} syncFromMaster={false} />);
       });
       targetElement = printContainer;
     }

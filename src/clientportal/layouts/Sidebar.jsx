@@ -1,8 +1,7 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { MdOutlineDashboard, MdOutlineReceiptLong, MdOutlineContactSupport } from "react-icons/md";
+import { MdOutlineDashboard, MdOutlineReceiptLong } from "react-icons/md";
 import { RiMoneyRupeeCircleFill } from "react-icons/ri";
-import { LuMapPin } from "react-icons/lu";
 import { PiUsersThreeBold, PiSignOut } from "react-icons/pi";
 import { FileText, Image as ImageIcon } from "lucide-react";
 
@@ -12,14 +11,12 @@ const Sidebar = ({ clientId }) => {
     { id: "dashboard", label: "Dashboard", icon: MdOutlineDashboard, path: "dashboard" },
     { id: "milestones", label: "Payment Milestones", icon: RiMoneyRupeeCircleFill, path: "payment-milestones" },
     { id: "quotes", label: "Project Quotes", icon: MdOutlineReceiptLong, path: "project-quotes" },
-    { id: "appointments", label: "Site Visit and Calendar", icon: LuMapPin, path: "site-visits-calendar" },
     { id: "gallery", label: "Designs and Renders", icon: ImageIcon, path: "designs-renders" },
     { id: "invoices", label: "Invoice", icon: FileText, path: "gst-invoice" },
     { id: "profile", label: "Profile", icon: PiUsersThreeBold, path: "profile" },
   ];
 
   const supportModules = [
-    { id: "support", label: "Support", icon: MdOutlineContactSupport, path: "support-chat" },
     { id: "signout", label: "Sign Out", icon: PiSignOut, path: "signout" },
   ];
 

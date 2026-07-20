@@ -41,7 +41,6 @@ const MainLayout = () => {
     if (path.endsWith("/dashboard")) return "Dashboard";
     if (path.endsWith("/designs-renders")) return "Designs and Renders";
     if (path.endsWith("/project-quotes")) return "Project Quotes";
-    if (path.endsWith("/site-visits-calendar")) return "Site Visit and Calendar";
     if (path.endsWith("/payment-milestones")) return "Payment Milestones";
     if (path.endsWith("/gst-invoice")) return "Invoice";
     if (path.endsWith("/support-chat")) return "Support";
@@ -190,9 +189,11 @@ const MainLayout = () => {
           needsSave = true;
         }
 
-        // Initialize progress status parameters if missing
-        if (foundSite.progress === undefined || foundSite.progress === 0) {
-          foundSite.progress = 75;
+        // Progress is the site's REAL value (0 until execution starts) — do not
+        // fabricate a placeholder. 0 is valid (survey not started), so it must
+        // not be treated as "missing" and overwritten.
+        if (foundSite.progress === undefined) {
+          foundSite.progress = 0;
           needsSave = true;
         }
         if (!foundSite.approvalStatus) {
@@ -253,6 +254,19 @@ const MainLayout = () => {
     }
   }, [client]);
 
+  // Refresh site when the admin updates it from another tab.
+  useEffect(() => {
+    if (!client) return;
+    const onStorage = (e) => {
+      if (e.key !== "newSitesData") return;
+      const allSites = getAllSites();
+      const found = allSites.find((s) => s.clientID === client.clientID);
+      if (found) setSite((prev) => ({ ...prev, ...found }));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [client]);
+
   const updateSite = (updatedSiteOrFn) => {
     setSite((prevSite) => {
       const nextSite = typeof updatedSiteOrFn === "function" ? updatedSiteOrFn(prevSite) : updatedSiteOrFn;
@@ -295,56 +309,6 @@ const MainLayout = () => {
       };
     });
   };
-
-  // Appointments / Site Visits state
-  const [appointments, setAppointments] = useState(() => {
-    const saved = localStorage.getItem(`clientAppointments_${clientId}`);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.log(e);
-      }
-    }
-    return [
-      {
-        date: "12",
-        month: "JAN",
-        title: "Site Visit – Luxury Villa Review",
-        time: "10:00 – 12:00",
-        status: "Done",
-        statusColor: "bg-[#E6F4EA] text-[#16A34A] border-[#DCFCE7]",
-        type: "Site Review",
-      },
-      {
-        date: "28",
-        month: "JAN",
-        title: "Electrical & Ceiling Layout Discussion",
-        time: "14:00 – 15:30",
-        status: "Done",
-        statusColor: "bg-[#E6F4EA] text-[#16A34A] border-[#DCFCE7]",
-        type: "Drawing Review",
-      },
-      {
-        date: "14",
-        month: "FEB",
-        title: "Material & Flooring Selection",
-        time: "11:00 – 12:30",
-        status: "Done",
-        statusColor: "bg-[#E6F4EA] text-[#16A34A] border-[#DCFCE7]",
-        type: "Selection",
-      },
-      {
-        date: "10",
-        month: "JUN",
-        title: "Site Progress Walkthrough",
-        time: "10:00 – 11:30",
-        status: "Scheduled",
-        statusColor: "bg-[#E0F2FE] text-[#0284C7] border-[#BAE6FD]",
-        type: "Site Visit",
-      },
-    ];
-  });
 
   // Support / Message Log state
   const [messages, setMessages] = useState(() => {
@@ -450,13 +414,6 @@ const MainLayout = () => {
     setAssociatedLead(foundLead);
   }, [client]);
 
-  // Save appointments to localStorage
-  useEffect(() => {
-    if (clientId) {
-      localStorage.setItem(`clientAppointments_${clientId}`, JSON.stringify(appointments));
-    }
-  }, [appointments, clientId]);
-
   // Save messages to localStorage
   useEffect(() => {
     if (clientId) {
@@ -498,49 +455,22 @@ const MainLayout = () => {
     setMilestones(initialMilestones);
   };
 
-  const handleCreateAppointment = (subject, date, time) => {
-    if (!subject || !date || !time) return;
-
-    const dateParts = date.split("-");
-    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-    const month = monthNames[parseInt(dateParts[1], 10) - 1] || "JUN";
-    const day = dateParts[2] || "15";
-
-    const newApt = {
-      date: day,
-      month,
-      title: subject,
-      time: time,
-      status: "Pending Approval",
-      statusColor: "bg-[#FEF3C7] text-pending border-[#FEEBBE]",
-      type: "Client Request",
-    };
-
-    setAppointments([...appointments, newApt]);
-  };
-
-  const handleSendMessage = (text) => {
+  const handleSendMessage = (text, topic) => {
     if (!text.trim()) return;
 
-    const newMsg = {
-      sender: "client",
-      text: text,
-      time: "Just now",
-    };
+    const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const fullText = topic ? `[${topic}] ${text}` : text;
 
-    const updated = [...messages, newMsg];
+    const updated = [
+      ...messages,
+      { sender: "client", text: fullText, time },
+      {
+        sender: "designer",
+        text: "Your message has been received. A team member will get back to you within 1 business day.",
+        time,
+      },
+    ];
     setMessages(updated);
-
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          sender: "designer",
-          text: "Thanks for writing! We have received your query. A project architect will get back to you shortly.",
-          time: "Just now",
-        },
-      ]);
-    }, 1500);
   };
 
   const handleLogout = () => {
@@ -664,8 +594,6 @@ const MainLayout = () => {
                   markAllNotificationsAsRead,
                   milestones,
                   setMilestones,
-                  appointments,
-                  setAppointments,
                   messages,
                   setMessages,
                   gallery,
@@ -677,7 +605,6 @@ const MainLayout = () => {
                   paidCount,
                   pendingCount,
                   associatedLead,
-                  handleCreateAppointment,
                   handleSendMessage,
                   formatAmount,
                   parseBudget,

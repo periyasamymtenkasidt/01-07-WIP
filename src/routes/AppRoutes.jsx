@@ -50,9 +50,7 @@ const ClientPortalLayout = lazy(() => import("../clientportal/layouts/MainLayout
 const PortalDashboard = lazy(() => import("../clientportal/pages/PortalDashboard"));
 const PaymentMilestones = lazy(() => import("../clientportal/pages/PaymentMilestones"));
 const ProjectQuotes = lazy(() => import("../clientportal/pages/ProjectQuotes"));
-const SiteVisitsCalendar = lazy(() => import("../clientportal/pages/SiteVisitsCalendar"));
 const DesignsRenders = lazy(() => import("../clientportal/pages/DesignsRenders"));
-const SupportChat = lazy(() => import("../clientportal/pages/SupportChat"));
 const GSTInvoice = lazy(() => import("../clientportal/pages/GSTInvoice"));
 const ClientProfilePage = lazy(() => import("../clientportal/pages/ClientProfilePage"));
 const ClientSignout = lazy(() => import("../clientportal/pages/ClientSignout"));
@@ -138,9 +136,7 @@ const AppRoutes = () => {
               <Route path="dashboard" element={<PortalDashboard />} />
               <Route path="payment-milestones" element={<PaymentMilestones />} />
               <Route path="project-quotes" element={<ProjectQuotes />} />
-              <Route path="site-visits-calendar" element={<SiteVisitsCalendar />} />
               <Route path="designs-renders" element={<DesignsRenders />} />
-              <Route path="support-chat" element={<SupportChat />} />
               <Route path="gst-invoice" element={<GSTInvoice />} />
               <Route path="profile" element={<ClientProfilePage />} />
               <Route path="signout" element={<ClientSignout />} />

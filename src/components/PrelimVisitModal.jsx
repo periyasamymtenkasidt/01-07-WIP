@@ -15,14 +15,67 @@ const genId = () =>
 const inputBase =
   "w-full rounded-lg border border-bordergray bg-white px-3 py-2 text-[13px] text-textcolor focus:outline-none focus:border-select-blue focus:ring-2 focus:ring-select-blue/15";
 
+// Predefined records the visitor ticks off as collected on site. These are the
+// paperwork/records gathered, distinct from the uploaded Attachments (files).
+const DOCUMENT_OPTIONS = [
+  "Patta / Chitta / EC",
+  "Sale Deed",
+  "Survey Sketch",
+  "Site Plan",
+  "Previous Approval Drawing",
+  "Soil Test Report",
+  "Photos / Videos",
+];
+
+// The visit's feasibility verdict — the outcome that drives the next step.
+const FEASIBILITY_OPTIONS = ["Feasible", "Needs Verification", "Not Feasible"];
+
+// Section heading inside the modal body.
+const SectionTitle = ({ children }) => (
+  <h4 className="text-[11px] font-bold uppercase tracking-wider text-darkgray">
+    {children}
+  </h4>
+);
+
 // Module-level so the input isn't remounted (and focus lost) on every keystroke.
-const VisitField = ({ label, value, onChange, placeholder }) => (
+const VisitField = ({ label, value, onChange, placeholder, type = "text", min }) => (
   <label className="block">
     <span className="mb-1 block text-[10.5px] font-semibold uppercase tracking-wider text-text-muted">
       {label}
     </span>
-    <input value={value} onChange={onChange} placeholder={placeholder} className={inputBase} />
+    <input
+      type={type}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      min={min}
+      className={inputBase}
+    />
   </label>
+);
+
+// Small pill-style toggle group (single-select). Used for Client Present and
+// the Feasibility Read verdict. Clicking the active pill clears it.
+const PillToggle = ({ options, value, onChange }) => (
+  <div className="flex flex-wrap gap-2">
+    {options.map((opt) => {
+      const selected = value === opt.value;
+      return (
+        <button
+          key={String(opt.value)}
+          type="button"
+          onClick={() => onChange(selected ? null : opt.value)}
+          className={`rounded-lg border px-4 py-1.5 text-[12px] font-semibold transition-colors ${
+            selected
+              ? "border-select-blue bg-active-bg text-select-blue"
+              : "border-bordergray bg-white text-text-muted hover:bg-bg-soft"
+          }`}
+        >
+          {opt.label}
+        </button>
+      );
+    })}
+  </div>
 );
 
 // Light preliminary site visit — captured BEFORE the fee proposal so the design
@@ -30,14 +83,37 @@ const VisitField = ({ label, value, onChange, placeholder }) => (
 // feasibility (legal/soil/topo) — that comes after appointment.
 const PrelimVisitModal = ({ initial, onClose, onSave }) => {
   const [form, setForm] = useState({
-    plotRead: initial?.plotRead || "",
-    approxFSI: initial?.approxFSI || "",
-    access: initial?.access || "",
-    condition: initial?.condition || "",
+    // Visit details
+    visitDate: initial?.visitDate || "",
+    visitedBy: initial?.visitedBy || "",
+    clientPresent: initial?.clientPresent ?? null,
+    // Site read — plotRead / access / condition keys are kept (relabeled) so the
+    // feasibility auto-fill (feasibilityStorage) keeps working.
+    plotRead: initial?.plotRead || "", // "Plot Dimensions"
+    orientation: initial?.orientation || "",
+    access: initial?.access || "", // "Site Access"
+    roadWidth: initial?.roadWidth || "",
+    condition: initial?.condition || "", // "Existing Condition"
+    utilities: initial?.utilities || "",
+    // Visit outcome
+    feasibilityRead: initial?.feasibilityRead || "",
+    nextAction: initial?.nextAction || "",
+    followUpDate: initial?.followUpDate || "",
     notes: initial?.notes || "",
   });
   const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const setField = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
+  // Records ticked off as collected on site (chip multi-select).
+  const [documentsCollected, setDocumentsCollected] = useState(
+    initial?.documentsCollected || [],
+  );
+  const toggleDoc = (doc) =>
+    setDocumentsCollected((prev) =>
+      prev.includes(doc) ? prev.filter((d) => d !== doc) : [...prev, doc],
+    );
+
+  // Uploaded files (photos, scanned records) — carried into feasibility.
   const [documents, setDocuments] = useState(initial?.documents || []);
 
   const onPickFile = async (e) => {
@@ -59,7 +135,7 @@ const PrelimVisitModal = ({ initial, onClose, onSave }) => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-[88vh] w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl">
+      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-bordergray px-6 py-4">
           <div className="flex items-center gap-2.5">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
@@ -70,7 +146,8 @@ const PrelimVisitModal = ({ initial, onClose, onSave }) => {
                 Preliminary Site Visit
               </h3>
               <p className="mt-0.5 text-[12px] text-text-muted">
-                Quick read to scope the fee — not the full feasibility.
+                Quick read to decide feasibility and scope the fee — not the full
+                due diligence.
               </p>
             </div>
           </div>
@@ -83,33 +160,111 @@ const PrelimVisitModal = ({ initial, onClose, onSave }) => {
           </button>
         </div>
 
-        <div className="flex-1 space-y-3.5 overflow-y-auto px-6 py-5">
-          <div className="grid grid-cols-2 gap-3">
-            <VisitField label="Plot read" value={form.plotRead} onChange={set("plotRead")} placeholder="e.g. 40×60 corner plot" />
-            <VisitField label="Approx FSI / buildable" value={form.approxFSI} onChange={set("approxFSI")} placeholder="e.g. ~1.5, G+3" />
-            <VisitField label="Access / road" value={form.access} onChange={set("access")} placeholder="e.g. 30 ft road, easy access" />
-            <VisitField label="Site condition" value={form.condition} onChange={set("condition")} placeholder="e.g. vacant, levelled" />
-          </div>
-          <label className="block">
-            <span className="mb-1 block text-[10.5px] font-semibold uppercase tracking-wider text-text-muted">
-              Notes
-            </span>
-            <textarea
-              rows={3}
-              value={form.notes}
-              onChange={set("notes")}
-              placeholder="Observations that affect the design fee / approach…"
-              className={`${inputBase} resize-none`}
-            />
-          </label>
-
-          {/* Documents — photos, plot/title copies, sketches. Carried forward
-              into the site's feasibility. */}
-          <div>
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-[10.5px] font-semibold uppercase tracking-wider text-text-muted">
-                Documents
+        <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
+          {/* ── Visit details ─────────────────────────────────────────── */}
+          <div className="space-y-3.5">
+            <SectionTitle>Visit Details</SectionTitle>
+            <div className="grid grid-cols-2 gap-3">
+              <VisitField
+                label="Visit Date"
+                type="date"
+                value={form.visitDate}
+                onChange={set("visitDate")}
+                min={new Date().toISOString().split("T")[0]}
+              />
+              <VisitField
+                label="Visited By"
+                value={form.visitedBy}
+                onChange={set("visitedBy")}
+                placeholder="e.g. Site engineer name"
+              />
+            </div>
+            <div>
+              <span className="mb-1 block text-[10.5px] font-semibold uppercase tracking-wider text-text-muted">
+                Client Present
               </span>
+              <PillToggle
+                value={form.clientPresent}
+                onChange={(v) => setField("clientPresent", v)}
+                options={[
+                  { label: "Yes", value: true },
+                  { label: "No", value: false },
+                ]}
+              />
+            </div>
+          </div>
+
+          {/* ── Site read ─────────────────────────────────────────────── */}
+          <div className="space-y-3.5">
+            <SectionTitle>Site Read</SectionTitle>
+            <div className="grid grid-cols-2 gap-3">
+              <VisitField
+                label="Plot Dimensions"
+                value={form.plotRead}
+                onChange={set("plotRead")}
+                placeholder="e.g. 40×60 ft"
+              />
+              <VisitField
+                label="Orientation"
+                value={form.orientation}
+                onChange={set("orientation")}
+                placeholder="e.g. East-facing"
+              />
+              <VisitField
+                label="Site Access"
+                value={form.access}
+                onChange={set("access")}
+                placeholder="e.g. corner plot, easy access"
+              />
+              <VisitField
+                label="Road Width"
+                value={form.roadWidth}
+                onChange={set("roadWidth")}
+                placeholder="e.g. 30 ft"
+              />
+              <VisitField
+                label="Existing Condition"
+                value={form.condition}
+                onChange={set("condition")}
+                placeholder="e.g. vacant, levelled"
+              />
+              <VisitField
+                label="Utilities Available"
+                value={form.utilities}
+                onChange={set("utilities")}
+                placeholder="e.g. water, electricity"
+              />
+            </div>
+          </div>
+
+          {/* ── Documents collected (checklist) ───────────────────────── */}
+          <div className="space-y-2.5">
+            <SectionTitle>Documents Collected</SectionTitle>
+            <div className="flex flex-wrap gap-2">
+              {DOCUMENT_OPTIONS.map((doc) => {
+                const selected = documentsCollected.includes(doc);
+                return (
+                  <button
+                    key={doc}
+                    type="button"
+                    onClick={() => toggleDoc(doc)}
+                    className={`rounded-full border px-3 py-1.5 text-[11.5px] font-semibold transition-colors ${
+                      selected
+                        ? "border-select-blue bg-active-bg text-select-blue"
+                        : "border-bordergray bg-white text-text-muted hover:bg-bg-soft"
+                    }`}
+                  >
+                    {doc}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Attachments (uploaded files) ──────────────────────────── */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <SectionTitle>Attachments</SectionTitle>
               <label className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-bg-soft px-3 py-1 text-[11.5px] font-semibold text-grey hover:bg-bordergray">
                 <FiUpload size={12} /> Upload
                 <input
@@ -123,7 +278,7 @@ const PrelimVisitModal = ({ initial, onClose, onSave }) => {
             <div className="space-y-1.5">
               {documents.length === 0 && (
                 <p className="rounded-lg border border-dashed border-bordergray py-2.5 text-center text-[11px] text-text-subtle">
-                  No documents yet.
+                  No files attached yet.
                 </p>
               )}
               {documents.map((d) => (
@@ -132,7 +287,9 @@ const PrelimVisitModal = ({ initial, onClose, onSave }) => {
                   className="flex items-center gap-2 rounded-lg border border-bg-soft bg-palewhite/40 px-3 py-1.5"
                 >
                   <FiPaperclip size={12} className="shrink-0 text-select-blue" />
-                  <span className="truncate text-[12px] text-darkgray">{d.name}</span>
+                  <span className="truncate text-[12px] text-darkgray">
+                    {d.name}
+                  </span>
                   <button
                     type="button"
                     onClick={() => removeDoc(d)}
@@ -143,6 +300,47 @@ const PrelimVisitModal = ({ initial, onClose, onSave }) => {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* ── Visit outcome ─────────────────────────────────────────── */}
+          <div className="space-y-3.5">
+            <SectionTitle>Visit Outcome</SectionTitle>
+            <div>
+              <span className="mb-1 block text-[10.5px] font-semibold uppercase tracking-wider text-text-muted">
+                Feasibility Read
+              </span>
+              <PillToggle
+                value={form.feasibilityRead}
+                onChange={(v) => setField("feasibilityRead", v)}
+                options={FEASIBILITY_OPTIONS.map((o) => ({ label: o, value: o }))}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <VisitField
+                label="Next Action"
+                value={form.nextAction}
+                onChange={set("nextAction")}
+                placeholder="e.g. Send fee proposal"
+              />
+              <VisitField
+                label="Follow-up Date"
+                type="date"
+                value={form.followUpDate}
+                onChange={set("followUpDate")}
+              />
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-[10.5px] font-semibold uppercase tracking-wider text-text-muted">
+                Notes
+              </span>
+              <textarea
+                rows={3}
+                value={form.notes}
+                onChange={set("notes")}
+                placeholder="Observations that affect the design fee / approach…"
+                className={`${inputBase} resize-none`}
+              />
+            </label>
           </div>
         </div>
 
@@ -156,7 +354,9 @@ const PrelimVisitModal = ({ initial, onClose, onSave }) => {
           </button>
           <button
             type="button"
-            onClick={() => onSave({ ...form, documents, done: true })}
+            onClick={() =>
+              onSave({ ...form, documentsCollected, documents, done: true })
+            }
             className="flex items-center gap-1.5 rounded-lg bg-linear-to-br from-violet-600 to-violet-800 px-5 py-2 text-[13px] font-bold text-white shadow-sm hover:shadow-md"
           >
             <FiCheck size={14} /> Save visit

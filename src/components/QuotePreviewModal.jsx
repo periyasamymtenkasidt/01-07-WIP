@@ -27,7 +27,7 @@ const QuotePreviewModal = ({ quote, fileName, onClose }) => {
       // 2. Render QuotePreview into the temporary container
       const root = createRoot(printContainer);
       flushSync(() => {
-        root.render(<QuotePreview quote={quote} />);
+        root.render(<QuotePreview quote={quote} syncFromMaster={false} />);
       });
 
       // 3. Set printing class on body to isolate the container and hide the rest
@@ -116,7 +116,7 @@ const QuotePreviewModal = ({ quote, fileName, onClose }) => {
     >
       <div ref={previewRef} className="rounded-xl border border-border bg-white p-6 shadow-sm">
         {quote ? (
-          <QuotePreview quote={quote} />
+          <QuotePreview quote={quote} syncFromMaster={false} />
         ) : (
           <p className="text-center text-text-muted text-sm py-10">
             No quote available to preview.

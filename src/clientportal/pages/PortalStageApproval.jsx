@@ -60,8 +60,15 @@ const PortalStageApproval = ({ site, clientName }) => {
   useEffect(() => {
     if (!siteID) return;
     const refresh = () => setFlow(getDesignFlow(siteID));
+    const onStorage = (e) => {
+      if (e.key === `designFlow_${siteID}`) refresh();
+    };
     window.addEventListener("designFlowChanged", refresh);
-    return () => window.removeEventListener("designFlowChanged", refresh);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("designFlowChanged", refresh);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [siteID]);
 
   // Resolve the current stage's uploaded files for review/download.
@@ -197,15 +204,14 @@ const PortalStageApproval = ({ site, clientName }) => {
       {stage && (
         <div
           className={`mb-4 flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold ${
-            // Graduated by how many free revisions remain: 4+ green, 3 amber,
-            // 2–1 red, and the exhausted (0) chargeable state stays orange.
-            billing.freeLeft >= 4
-              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-              : billing.freeLeft === 3
-                ? "border-amber-200 bg-amber-50 text-amber-700"
-                : billing.freeLeft >= 1
-                  ? "border-red-200 bg-red-50 text-red-700"
-                  : "border-orange-200 bg-orange-50 text-orange-700"
+            // Graduated by proportion of free revisions remaining vs total.
+            billing.freeLeft === 0
+              ? "border-orange-200 bg-orange-50 text-orange-700"
+              : billing.freeLeft / billing.free <= 0.25
+                ? "border-red-200 bg-red-50 text-red-700"
+                : billing.freeLeft / billing.free <= 0.5
+                  ? "border-amber-200 bg-amber-50 text-amber-700"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
           }`}
         >
           <RotateCcw size={14} className="shrink-0" />

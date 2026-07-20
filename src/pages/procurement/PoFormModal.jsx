@@ -1,12 +1,11 @@
-import { useState, useEffect } from "react";
-import { X, Plus, Trash2 } from "lucide-react";
-import { listContracts } from "../../data/contractStorage";
+import { useState, useEffect, useMemo } from "react";
+import { X, Plus, Trash2, PackageCheck, Check } from "lucide-react";
+import { listBoqs } from "../../data/boqStorage";
 import { listVendors } from "../../data/vendorStorage";
 import { createPurchaseOrder } from "../../data/procurementStorage";
 import NumericInput from "../../components/NumericInput";
 
-// Shared "create purchase order" modal, used by the Purchase Orders tab (blank)
-// and the Take-off tab (pre-filled with BOQ material lines + the linked contract).
+const ELIGIBLE_STATUS = "issued_for_procurement";
 
 const blankLine = () => ({ name: "", qty: 1, unit: "nos", rate: 0 });
 
@@ -17,18 +16,20 @@ const PoFormModal = ({
   initialLines = null,
   initialContractId = "",
 }) => {
-  const contracts = listContracts();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const eligibleBoqs = useMemo(() => listBoqs().filter((b) => b.status === ELIGIBLE_STATUS), [open]);
   const vendors = listVendors();
 
   const [contractId, setContractId] = useState(initialContractId);
+  const [selectedBoq, setSelectedBoq] = useState(null);
   const [vendorId, setVendorId] = useState("");
   const [expectedOn, setExpectedOn] = useState("");
   const [lines, setLines] = useState(initialLines?.length ? initialLines : [blankLine()]);
 
-  // Re-seed when opened with new take-off lines / contract.
   useEffect(() => {
     if (!open) return;
     setContractId(initialContractId || "");
+    setSelectedBoq(null);
     setVendorId("");
     setExpectedOn("");
     setLines(initialLines?.length ? initialLines.map((l) => ({ ...l })) : [blankLine()]);
@@ -36,6 +37,8 @@ const PoFormModal = ({
   }, [open]);
 
   if (!open) return null;
+
+  const today = new Date().toISOString().split("T")[0];
 
   const setLine = (i, patch) =>
     setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
@@ -47,7 +50,13 @@ const PoFormModal = ({
     0,
   );
 
-  const canSave = contractId && lines.some((l) => l.name && l.rate);
+  const deliveryDateValid = !expectedOn || expectedOn >= today;
+  const canSave = contractId && lines.some((l) => l.name && l.rate) && deliveryDateValid;
+
+  const handleSelectBoq = (boq) => {
+    setSelectedBoq(boq);
+    setContractId(boq.contractId || "");
+  };
 
   const save = () => {
     if (!canSave) return;
@@ -87,23 +96,86 @@ const PoFormModal = ({
           </button>
         </div>
 
-        <div className="p-6 overflow-y-auto space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <label className="text-[12px] font-semibold text-text-muted">
-              Project (contract)
-              <select
-                value={contractId}
-                onChange={(e) => setContractId(e.target.value)}
-                className="mt-1 w-full border border-bordergray rounded-lg px-3 py-2 text-[13px] text-textcolor bg-white"
-              >
-                <option value="">Select…</option>
-                {contracts.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.clientName} · {c.id}
-                  </option>
-                ))}
-              </select>
-            </label>
+        <div className="p-6 overflow-y-auto space-y-5">
+          {/* BOQ selection — table when standalone; locked chip when pre-filled */}
+          {initialContractId ? (
+            <div className="flex items-center gap-2 rounded-lg bg-indigo-50 border border-indigo-200 px-3 py-2">
+              <PackageCheck size={13} className="text-indigo-600 shrink-0" />
+              <span className="text-[12px] text-text-muted font-semibold">Contract</span>
+              <span className="text-[12px] font-bold text-indigo-700">{initialContractId}</span>
+            </div>
+          ) : (
+            <div>
+              <p className="text-[12px] font-bold uppercase tracking-wider text-text-subtle mb-2">
+                Select BOQ
+              </p>
+              {eligibleBoqs.length === 0 ? (
+                <div className="flex flex-col items-center py-10 gap-2 rounded-xl border border-bordergray bg-bg-soft/40 text-center">
+                  <PackageCheck size={26} className="text-text-subtle opacity-40" />
+                  <p className="text-[12px] font-semibold text-text-muted">
+                    No BOQs issued for procurement yet
+                  </p>
+                  <p className="text-[11px] text-text-subtle max-w-xs">
+                    A BOQ must be completed and issued for procurement from the
+                    BOQ editor before it appears here.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-bordergray overflow-hidden">
+                  <table className="w-full text-[13px]">
+                    <thead>
+                      <tr className="bg-bg-soft text-text-muted text-[10px] uppercase tracking-wider">
+                        <th className="text-left font-bold px-4 py-2.5">BOQ ID</th>
+                        <th className="text-left font-bold px-4 py-2.5">Title</th>
+                        <th className="text-left font-bold px-4 py-2.5">Client</th>
+                        <th className="px-4 py-2.5 w-24" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {eligibleBoqs.map((b) => {
+                        const isSelected = selectedBoq?.id === b.id;
+                        return (
+                          <tr
+                            key={b.id}
+                            onClick={() => handleSelectBoq(b)}
+                            className={`border-t border-bordergray cursor-pointer transition-colors ${
+                              isSelected
+                                ? "bg-indigo-50"
+                                : "hover:bg-bg-soft/50"
+                            }`}
+                          >
+                            <td className="px-4 py-2.5 font-mono text-[11px] text-text-muted whitespace-nowrap">
+                              {b.id}
+                            </td>
+                            <td className="px-4 py-2.5 font-semibold text-textcolor">
+                              {b.title || "Untitled BOQ"}
+                            </td>
+                            <td className="px-4 py-2.5 text-text-muted">
+                              {b.clientName || "—"}
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              {isSelected ? (
+                                <span className="inline-flex items-center gap-1 text-[10.5px] font-bold text-indigo-600">
+                                  <Check size={11} /> Selected
+                                </span>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-select-blue hover:underline">
+                                  Select →
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Vendor + date row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="text-[12px] font-semibold text-text-muted">
               Vendor
               <select
@@ -120,16 +192,25 @@ const PoFormModal = ({
               </select>
             </label>
             <label className="text-[12px] font-semibold text-text-muted">
-              Expected on
+              Committed Delivery Date
               <input
                 type="date"
+                min={today}
                 value={expectedOn}
                 onChange={(e) => setExpectedOn(e.target.value)}
-                className="mt-1 w-full border border-bordergray rounded-lg px-3 py-2 text-[13px] text-textcolor bg-white"
+                className={`mt-1 w-full border rounded-lg px-3 py-2 text-[13px] text-textcolor bg-white ${
+                  !deliveryDateValid ? "border-red-300 bg-red-50" : "border-bordergray"
+                }`}
               />
+              {!deliveryDateValid && (
+                <p className="mt-1 text-[11px] text-red-500 font-normal">
+                  Delivery date cannot be in the past.
+                </p>
+              )}
             </label>
           </div>
 
+          {/* Line items */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <p className="text-[12px] font-bold uppercase tracking-wider text-text-subtle">

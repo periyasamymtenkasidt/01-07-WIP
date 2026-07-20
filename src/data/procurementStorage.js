@@ -7,8 +7,12 @@
 //
 // Stored per contract under `purchaseOrders_<contractId>`.
 
-import { computeItemQty } from "./boqStorage";
+import { computeItemQty, getBoq } from "./boqStorage";
 import { listContracts } from "./contractStorage";
+
+// Resolve client name from a BOQ ID — used when POs are stored under boqId
+// instead of a contract (no contract linked at procurement time).
+const getBoqClientName = (boqId) => getBoq(boqId)?.client?.name || "";
 
 const KEY = (contractId) => `purchaseOrders_${contractId}`;
 
@@ -129,7 +133,7 @@ const lineAmount = (l) => (Number(l.qty) || 0) * (Number(l.rate) || 0);
 
 export const createPurchaseOrder = (
   contractId,
-  { vendorId = null, vendorName = "", items = [], expectedOn = "" } = {},
+  { vendorId = null, vendorName = "", items = [], expectedOn = "", clientName = "" } = {},
 ) => {
   const lines = items.map((l) => ({
     materialId: l.materialId || null,
@@ -138,12 +142,14 @@ export const createPurchaseOrder = (
     qty: Number(l.qty) || 0,
     unit: l.unit || "nos",
     rate: Number(l.rate) || 0,
+    gst: l.gst !== undefined ? Number(l.gst) : 18,
     amount: lineAmount(l),
   }));
   const total = lines.reduce((s, l) => s + l.amount, 0);
   const po = {
     id: generatePoId(contractId),
     contractId,
+    clientName,
     vendorId,
     vendorName,
     items: lines,
@@ -158,18 +164,29 @@ export const createPurchaseOrder = (
   return po;
 };
 
-// Record goods received against a PO (a GRN). receivedItems is a partial map of
-// material → qtyReceived; status flips to received once everything is in.
-export const receivePurchaseOrder = (contractId, poId, receivedItems = []) => {
+export const generateGrnId = (poId, existingGrns = []) =>
+  `${poId}-GRN-${String(existingGrns.length + 1).padStart(2, "0")}`;
+
+// Record goods received against a PO. receivedItems carries per-line qty,
+// condition and remarks; grnMeta carries the receipt header (date, receiver,
+// challan). Status flips to received once all ordered quantities are in.
+export const receivePurchaseOrder = (contractId, poId, receivedItems = [], grnMeta = {}) => {
   const next = listPurchaseOrders(contractId).map((po) => {
     if (po.id !== poId) return po;
-    const grns = [
-      ...(po.grns || []),
-      { receivedItems, receivedOn: new Date().toISOString() },
-    ];
+    const existingGrns = po.grns || [];
+    const grn = {
+      id: generateGrnId(poId, existingGrns),
+      receivedItems,
+      receivedOn: grnMeta.receivedOn || new Date().toISOString(),
+      receivedBy: grnMeta.receivedBy || "",
+      challanNo: grnMeta.challanNo || "",
+      remarks: grnMeta.remarks || "",
+      createdAt: new Date().toISOString(),
+    };
+    const grns = [...existingGrns, grn];
     const totalReceived = {};
     grns.forEach((g) =>
-      g.receivedItems.forEach((r) => {
+      (g.receivedItems || []).forEach((r) => {
         totalReceived[r.materialId ?? r.name] =
           (totalReceived[r.materialId ?? r.name] || 0) + (Number(r.qty) || 0);
       }),
@@ -190,17 +207,65 @@ export const getMaterialActuals = (contractId) =>
     0,
   );
 
-// Every PO across all contracts, tagged with the project/client it belongs to —
-// the data behind the top-level Procurement module's list and GRN views.
-export const listAllPurchaseOrders = () =>
-  listContracts().flatMap((c) =>
+// Every PO across all contracts AND BOQ-keyed buckets (used when no contract
+// is linked), tagged with clientName for the PO and GRN views.
+export const listAllPurchaseOrders = () => {
+  const contracts = listContracts();
+  const contractKeySet = new Set(contracts.map((c) => KEY(c.id)));
+
+  // Contract-backed POs — clientName from the contract record.
+  const contractPos = contracts.flatMap((c) =>
     listPurchaseOrders(c.id).map((po) => ({
       ...po,
-      clientName: c.clientName,
+      clientName: c.clientName || po.clientName || "—",
       contractId: c.id,
     })),
   );
 
+  const seenIds = new Set(contractPos.map((p) => p.id));
+
+  // BOQ-backed POs (purchaseOrders_<boqId>) — clientName stored in the record
+  // or resolved live from the BOQ for records written before the field was added.
+  const boqPos = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith("purchaseOrders_") || contractKeySet.has(key)) continue;
+    const records = readJson(key, []);
+    records.forEach((po) => {
+      if (seenIds.has(po.id)) return;
+      seenIds.add(po.id);
+      const resolvedName =
+        po.clientName ||
+        getBoqClientName(po.contractId) ||
+        "—";
+      boqPos.push({ ...po, clientName: resolvedName });
+    });
+  }
+
+  return [...contractPos, ...boqPos];
+};
+
 // Single PO lookup by id, tagged with its project/client — backs the PO detail page.
 export const getPurchaseOrderById = (id) =>
   listAllPurchaseOrders().find((po) => po.id === id) || null;
+
+// All GRN entries across every PO/contract, newest first.
+// poItems is included so callers can compute received value (qty × rate).
+export const listAllGrns = () =>
+  listAllPurchaseOrders()
+    .flatMap((po) =>
+      (po.grns || []).map((grn, i) => ({
+        ...grn,
+        id: grn.id || `${po.id}-GRN-${String(i + 1).padStart(2, "0")}`,
+        poId: po.id,
+        vendorName: po.vendorName || "—",
+        clientName: po.clientName || "—",
+        contractId: po.contractId,
+        poItems: po.items || [],
+      })),
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt || b.receivedOn || 0) -
+        new Date(a.createdAt || a.receivedOn || 0),
+    );

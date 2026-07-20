@@ -13,6 +13,7 @@ import {
   FiPaperclip,
   FiDownload,
   FiTrash2,
+  FiMapPin,
 } from "react-icons/fi";
 import {
   getFeasibility,
@@ -105,11 +106,90 @@ const Section = ({ iconEl, title, hint, status, onStatus, children }) => (
   </div>
 );
 
+// One read-only cell of the carried-over preliminary-visit summary.
+const SummaryCell = ({ label, value, className = "" }) => (
+  <div className={`rounded-xl bg-bg-soft/50 px-4 py-3 ${className}`}>
+    <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-text-subtle">
+      {label}
+    </p>
+    <p className="text-[13px] font-medium text-darkgray break-words">
+      {value || "—"}
+    </p>
+  </div>
+);
+
+// Read-only recap of the lead's preliminary site visit (captured in
+// PrelimVisitModal), shown at the top of the site's feasibility workspace so the
+// site knowledge carried from the lead is visible without reopening the lead.
+const PrelimVisitSummary = ({ visit }) => {
+  if (!visit?.done) return null;
+  const clientPresent =
+    visit.clientPresent === true
+      ? "Yes"
+      : visit.clientPresent === false
+        ? "No"
+        : "";
+  const documentsCollected = Array.isArray(visit.documentsCollected)
+    ? visit.documentsCollected.join(", ")
+    : "";
+  return (
+    <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.1)]">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
+            <FiMapPin size={16} />
+          </div>
+          <div>
+            <h3 className="text-[15px] font-bold text-darkgray">
+              Preliminary Site Visit Summary
+            </h3>
+            <p className="mt-0.5 text-[11.5px] text-text-muted">
+              Carried forward from the qualified architecture lead.
+            </p>
+          </div>
+        </div>
+        <span className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[10.5px] font-bold uppercase tracking-wider text-emerald-600">
+          Visit Done
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <SummaryCell label="Visit Date" value={visit.visitDate} />
+        <SummaryCell label="Visited By" value={visit.visitedBy} />
+        <SummaryCell label="Client Present" value={clientPresent} />
+        <SummaryCell label="Feasibility" value={visit.feasibilityRead} />
+
+        <SummaryCell label="Plot Dimensions" value={visit.plotRead} />
+        <SummaryCell label="Orientation" value={visit.orientation} />
+        <SummaryCell label="Site Access" value={visit.access} />
+        <SummaryCell label="Road Width" value={visit.roadWidth} />
+
+        <SummaryCell label="Existing Condition" value={visit.condition} />
+        <SummaryCell label="Utilities" value={visit.utilities} />
+        <SummaryCell label="Next Action" value={visit.nextAction} />
+        <SummaryCell label="Follow-up Date" value={visit.followUpDate} />
+
+        <SummaryCell
+          label="Documents Collected"
+          value={documentsCollected}
+          className="sm:col-span-2"
+        />
+        <SummaryCell
+          label="Visit Notes"
+          value={visit.notes}
+          className="sm:col-span-2"
+        />
+      </div>
+    </div>
+  );
+};
+
 const Feasibility = ({ site }) => {
   const siteID = site.siteID;
   const [feas, setFeas] = useState(() => getFeasibility(siteID));
   const [fileUrls, setFileUrls] = useState({});
   const designStarted = isDesignStarted(siteID);
+  // The lead's preliminary site visit, shown as a read-only recap up top.
+  const prelimVisit = getSiteLead(site)?.prelimVisit;
 
   useEffect(() => {
     const refresh = () => setFeas(getFeasibility(siteID));
@@ -180,6 +260,9 @@ const Feasibility = ({ site }) => {
 
   return (
     <div className="space-y-5">
+      {/* Preliminary site visit recap — carried from the lead */}
+      <PrelimVisitSummary visit={prelimVisit} />
+
       {/* Header + decision gate */}
       <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.1)]">
         <div className="flex flex-wrap items-center justify-between gap-3">

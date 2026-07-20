@@ -1,5 +1,38 @@
 import React from "react";
 
+const ALLOWED_KEYS = new Set([
+  "Backspace", "Delete", "Tab", "Home", "End",
+  "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+]);
+
+const handleNumericKeyDown = (e) => {
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && ["a", "c", "v", "x"].includes(e.key.toLowerCase())) return;
+  if (ALLOWED_KEYS.has(e.key)) return;
+  if (e.key === " " || /^\d$/.test(e.key)) return;
+  e.preventDefault();
+};
+
+const handleNumericPaste = (e) => {
+  e.preventDefault();
+  const cleaned = (e.clipboardData.getData("text") || "").replace(/[^\d ]/g, "");
+  document.execCommand("insertText", false, cleaned);
+};
+
+const handleLettersKeyDown = (e) => {
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && ["a", "c", "v", "x"].includes(e.key.toLowerCase())) return;
+  if (ALLOWED_KEYS.has(e.key)) return;
+  if (/^[a-zA-Z .]$/.test(e.key)) return;
+  e.preventDefault();
+};
+
+const handleLettersPaste = (e) => {
+  e.preventDefault();
+  const cleaned = (e.clipboardData.getData("text") || "").replace(/[^a-zA-Z .]/g, "");
+  document.execCommand("insertText", false, cleaned);
+};
+
 const InputField = ({
   label,
   name,
@@ -17,6 +50,8 @@ const InputField = ({
   rows = 3,
   register,
   variant = "default",
+  numericOnly = false,
+  lettersOnly = false,
   ...rest
 }) => {
   const hasError = !!error;
@@ -132,6 +167,8 @@ const InputField = ({
             {...controlProps}
             placeholder={placeholder}
             className={`${s.input} ${getInputErrorClass()} ${getInputPadding()}`}
+            {...(numericOnly ? { onKeyDown: handleNumericKeyDown, onPaste: handleNumericPaste } : {})}
+            {...(lettersOnly ? { onKeyDown: handleLettersKeyDown, onPaste: handleLettersPaste } : {})}
             {...rest}
           />
         )}

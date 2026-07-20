@@ -1180,11 +1180,6 @@ const MeasurementDocument = ({ boq, company, embedded = false }) => {
                     <th className="px-1 py-1.5 text-right w-12">Ded.</th>
                     <th className="px-1 py-1.5 text-right w-14">Net Qty</th>
                     <th className="px-1 py-1.5 text-left w-10">Unit</th>
-                    <th className="px-1 py-1.5 text-left w-16">Ref</th>
-                    <th className="px-1 py-1.5 text-left w-16">By / Check</th>
-                    <th className="px-1 py-1.5 text-left w-16">
-                      Date / Remarks
-                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1194,7 +1189,7 @@ const MeasurementDocument = ({ boq, company, embedded = false }) => {
                       {sections.length > 1 && (
                         <tr className="bg-active-bg/60">
                           <td
-                            colSpan={13}
+                            colSpan={10}
                             className="px-2 py-1 text-[9.5px] font-semibold text-select-blue italic border-b border-bordergray"
                           >
                             {sec.name}
@@ -1258,22 +1253,6 @@ const MeasurementDocument = ({ boq, company, embedded = false }) => {
                                   <td className="px-1 py-1.5 text-text-muted">
                                     {unitLabelOf(row.unit || item.unit)}
                                   </td>
-                                  <td className="px-1 py-1.5 text-text-muted">
-                                    {row.drawingPhotoRef || "—"}
-                                  </td>
-                                  <td className="px-1 py-1.5 text-text-muted">
-                                    {compactJoin([
-                                      row.measuredBy,
-                                      row.checkedBy,
-                                    ]) || "—"}
-                                  </td>
-                                  <td className="px-1 py-1.5 text-text-muted">
-                                    {compactJoin([
-                                      row.measurementDate &&
-                                        formatDate(row.measurementDate),
-                                      row.remarks,
-                                    ]) || "—"}
-                                  </td>
                                 </tr>
                               ))}
                             </Fragment>
@@ -1322,13 +1301,6 @@ const MeasurementDocument = ({ boq, company, embedded = false }) => {
                             </td>
                             <td className="px-2 py-1.5 text-text-muted">
                               {unitLabelOf(item.unit)}
-                            </td>
-                            <td className="px-1 py-1.5 text-text-muted">
-                              {item.details?.drawingRefNo || "—"}
-                            </td>
-                            <td className="px-1 py-1.5 text-text-muted">—</td>
-                            <td className="px-1 py-1.5 text-text-muted">
-                              {item.details?.remarks || "—"}
                             </td>
                           </tr>
                         );
@@ -2536,6 +2508,550 @@ export const MasterSheetPreview = ({ boq, onClose }) => {
       <div className="py-8 px-4 flex justify-center">
         <div className="boq-print-area bg-white shadow-xl w-full max-w-[210mm] text-textcolor">
           <MasterDocument boq={boq} company={company} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Abstract of Quantities (AoQ) ─────────────────────────────────────────────
+// Rate-stripped version of the BOQ — sent to contractors during tendering so
+// they fill in their rates and return. Never shows amounts or GST values.
+
+const AoQDocument = ({ boq, company }) => {
+  const initials = (company.name || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase();
+  const approval = mergeApproval(boq.approval);
+  let globalCounter = 0;
+
+  return (
+    <div className="p-10 text-[11px] leading-relaxed">
+      {/* Header */}
+      <div className="border-b-2 border-select-blue pb-4 mb-5 flex items-start justify-between">
+        <div className="flex items-start gap-3">
+          {company.logoDataUrl ? (
+            <img src={company.logoDataUrl} alt={company.name} className="h-12 w-12 rounded-md object-contain border border-bordergray" />
+          ) : (
+            <div className="h-12 w-12 rounded-md bg-select-blue text-white flex items-center justify-center font-bold text-[20px]">{initials || "—"}</div>
+          )}
+          <div>
+            <h1 className="text-[18px] font-bold text-textcolor leading-tight">{company.name}</h1>
+            <p className="text-[10px] text-text-muted">{company.tagline}</p>
+            <p className="text-[10px] text-text-muted mt-1">{company.address}{company.phone && ` · ${company.phone}`}</p>
+            <p className="text-[10px] text-text-muted">{company.email}{company.gstin && ` · GSTIN: ${company.gstin}`}</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Abstract of Quantities</p>
+          <p className="text-[16px] font-bold text-select-blue tabular-nums mt-1">{boq.id}</p>
+          <p className="text-[10px] text-text-muted mt-0.5">Rev {boq.revision || 1}</p>
+          <p className="text-[10px] text-text-muted mt-0.5">Date: {formatDate(boq.updatedAt || boq.createdAt)}</p>
+        </div>
+      </div>
+
+      {/* Project + client block */}
+      <h2 className="text-[14px] font-bold text-textcolor mb-3">{boq.title}</h2>
+      <div className="grid grid-cols-2 gap-3 mb-6">
+        <div className="border border-bordergray rounded p-3">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted mb-1">Bill To</p>
+          <p className="text-[12px] font-bold text-textcolor">{boq.client?.name || "—"}</p>
+          {boq.client?.address && <p className="text-[10px] text-text-muted mt-0.5">{boq.client.address}</p>}
+        </div>
+        <div className="border border-bordergray rounded p-3">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted mb-1">Project</p>
+          <p className="text-[12px] font-bold text-textcolor">{boq.project?.name || boq.title || "—"}</p>
+          {boq.project?.address && <p className="text-[10px] text-text-muted mt-0.5">{boq.project.address}</p>}
+          {boq.validity && <p className="text-[10px] text-text-muted mt-1">Validity: {boq.validity}</p>}
+        </div>
+      </div>
+
+      <p className="text-[10px] text-text-muted italic mb-4 border border-amber-200 bg-amber-50 rounded px-3 py-2">
+        Contractors are requested to fill in their unit rates against each item and return this document duly signed. Rates must be inclusive of all taxes unless otherwise stated.
+      </p>
+
+      {/* Sections */}
+      {(boq.sections || []).map((section, sIdx) => (
+        <div key={section.id} className="mb-6 print-avoid-break">
+          <div className="bg-select-blue/8 border-l-4 border-select-blue px-3 py-2 mb-1">
+            <p className="text-[12px] font-bold text-textcolor">{String(sIdx + 1).padStart(2, "0")} · {section.name}</p>
+          </div>
+          {(section.items || []).length === 0 ? (
+            <p className="text-[10.5px] text-text-muted italic px-3 py-2">(No items)</p>
+          ) : (
+            <table className="w-full border-collapse text-[10px]">
+              <thead>
+                <tr className="border-b-2 border-text-muted/40 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+                  <th className="px-1.5 py-1.5 text-left w-7">#</th>
+                  <th className="px-1.5 py-1.5 text-left">Description / Specification</th>
+                  <th className="px-1.5 py-1.5 text-right w-14">Qty</th>
+                  <th className="px-1.5 py-1.5 text-left w-12">Unit</th>
+                  <th className="px-1.5 py-1.5 text-right w-20">Rate (₹)</th>
+                  <th className="px-1.5 py-1.5 text-right w-22">Amount (₹)</th>
+                  <th className="px-1.5 py-1.5 text-left w-24">Remarks</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(section.items || []).map((item) => {
+                  globalCounter++;
+                  const qty = computeItemQty(item);
+                  return (
+                    <tr key={item.id} className="border-b border-bordergray/60 align-top">
+                      <td className="px-1.5 py-2 tabular-nums text-text-muted">{globalCounter}</td>
+                      <td className="px-1.5 py-2">
+                        <p className="font-medium text-textcolor leading-snug">{item.description || "—"}</p>
+                        {item.spec && <p className="text-[9px] text-text-subtle italic mt-0.5">{item.spec}</p>}
+                        {item.details?.brandMakeModel && <p className="text-[9px] text-text-muted mt-0.5">{item.details.brandMakeModel}</p>}
+                        {item.hsn && <p className="text-[8.5px] text-text-subtle mt-0.5">HSN: {item.hsn}</p>}
+                      </td>
+                      <td className="px-1.5 py-2 text-right tabular-nums">{qty.toFixed(2).replace(/\.00$/, "")}</td>
+                      <td className="px-1.5 py-2 text-text-muted">{unitLabelOf(item.unit)}</td>
+                      {/* Rate and Amount columns left blank for contractor to fill */}
+                      <td className="px-1.5 py-2 border-b border-dashed border-bordergray"></td>
+                      <td className="px-1.5 py-2 border-b border-dashed border-bordergray"></td>
+                      <td className="px-1.5 py-2 text-text-subtle text-[9px]">{item.details?.remarks || ""}</td>
+                    </tr>
+                  );
+                })}
+                {/* Section total placeholder */}
+                <tr className="bg-bg-soft border-t border-text-muted/30">
+                  <td colSpan={5} className="px-1.5 py-1.5 text-right text-[9.5px] font-bold text-text-muted uppercase tracking-wide">Section {String(sIdx + 1).padStart(2, "0")} Total</td>
+                  <td className="px-1.5 py-1.5 border-b border-dashed border-text-muted"></td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+        </div>
+      ))}
+
+      {/* Grand total placeholder */}
+      <div className="flex justify-end mt-4 mb-8">
+        <div className="w-72 border border-bordergray">
+          <div className="flex justify-between px-3 py-2 text-[10.5px] font-semibold border-b border-bordergray"><span>Sub-total (excl. GST)</span><span className="w-28 border-b border-dashed border-bordergray"></span></div>
+          <div className="flex justify-between px-3 py-2 text-[10.5px] text-text-muted border-b border-bordergray"><span>GST (as applicable)</span><span className="w-28 border-b border-dashed border-bordergray"></span></div>
+          <div className="flex justify-between px-3 py-2 text-[11px] font-bold bg-bg-soft"><span>GRAND TOTAL</span><span className="w-28 border-b-2 border-textcolor"></span></div>
+        </div>
+      </div>
+
+      {/* Signature block */}
+      <div className="mt-10 pt-4 print-avoid-break">
+        <p className="text-[11px] font-bold text-textcolor mb-3 border-b border-bordergray pb-1">Authorisation</p>
+        <div className="grid grid-cols-3 gap-6">
+          {[
+            { title: "Prepared by", name: approval.preparedBy, date: approval.preparedAt },
+            { title: "Reviewed by", name: approval.reviewedBy, date: approval.reviewedAt },
+            { title: "Contractor's signature & stamp", name: "", date: "" },
+          ].map((s) => (
+            <div key={s.title}>
+              <p className="text-[10px] text-text-muted mb-10">{s.title}</p>
+              <div className="border-t border-textcolor pt-1">
+                <p className="text-[10px] font-bold text-textcolor">{s.name || "___________________"}</p>
+                <p className="text-[9px] text-text-muted">Date: {s.date ? formatDate(s.date) : "________________"}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-6 pt-3 border-t border-bordergray text-center">
+        <p className="text-[9px] text-text-subtle">{company.name} · Abstract of Quantities · {boq.id} · Rev {boq.revision || 1}</p>
+        <p className="text-[9px] text-text-subtle mt-0.5">This document is issued for tendering purposes only. No rates or commercial information disclosed.</p>
+      </div>
+    </div>
+  );
+};
+
+export const AoQPreview = ({ boq, onClose }) => {
+  const company = useMemo(() => resolveCompany(boq), [boq]);
+  const itemCount = (boq.sections || []).reduce((s, sec) => s + (sec.items?.length || 0), 0);
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-800/60 overflow-y-auto modal-no-print">
+      <div className="sticky top-0 z-10 bg-white border-b border-bordergray shadow-sm">
+        <div className="px-5 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FileText size={16} className="text-select-blue" />
+            <h2 className="text-[14px] font-bold text-textcolor">Abstract of Quantities</h2>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-select-blue/10 px-2 py-0.5 rounded border border-select-blue/20">{boq.id}</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">Tender</span>
+            <span className="text-[10.5px] text-text-muted ml-2">{boq.sections?.length || 0} sections · {itemCount} items · Rates not shown</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"><Download size={12} /> Save as PDF</button>
+            <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[11.5px] font-semibold shadow-md hover:scale-[1.02] transition-all"><Printer size={12} /> Print</button>
+            <button type="button" onClick={onClose} className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"><X size={16} /></button>
+          </div>
+        </div>
+      </div>
+      <div className="py-8 px-4 flex justify-center">
+        <div className="boq-print-area bg-white shadow-xl w-full max-w-[210mm] text-textcolor">
+          <AoQDocument boq={boq} company={company} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Tender Comparative Statement ──────────────────────────────────────────────
+// Side-by-side view of all vendor quotes per BOQ item with L1 highlighting and
+// deviation from the architect's estimate. Built from item.vendorComparisons.
+
+const TenderComparativeDocument = ({ boq, company }) => {
+  const initials = (company.name || "")
+    .split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+
+  // Collect all unique vendor names across every item
+  const vendors = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    for (const s of boq.sections || []) {
+      for (const it of s.items || []) {
+        for (const vc of it.vendorComparisons || []) {
+          const name = (vc.vendorName || "").trim();
+          if (name && !seen.has(name)) { seen.add(name); list.push(name); }
+        }
+      }
+    }
+    return list.slice(0, 5); // max 5 vendors on A4
+  }, [boq]);
+
+  const hasComparisons = vendors.length > 0;
+  let globalCounter = 0;
+
+  // Per-section vendor subtotals
+  const sectionTotals = useMemo(() =>
+    (boq.sections || []).map((section) => {
+      const totals = {};
+      vendors.forEach((v) => { totals[v] = 0; });
+      let estimateTotal = 0;
+      for (const item of section.items || []) {
+        const qty = computeItemQty(item);
+        estimateTotal += qty * (Number(item.rate) || 0);
+        for (const v of vendors) {
+          const vc = (item.vendorComparisons || []).find((c) => c.vendorName === v);
+          totals[v] += qty * (Number(vc?.quotedRate) || 0);
+        }
+      }
+      return { estimateTotal, vendorTotals: totals };
+    }), [boq, vendors]);
+
+  const grandTotals = useMemo(() => {
+    const totals = {};
+    vendors.forEach((v) => { totals[v] = 0; });
+    let estimate = 0;
+    for (const st of sectionTotals) {
+      estimate += st.estimateTotal;
+      for (const v of vendors) totals[v] += st.vendorTotals[v];
+    }
+    return { estimate, vendorTotals: totals };
+  }, [sectionTotals, vendors]);
+
+  const l1Vendor = vendors.reduce((best, v) =>
+    grandTotals.vendorTotals[v] > 0 && (!best || grandTotals.vendorTotals[v] < grandTotals.vendorTotals[best]) ? v : best, null);
+
+  return (
+    <div className="p-10 text-[10px] leading-relaxed">
+      {/* Header */}
+      <div className="border-b-2 border-select-blue pb-4 mb-5 flex items-start justify-between">
+        <div className="flex items-start gap-3">
+          {company.logoDataUrl
+            ? <img src={company.logoDataUrl} alt={company.name} className="h-12 w-12 rounded-md object-contain border border-bordergray" />
+            : <div className="h-12 w-12 rounded-md bg-select-blue text-white flex items-center justify-center font-bold text-[20px]">{initials || "—"}</div>}
+          <div>
+            <h1 className="text-[17px] font-bold text-textcolor leading-tight">{company.name}</h1>
+            <p className="text-[10px] text-text-muted mt-0.5">{company.address}{company.phone && ` · ${company.phone}`}</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Tender Comparative Statement</p>
+          <p className="text-[14px] font-bold text-select-blue tabular-nums mt-1">{boq.id}</p>
+          <p className="text-[10px] text-text-muted mt-0.5">Date: {formatDate(new Date().toISOString())}</p>
+          <p className="text-[10px] text-text-muted mt-0.5">Project: {boq.project?.name || boq.title}</p>
+        </div>
+      </div>
+
+      {!hasComparisons ? (
+        <div className="text-center py-16">
+          <p className="text-[13px] text-text-muted">No vendor quotes recorded on this BOQ.</p>
+          <p className="text-[11px] text-text-subtle mt-2">Open individual line items in the editor and add vendor comparisons to generate this report.</p>
+        </div>
+      ) : (
+        <>
+          {/* L1 summary banner */}
+          {l1Vendor && (
+            <div className="mb-5 bg-emerald-50 border border-emerald-200 rounded px-4 py-2.5 flex items-center justify-between">
+              <div>
+                <p className="text-[11px] font-bold text-emerald-800">L1 (Lowest Quote): {l1Vendor}</p>
+                <p className="text-[10px] text-emerald-700 mt-0.5">
+                  ₹{Math.round(grandTotals.vendorTotals[l1Vendor]).toLocaleString("en-IN")} —{" "}
+                  {grandTotals.estimate > 0
+                    ? `${((grandTotals.vendorTotals[l1Vendor] / grandTotals.estimate - 1) * 100).toFixed(1)}% vs estimate`
+                    : "compare with your estimate"}
+                </p>
+              </div>
+              <p className="text-[10px] text-emerald-700 font-semibold">{vendors.length} vendor{vendors.length !== 1 ? "s" : ""} compared</p>
+            </div>
+          )}
+
+          {/* Section tables */}
+          {(boq.sections || []).map((section, sIdx) => {
+            const st = sectionTotals[sIdx];
+            return (
+              <div key={section.id} className="mb-6 print-avoid-break">
+                <div className="bg-primary text-white px-3 py-2 mb-0 flex items-center justify-between">
+                  <p className="text-[11px] font-bold">{String(sIdx + 1).padStart(2, "0")} · {section.name}</p>
+                </div>
+                <table className="w-full border-collapse text-[9px]">
+                  <thead>
+                    <tr className="bg-bg-soft border-b border-bordergray text-[8px] font-bold uppercase tracking-wider text-text-muted">
+                      <th className="px-1.5 py-1.5 text-left w-6">#</th>
+                      <th className="px-1.5 py-1.5 text-left">Description</th>
+                      <th className="px-1.5 py-1.5 text-right w-10">Qty</th>
+                      <th className="px-1.5 py-1.5 text-left w-8">Unit</th>
+                      <th className="px-1.5 py-1.5 text-right w-16">Estimate</th>
+                      {vendors.map((v) => (
+                        <th key={v} className={`px-1.5 py-1.5 text-right w-16 ${v === l1Vendor ? "text-emerald-700" : ""}`}>{v.length > 10 ? v.slice(0, 9) + "…" : v}</th>
+                      ))}
+                      <th className="px-1.5 py-1.5 text-center w-10">L1</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(section.items || []).map((item) => {
+                      globalCounter++;
+                      const qty = computeItemQty(item);
+                      const estRate = Number(item.rate) || 0;
+                      const estAmt = qty * estRate;
+                      const vcMap = {};
+                      for (const vc of item.vendorComparisons || []) vcMap[vc.vendorName] = vc;
+                      const quotedRates = vendors.map((v) => Number(vcMap[v]?.quotedRate) || 0).filter((r) => r > 0);
+                      const itemL1Rate = quotedRates.length > 0 ? Math.min(...quotedRates) : null;
+                      return (
+                        <tr key={item.id} className="border-b border-bordergray/60 hover:bg-bg-soft/30 align-top">
+                          <td className="px-1.5 py-1.5 tabular-nums text-text-muted">{globalCounter}</td>
+                          <td className="px-1.5 py-1.5">
+                            <p className="font-medium text-textcolor">{item.description || "—"}</p>
+                            {item.spec && <p className="text-[8px] text-text-subtle">{item.spec}</p>}
+                          </td>
+                          <td className="px-1.5 py-1.5 text-right tabular-nums">{qty.toFixed(2).replace(/\.00$/, "")}</td>
+                          <td className="px-1.5 py-1.5 text-text-muted">{unitLabelOf(item.unit)}</td>
+                          <td className="px-1.5 py-1.5 text-right tabular-nums text-text-muted">
+                            {estRate > 0 ? formatINR(estAmt) : "—"}
+                          </td>
+                          {vendors.map((v) => {
+                            const vc = vcMap[v];
+                            const rate = Number(vc?.quotedRate) || 0;
+                            const amt = qty * rate;
+                            const isL1 = rate > 0 && rate === itemL1Rate;
+                            const dev = estRate > 0 && rate > 0 ? ((rate / estRate - 1) * 100).toFixed(1) : null;
+                            return (
+                              <td key={v} className={`px-1.5 py-1.5 text-right tabular-nums ${isL1 ? "font-bold text-emerald-700" : "text-textcolor"}`}>
+                                {rate > 0 ? (
+                                  <>
+                                    {formatINR(amt)}
+                                    {dev !== null && <span className={`block text-[8px] ${Number(dev) > 0 ? "text-orange-500" : "text-emerald-600"}`}>{Number(dev) > 0 ? "+" : ""}{dev}%</span>}
+                                  </>
+                                ) : <span className="text-text-subtle">N/Q</span>}
+                              </td>
+                            );
+                          })}
+                          <td className="px-1.5 py-1.5 text-center text-[8px] font-bold">
+                            {itemL1Rate !== null && vendors.find((v) => Number(vcMap[v]?.quotedRate) === itemL1Rate)
+                              ? <span className="bg-emerald-100 text-emerald-700 rounded px-1 py-0.5">{vendors.find((v) => Number(vcMap[v]?.quotedRate) === itemL1Rate)?.slice(0, 4) || "L1"}</span>
+                              : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {/* Section subtotal */}
+                    <tr className="bg-select-blue/8 border-t border-select-blue/30 font-bold text-[9px]">
+                      <td colSpan={4} className="px-1.5 py-1.5 text-right uppercase tracking-wider text-text-muted">Section Total</td>
+                      <td className="px-1.5 py-1.5 text-right tabular-nums text-text-muted">{st.estimateTotal > 0 ? formatINR(st.estimateTotal) : "—"}</td>
+                      {vendors.map((v) => (
+                        <td key={v} className={`px-1.5 py-1.5 text-right tabular-nums ${v === l1Vendor ? "text-emerald-700" : "text-textcolor"}`}>
+                          {st.vendorTotals[v] > 0 ? formatINR(st.vendorTotals[v]) : "—"}
+                        </td>
+                      ))}
+                      <td></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+
+          {/* Grand total */}
+          <div className="border-t-2 border-textcolor mt-4 print-avoid-break">
+            <table className="w-full text-[10px]">
+              <tbody>
+                <tr className="font-bold text-[11px]">
+                  <td className="py-2 pr-2 text-textcolor">GRAND TOTAL</td>
+                  <td className="py-2 text-right tabular-nums text-text-muted w-20">{grandTotals.estimate > 0 ? formatINR(grandTotals.estimate) : "—"}</td>
+                  {vendors.map((v) => {
+                    const amt = grandTotals.vendorTotals[v];
+                    const dev = grandTotals.estimate > 0 && amt > 0 ? ((amt / grandTotals.estimate - 1) * 100).toFixed(1) : null;
+                    return (
+                      <td key={v} className={`py-2 text-right tabular-nums w-20 ${v === l1Vendor ? "text-emerald-700" : "text-textcolor"}`}>
+                        {amt > 0 ? (
+                          <>
+                            {formatINR(amt)}
+                            {dev !== null && <span className={`block text-[9px] font-normal ${Number(dev) > 0 ? "text-orange-500" : "text-emerald-600"}`}>{Number(dev) > 0 ? "+" : ""}{dev}%</span>}
+                          </>
+                        ) : "—"}
+                      </td>
+                    );
+                  })}
+                  <td className="py-2 text-center w-14">
+                    {l1Vendor && <span className="bg-emerald-100 text-emerald-700 rounded px-1.5 py-0.5 text-[9px]">L1</span>}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <div className="mt-8 pt-3 border-t border-bordergray text-center">
+        <p className="text-[9px] text-text-subtle">{company.name} · Tender Comparative Statement · {boq.id} · Prepared {formatDate(new Date().toISOString())}</p>
+        <p className="text-[9px] text-text-subtle mt-0.5">Comparative rates are as-quoted by each vendor. Architect's estimate is shown for reference only and is confidential.</p>
+      </div>
+    </div>
+  );
+};
+
+export const TenderComparativePreview = ({ boq, onClose }) => {
+  const company = useMemo(() => resolveCompany(boq), [boq]);
+  const vendorCount = useMemo(() => {
+    const s = new Set();
+    for (const sec of boq.sections || []) for (const it of sec.items || []) for (const vc of it.vendorComparisons || []) if (vc.vendorName) s.add(vc.vendorName);
+    return s.size;
+  }, [boq]);
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-800/60 overflow-y-auto modal-no-print">
+      <div className="sticky top-0 z-10 bg-white border-b border-bordergray shadow-sm">
+        <div className="px-5 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Layers size={16} className="text-select-blue" />
+            <h2 className="text-[14px] font-bold text-textcolor">Tender Comparative Statement</h2>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-select-blue/10 px-2 py-0.5 rounded border border-select-blue/20">{boq.id}</span>
+            <span className="text-[10.5px] text-text-muted ml-2">{vendorCount} vendor{vendorCount !== 1 ? "s" : ""} compared</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-bordergray rounded-lg text-[11.5px] font-semibold text-textcolor hover:bg-bg-soft"><Download size={12} /> Save as PDF</button>
+            <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[11.5px] font-semibold shadow-md"><Printer size={12} /> Print</button>
+            <button type="button" onClick={onClose} className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"><X size={16} /></button>
+          </div>
+        </div>
+      </div>
+      <div className="py-8 px-4 flex justify-center">
+        <div className="boq-print-area bg-white shadow-xl w-full max-w-[297mm] text-textcolor">
+          <TenderComparativeDocument boq={boq} company={company} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Measurement Book (MB) Sheet ───────────────────────────────────────────────
+// Formal site measurement book document with MB serial number, Work Order
+// reference, contractor name, and dual-signature block for site engineer and
+// checking architect. Reuses MeasurementDocument in embedded mode.
+
+export const MBSheetPreview = ({ boq, onClose }) => {
+  const company = useMemo(() => resolveCompany(boq), [boq]);
+  const [mbNo, setMbNo] = useState(`MB/${new Date().getFullYear()}-${String(new Date().getFullYear() + 1).slice(2)}/001`);
+  const [workOrderNo, setWorkOrderNo] = useState(boq.procurement?.contractId || "");
+  const [contractorName, setContractorName] = useState("");
+  const [measuredBy, setMeasuredBy] = useState("");
+  const [checkedBy, setCheckedBy] = useState("");
+  const [measurementDate, setMeasurementDate] = useState(new Date().toISOString().slice(0, 10));
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-800/60 overflow-y-auto modal-no-print">
+      <div className="sticky top-0 z-10 bg-white border-b border-bordergray shadow-sm">
+        <div className="px-5 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Ruler size={16} className="text-select-blue" />
+            <h2 className="text-[14px] font-bold text-textcolor">Measurement Book</h2>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-select-blue bg-select-blue/10 px-2 py-0.5 rounded border border-select-blue/20">{boq.id}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Fill-in fields — shown on screen, printed in document */}
+            {[
+              { label: "MB No.", value: mbNo, set: setMbNo, w: "w-36" },
+              { label: "Work Order", value: workOrderNo, set: setWorkOrderNo, w: "w-28" },
+              { label: "Contractor", value: contractorName, set: setContractorName, w: "w-32" },
+              { label: "Measured By", value: measuredBy, set: setMeasuredBy, w: "w-28" },
+              { label: "Checked By", value: checkedBy, set: setCheckedBy, w: "w-28" },
+              { label: "Date", value: measurementDate, set: setMeasurementDate, w: "w-28", type: "date" },
+            ].map((f) => (
+              <div key={f.label} className="flex flex-col items-start modal-no-print">
+                <span className="text-[8.5px] font-bold uppercase tracking-wider text-text-subtle mb-0.5">{f.label}</span>
+                <input type={f.type || "text"} value={f.value} onChange={(e) => f.set(e.target.value)}
+                  className={`${f.w} border border-bordergray rounded px-2 py-1 text-[11px] text-textcolor focus:outline-none focus:border-select-blue`} />
+              </div>
+            ))}
+            <button type="button" onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 bg-linear-to-br from-select-blue to-primary text-white rounded-lg text-[11.5px] font-semibold shadow-md"><Printer size={12} /> Print</button>
+            <button type="button" onClick={onClose} className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"><X size={16} /></button>
+          </div>
+        </div>
+      </div>
+
+      <div className="py-8 px-4 flex justify-center">
+        <div className="boq-print-area bg-white shadow-xl w-full max-w-[210mm] text-textcolor">
+          {/* MB formal header — printed above the measurement rows */}
+          <div className="p-10 pb-0">
+            <div className="border-b-2 border-primary pb-4 mb-4 flex items-start justify-between">
+              <div>
+                <h1 className="text-[18px] font-bold text-textcolor">{company.name}</h1>
+                <p className="text-[10px] text-text-muted">{company.address}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Measurement Book</p>
+                <p className="text-[14px] font-bold text-select-blue">{mbNo || "MB/—"}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3 mb-4 text-[10px]">
+              <div><span className="font-bold text-text-muted">BOQ Ref: </span><span className="text-textcolor">{boq.id} · Rev {boq.revision || 1}</span></div>
+              <div><span className="font-bold text-text-muted">Work Order: </span><span className="text-textcolor">{workOrderNo || "—"}</span></div>
+              <div><span className="font-bold text-text-muted">Date: </span><span className="text-textcolor">{measurementDate ? formatDate(measurementDate) : "—"}</span></div>
+              <div><span className="font-bold text-text-muted">Project: </span><span className="text-textcolor">{boq.project?.name || boq.title}</span></div>
+              <div><span className="font-bold text-text-muted">Client: </span><span className="text-textcolor">{boq.client?.name || "—"}</span></div>
+              <div><span className="font-bold text-text-muted">Contractor: </span><span className="text-textcolor">{contractorName || "—"}</span></div>
+            </div>
+          </div>
+
+          {/* Measurement rows — reuses the existing MeasurementDocument in embedded mode */}
+          <div className="px-10">
+            <MeasurementDocument boq={boq} company={company} embedded />
+          </div>
+
+          {/* Dual-signature footer */}
+          <div className="p-10 pt-6 print-avoid-break">
+            <p className="text-[11px] font-bold text-textcolor mb-4 border-b border-bordergray pb-1">Certification</p>
+            <div className="grid grid-cols-2 gap-8">
+              <div>
+                <p className="text-[9px] text-text-muted mb-12">Measured by (Site Engineer)</p>
+                <div className="border-t border-textcolor pt-1">
+                  <p className="text-[10px] font-bold text-textcolor">{measuredBy || "________________________"}</p>
+                  <p className="text-[9px] text-text-muted">Date: ________________</p>
+                </div>
+              </div>
+              <div>
+                <p className="text-[9px] text-text-muted mb-12">Checked by (Project Architect)</p>
+                <div className="border-t border-textcolor pt-1">
+                  <p className="text-[10px] font-bold text-textcolor">{checkedBy || "________________________"}</p>
+                  <p className="text-[9px] text-text-muted">Date: ________________</p>
+                </div>
+              </div>
+            </div>
+            <p className="mt-6 text-[9px] text-center text-text-subtle">
+              Certified that the measurements recorded above have been jointly verified at site and are correct.
+            </p>
+          </div>
         </div>
       </div>
     </div>

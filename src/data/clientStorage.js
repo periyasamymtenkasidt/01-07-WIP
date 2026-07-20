@@ -100,7 +100,7 @@ export const clientToBoqFields = (c) => {
     },
     project: {
       name: c.projectName || c.locationSecondary || "",
-      propertyType: c.location || "",
+      propertyType: c.propertyType || c.location || "",
       address: c.locationSecondary || "",
       sizeRange: c.sizeRange || "",
     },

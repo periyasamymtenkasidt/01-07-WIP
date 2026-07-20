@@ -57,6 +57,8 @@ export const getOrgProfile = () => {
 export const saveOrgProfile = (profile) => {
   const next = { ...DEFAULT_ORG_PROFILE, ...profile };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  // Notify same-tab listeners (storage events only fire cross-tab).
+  window.dispatchEvent(new CustomEvent("orgprofile-changed", { detail: next }));
   // Backend write-through: push the merged profile in the background.
   pushMaster(() => putOrgProfile(next));
   return next;
@@ -81,4 +83,5 @@ export async function hydrateOrgProfile() {
     return;
   const next = { ...DEFAULT_ORG_PROFILE, ...profile };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  window.dispatchEvent(new CustomEvent("orgprofile-changed", { detail: next }));
 }

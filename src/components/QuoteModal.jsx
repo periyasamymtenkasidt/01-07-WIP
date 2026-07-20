@@ -383,6 +383,8 @@ const buildInitialFormData = ({
     ? initialQuote.scopeItems.map((s) =>
         normalizeScopeItem({
           ...s,
+          // Preserve _userAdded so the SIZE display (Base + Added = Total)
+          // mirrors exactly what was shown in the previously sent quote.
           materials: s.materials ? s.materials.map((m) => ({ ...m })) : [],
         }),
       )
@@ -400,11 +402,15 @@ const buildInitialFormData = ({
           }),
         );
 
-  scopeItems = refreshScopeItemsFromMaster(
-    scopeItems,
-    activePresetKey,
-    activePropertyType,
-  );
+  // On resend the saved quote is the authoritative snapshot — skip master sync
+  // so items the user removed stay gone and items they added stay present.
+  if (!initialQuote) {
+    scopeItems = refreshScopeItemsFromMaster(
+      scopeItems,
+      activePresetKey,
+      activePropertyType,
+    );
+  }
   const activeGrade =
     initialQuote?.grade || presetData?.grade || cfg.grade || "premium";
   // Preserve an already-sent quote exactly on resend. New proposal/sample data
@@ -512,34 +518,44 @@ const buildInitialFormData = ({
     propertyType: activePropertyType,
     grade: activeGrade,
     sizeRange: cleanSizeRange(
-      presetData?.sizeRange || cfg.sizeRange || initialQuote?.sizeRange || "",
+      initialQuote != null
+        ? (initialQuote.sizeRange ?? presetData?.sizeRange ?? cfg.sizeRange ?? "")
+        : (presetData?.sizeRange ?? cfg.sizeRange ?? ""),
     ),
-    validityDays: presetData?.validityDays || initialQuote?.validityDays || 30,
+    validityDays:
+      initialQuote != null
+        ? (initialQuote.validityDays ?? presetData?.validityDays ?? 30)
+        : (presetData?.validityDays ?? 30),
     scopeItems,
-    // Snapshot of the ORIGINAL scope's total sqft, captured once at load. The
-    // displayed size is extended by however much the current scope's sqft later
-    // exceeds this baseline (so deletions offset library additions). Preserved
-    // across a resend via initialQuote.
+    // On resend, restore the stored baseline so the +added/-reduced SIZE delta
+    // matches what was shown in the previously sent quote. For a brand-new
+    // proposal, compute from the scope items present at open-time.
     baselineScopeSqft:
-      initialQuote?.baselineScopeSqft ?? scopeAreaSqft(scopeItems),
+      initialQuote?.baselineScopeSqft != null
+        ? initialQuote.baselineScopeSqft
+        : scopeAreaSqft(scopeItems),
     inclusions: flatIn,
     exclusions: flatEx,
     categoryInclusions,
     categoryExclusions,
     addedInclusions,
     addedExclusions,
-    notes: presetData?.notes || initialQuote?.notes || "",
+    notes:
+      initialQuote != null
+        ? (initialQuote.notes ?? presetData?.notes ?? "")
+        : (presetData?.notes ?? ""),
   };
 };
 
 // Pick the best preset to display in the dropdown given an already-loaded
-// quote — first try the preset stored on the inquiry, then the quote, then the first available.
+// quote — on resend the saved quote's preset takes priority; otherwise use
+// the inquiry preset, then fall back to the first available.
 const inferPresetKey = (initialQuote, presetData) => {
   const keys = getPresetKeys();
-  if (presetData?.presetKey && keys.includes(presetData.presetKey))
-    return presetData.presetKey;
   if (initialQuote?.presetKey && keys.includes(initialQuote.presetKey))
     return initialQuote.presetKey;
+  if (presetData?.presetKey && keys.includes(presetData.presetKey))
+    return presetData.presetKey;
   return keys.includes("2BHK") ? "2BHK" : keys[0];
 };
 
@@ -731,7 +747,7 @@ const QuoteModal = ({
 
   const [openGroups, setOpenGroups] = useState({});
   const toggleGroup = (room) => {
-    setOpenGroups((prev) => ({ ...prev, [room]: !prev[room] }));
+    setOpenGroups((prev) => ({ ...prev, [room]: prev[room] === false }));
   };
   const isGroupOpen = (room) => openGroups[room] !== false;
 
@@ -771,12 +787,22 @@ const QuoteModal = ({
 
   const watchedSizeRange = watch("sizeRange");
 
-  // Net change in the current scope's total sqft vs the original scope baseline.
-  // Adding library scope raises it (+), deleting existing scope lowers it (-),
-  // so the two net out. Drives the "original ± change" adjusted-size display.
-  const addedScopeSqft = Math.round(
-    scopeAreaSqft(formData.scopeItems) - (formData.baselineScopeSqft || 0),
+  // Sqft added via "Pick from Library" (_userAdded items) and sqft removed from
+  // the original baseline (baseline items that were deleted or downsized).
+  // Kept separate so "+35 added, -45 reduced" renders as two distinct figures
+  // instead of netting to a misleading "-10".
+  const addedSqft = Math.round(
+    scopeAreaSqft((formData.scopeItems || []).filter((s) => s._userAdded)),
   );
+  const baselineRemainingeSqft = Math.round(
+    scopeAreaSqft((formData.scopeItems || []).filter((s) => !s._userAdded)),
+  );
+  const reducedSqft = Math.max(
+    0,
+    Math.round((formData.baselineScopeSqft || 0) - baselineRemainingeSqft),
+  );
+  // Net (kept for any remaining references that rely on it).
+  const addedScopeSqft = addedSqft - reducedSqft;
 
   const [isSending, setIsSending] = useState(false);
   // Controls the library picker modal for "Pick from Library" flow.
@@ -1173,13 +1199,20 @@ const QuoteModal = ({
         // back to the unit rate so the line still shows a price.
         amount: graded.amount || Number(graded.rate) || 0,
       };
-      setFormData((p) => ({
-        ...p,
-        scopeItems: addScopeItemsWithDuplicateCheck(p.scopeItems, [finalRow]),
-      }));
+      setFormData((p) => {
+        const added = addScopeItemsWithDuplicateCheck([], [finalRow]);
+        return {
+          ...p,
+          scopeItems: [...added, ...(p.scopeItems || [])],
+        };
+      });
       setLibraryPickerOpen(false);
     } catch (err) {
-      setLibraryPickerOpen(false);
+      // "Cancelled by user" is thrown when the user dismisses DestinationPromptModal.
+      // Leave the picker open so they can make a different selection.
+      if (err?.message !== "Cancelled by user") {
+        setLibraryPickerOpen(false);
+      }
     }
   };
 
@@ -1231,11 +1264,11 @@ const QuoteModal = ({
     propertyType: formData.propertyType,
     grade: formData.grade || "premium",
     sizeRange: cleanSizeRange(overrides.sizeRange ?? watchedSizeRange ?? ""),
-    // The original scope's sqft baseline + how much the current scope exceeds
-    // it. Persisted so the size renders as "original + added" in the live
-    // preview and the sent/printed quote, and so a resend keeps the baseline.
+    // Baseline + separate added/reduced sqft so the preview renders each
+    // direction independently ("Base + Added - Reduced = Final").
     baselineScopeSqft: formData.baselineScopeSqft || 0,
-    sizeAddedSqft: addedScopeSqft,
+    sizeAddedSqft: addedSqft,
+    sizeReducedSqft: reducedSqft,
     validityDays: Number(formData.validityDays) || 30,
     scopeItems: formData.scopeItems,
     inclusions: formData.inclusions,
@@ -1381,6 +1414,7 @@ const QuoteModal = ({
           total: totals.grandTotal,
           quote,
           isResend,
+          prevScopeItems: initialQuote?.scopeItems || [],
         });
       } catch (callbackErr) {
         console.error("[QuoteModal] post-send callback failed:", callbackErr);
@@ -1407,38 +1441,8 @@ const QuoteModal = ({
     showToast(firstError, "error");
   };
 
-  // Live Preview only: tag each scope item's name with its quality grade in
-  // shorthand brackets — two letters from each word (up to three words),
-  // uppercased: "Luxury" → "(LU)", "Ultra Premium" → "(ULPR)". This is
-  // preview-only — the sent/printed quote (which builds its own quote object)
-  // is unaffected, and QuotePreview stays untouched (shared with the sample
-  // quote).
-  const gradeShorthand = (key) => {
-    const label = gradeOptions.find((g) => g.key === key)?.label || key || "";
-    if (!label) return "";
-    return label
-      .trim()
-      .split(/\s+/)
-      .slice(0, 3)
-      .map((word) => word.slice(0, 2).toUpperCase())
-      .join("");
-  };
   const previewQuote = (() => {
-    const base = buildQuote();
-    return {
-      ...base,
-      scopeItems: (base.scopeItems || []).map((s) => {
-        const short = gradeShorthand(s.grade);
-        if (!short) return s;
-        return {
-          ...s,
-          itemName: `${s.itemName || ""} (${short})`,
-          // Preview renders with syncFromMaster={false}, so the scope is shown
-          // exactly as edited here; the grade suffix carries through untouched.
-          isItemNameCustom: true,
-        };
-      }),
-    };
+    return buildQuote();
   })();
 
   const footer = (
@@ -1547,7 +1551,8 @@ const QuoteModal = ({
                       formData.sizeRange ||
                         getConfigForType(presetKey, formData.propertyType)
                           ?.sizeRange,
-                      addedScopeSqft,
+                      addedSqft,
+                      reducedSqft,
                     )}
                   </p>
                 </div>
@@ -1659,13 +1664,12 @@ const QuoteModal = ({
                     placeholder="e.g. 800-1100"
                   />
                 </div>
-                {addedScopeSqft !== 0 && (
-                  // Current scope sqft differs from the original scope — surface
-                  // the adjusted breakdown (Base + Added / - Removed = final).
+                {(addedSqft !== 0 || reducedSqft !== 0) && (
                   <p className="mt-1.5 text-[10.5px] font-medium text-select-blue">
                     {formatSizeWithAddition(
                       watchedSizeRange || formData.sizeRange,
-                      addedScopeSqft,
+                      addedSqft,
+                      reducedSqft,
                     )}
                   </p>
                 )}

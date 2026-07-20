@@ -105,11 +105,8 @@ const CreateOrg = () => {
         },
         admin: { name: data.adminName, email: data.adminEmail, password: data.adminPassword },
       });
-      // Org created — its admin signs in on the firm's branded login page.
-      navigate("/login", {
-        replace: true,
-        state: { justProvisioned: true, orgName: firm?.name || data.name, email: data.adminEmail },
-      });
+      // Org created — return to the console so the admin sees the updated list.
+      navigate("/admin/orgs", { replace: true });
     } catch (err) {
       // 401 → the admin key was wrong; drop it and send them back to the gate.
       if (err?.status === 401) {

@@ -44,6 +44,26 @@ const DesignsRenders = () => {
   const revisions = site?.revisions || [];
   const discussions = site?.discussionHistory || [];
 
+  // Keep design flow in sync with both same-tab actions and cross-tab writes.
+  const [designFlow, setDesignFlow] = useState(() =>
+    site?.siteID ? getDesignFlow(site.siteID) : null,
+  );
+  useEffect(() => {
+    const siteID = site?.siteID;
+    setDesignFlow(siteID ? getDesignFlow(siteID) : null);
+    if (!siteID) return;
+    const refresh = () => setDesignFlow(getDesignFlow(siteID));
+    const onStorage = (e) => {
+      if (e.key === `designFlow_${siteID}`) refresh();
+    };
+    window.addEventListener("designFlowChanged", refresh);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("designFlowChanged", refresh);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [site?.siteID]);
+
   const [localUrls, setLocalUrls] = useState({});
 
   useEffect(() => {
@@ -571,22 +591,9 @@ const DesignsRenders = () => {
     <div className="p-6 sm:p-8 space-y-8  text-left">
       
       {/* Title Header */}
-      <div className="border-b border-gray-150 pb-4 shrink-0 flex justify-between items-center flex-wrap gap-4">
-        <div>
-          <h3 className="text-lg font-bold text-darkgray uppercase tracking-wider">Designs & Renders</h3>
-          <p className="text-xs text-gray-400 mt-1">Review plans, leave feedback, request modifications, and approve final drawings.</p>
-        </div>
-        
-        {/* Overall Progress Widget */}
-        <div className="flex items-center  gap-4 bg-slate-50 border border-slate-100 px-4 py-2 rounded-[20px] shadow-xs">
-          <div className="text-right">
-            <span className="text-[10px] text-gray-400 font-bold uppercase block">Design Progress</span>
-            <span className="text-sm font-black text-purple">{progressPct}% Complete</span>
-          </div>
-          <div className="w-12 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-            <div className="bg-purple h-full" style={{ width: `${progressPct}%` }}></div>
-          </div>
-        </div>
+      <div className="border-b border-gray-150 pb-4 shrink-0">
+        <h3 className="text-lg font-bold text-darkgray uppercase tracking-wider">Designs & Renders</h3>
+        <p className="text-xs text-gray-400 mt-1">Review plans, leave feedback, request modifications, and approve final drawings.</p>
       </div>
 
       {/* Staged design sign-off (only for sites taken through the survey freeze) */}
@@ -597,7 +604,7 @@ const DesignsRenders = () => {
 
       {/* Revision Logs Section — per design phase, free + paid */}
       {(() => {
-        const flow = site?.siteID ? getDesignFlow(site.siteID) : null;
+        const flow = designFlow;
         const pipeline = flow ? getPipeline(flow.track) : [];
         const policy = flow ? getRevisionPolicy(flow) : { freeRevisions: 5, feePerRevision: 5000 };
         const FREE_COUNT = policy.freeRevisions;

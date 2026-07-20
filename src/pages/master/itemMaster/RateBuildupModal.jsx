@@ -304,7 +304,7 @@ const RateBuildupModal = ({ item, onSave, onClose }) => {
           <div className="rounded-xl border border-bordergray overflow-hidden">
             <div className="grid grid-cols-[2.4fr_1.1fr_1fr_0.8fr_0.7fr_28px] gap-2 px-3 py-2 bg-bg-soft/60 text-[10px] font-bold uppercase tracking-wider text-text-subtle items-center">
               <span className="min-w-0 pl-2 truncate">Material (from Master)</span>
-              <span className="min-w-0 text-center truncate">Qty/{workUnit}</span>
+              <span className="min-w-0 text-center truncate">Qty</span>
               <span className="min-w-0 text-center truncate">Waste%</span>
               <span className="min-w-0 text-right truncate">Rate</span>
               <span className="min-w-0 text-right truncate">Amount</span>

@@ -24,6 +24,7 @@ import ClientAvatar from "../../assets/images/Client_avatar.png";
 import DesignPipeline from "./components/DesignPipeline";
 import SurveyMeasurements from "./components/SurveyMeasurements";
 import Feasibility from "./components/Feasibility";
+import ArchSiteSurvey from "./components/ArchSiteSurvey";
 import { getDesignFlow } from "../../data/designFlowStorage";
 import { getSiteServiceTrack } from "../../data/surveyMeasureStorage";
 
@@ -60,11 +61,19 @@ const SiteDetail = () => {
     loadSiteData();
     // Re-fetch when a gate flips the site (Move to Design / Feasibility → Design)
     // so the page swaps into the right view without a manual reload.
+    // The storage listener handles cross-tab writes (e.g. client portal approvals).
+    const onStorage = (e) => {
+      if (e.key === "newSitesData" || e.key === `designFlow_${id}`) {
+        loadSiteData();
+      }
+    };
     window.addEventListener("siteDataChanged", loadSiteData);
     window.addEventListener("designFlowChanged", loadSiteData);
+    window.addEventListener("storage", onStorage);
     return () => {
       window.removeEventListener("siteDataChanged", loadSiteData);
       window.removeEventListener("designFlowChanged", loadSiteData);
+      window.removeEventListener("storage", onStorage);
     };
   }, [id]);
 
@@ -103,7 +112,6 @@ const SiteDetail = () => {
   const statusColors = {
     survey: "bg-blue-100 text-blue-800 border-blue-200",
     design: "bg-purple-100 text-purple-800 border-purple-200",
-    "in progress": "bg-amber-100 text-amber-800 border-amber-200",
     completed: "bg-emerald-100 text-emerald-800 border-emerald-200",
   };
   const activeStatusColor =
@@ -199,6 +207,11 @@ const SiteDetail = () => {
                 <span className="text-gray-400 font-bold uppercase text-[9px] tracking-wider">Scope</span>
                 <span className="font-bold text-darkgray text-[12px] text-right">
                   {(() => {
+                    if (getSiteServiceTrack(site) === "Architecture") {
+                      return site.projectIntent
+                        ? `${site.projectIntent} · Architecture`
+                        : "Architecture";
+                    }
                     const preset = site.propertyPreset;
                     const siteType = site.siteType || "";
                     const formattedPreset = preset ? preset.replace(/^(\d+)(BHK)$/i, "$1 BHK") : "";
@@ -355,9 +368,12 @@ const SiteDetail = () => {
           </div>
         )}
 
-        {/* Front-end — Architecture does Feasibility; Interiors does Survey */}
+        {/* Front-end — Architecture does Feasibility + site survey; Interiors does Survey */}
         {getSiteServiceTrack(site) === "Architecture" ? (
-          <Feasibility site={site} />
+          <div className="space-y-5">
+            <Feasibility site={site} />
+            <ArchSiteSurvey site={site} />
+          </div>
         ) : (
           <SurveyMeasurements site={site} onExpandPhoto={handleExpandSurveyPhoto} />
         )}

@@ -1189,6 +1189,7 @@ export const blankItem = () => ({
   // procurement can match against what was actually specified to the client.
   spec: "",
   hsn: "",
+  workCode: "",
   hierarchy: defaultProjectHierarchy(),
   details: defaultItemDetails(),
   qty: 1,
@@ -1335,6 +1336,137 @@ export const computeQuoteFromBoq = (boq) => {
     marginPercent,
     marginAmount: price - cost,
     price,
+  };
+};
+
+// ── Revision diff engine ──────────────────────────────────────────────────────
+// Compare two sets of sections (prev snapshot vs current) and return a populated
+// revisionComparison object. Pure function — does not mutate state.
+// Keyed by item `id`: items only in next = added, only in prev = removed,
+// in both with changed qty/rate/description = changed.
+export const diffBoqRevisions = (prevSections = [], nextSections = []) => {
+  const prevMap = {};
+  for (const s of prevSections || []) {
+    for (const it of s.items || []) {
+      prevMap[it.id] = { ...it, _sectionName: s.name };
+    }
+  }
+  const nextMap = {};
+  for (const s of nextSections || []) {
+    for (const it of s.items || []) {
+      nextMap[it.id] = { ...it, _sectionName: s.name };
+    }
+  }
+
+  const changes = [];
+  let itemsAdded = 0;
+  let itemsRemoved = 0;
+  let itemsChanged = 0;
+  let quantityDelta = 0;
+  let amountDelta = 0;
+
+  for (const [id, item] of Object.entries(nextMap)) {
+    if (!prevMap[id]) {
+      itemsAdded++;
+      const qty = computeItemQty(item);
+      const amt = computeItemAmount(item).net;
+      quantityDelta += qty;
+      amountDelta += amt;
+      changes.push({
+        type: "added",
+        itemId: id,
+        description: item.description || "",
+        section: item._sectionName || "",
+        qty,
+        unit: item.unit || "",
+        rate: Number(item.rate) || 0,
+        amount: amt,
+      });
+    }
+  }
+
+  for (const [id, item] of Object.entries(prevMap)) {
+    if (!nextMap[id]) {
+      itemsRemoved++;
+      const qty = computeItemQty(item);
+      const amt = computeItemAmount(item).net;
+      quantityDelta -= qty;
+      amountDelta -= amt;
+      changes.push({
+        type: "removed",
+        itemId: id,
+        description: item.description || "",
+        section: item._sectionName || "",
+        qty,
+        unit: item.unit || "",
+        rate: Number(item.rate) || 0,
+        amount: amt,
+      });
+    }
+  }
+
+  for (const [id, next] of Object.entries(nextMap)) {
+    const prev = prevMap[id];
+    if (!prev) continue;
+    const prevQty = computeItemQty(prev);
+    const nextQty = computeItemQty(next);
+    const prevRate = Number(prev.rate) || 0;
+    const nextRate = Number(next.rate) || 0;
+
+    const fields = [];
+    if (Math.abs(prevQty - nextQty) > 0.001) {
+      fields.push({ field: "qty", oldValue: prevQty, newValue: nextQty });
+      quantityDelta += nextQty - prevQty;
+    }
+    if (Math.abs(prevRate - nextRate) > 0.001) {
+      fields.push({ field: "rate", oldValue: prevRate, newValue: nextRate });
+    }
+    if ((prev.description || "") !== (next.description || "")) {
+      fields.push({
+        field: "description",
+        oldValue: prev.description || "",
+        newValue: next.description || "",
+      });
+    }
+
+    if (fields.length > 0) {
+      itemsChanged++;
+      const prevAmt = computeItemAmount(prev).net;
+      const nextAmt = computeItemAmount(next).net;
+      amountDelta += nextAmt - prevAmt;
+      changes.push({
+        type: "changed",
+        itemId: id,
+        description: next.description || prev.description || "",
+        section: next._sectionName || prev._sectionName || "",
+        fields,
+        prevAmount: prevAmt,
+        nextAmount: nextAmt,
+      });
+    }
+  }
+
+  const prevSectionIds = new Set((prevSections || []).map((s) => s.id));
+  const nextSectionIds = new Set((nextSections || []).map((s) => s.id));
+  const sectionsAdded = (nextSections || []).filter(
+    (s) => !prevSectionIds.has(s.id),
+  ).length;
+  const sectionsRemoved = (prevSections || []).filter(
+    (s) => !nextSectionIds.has(s.id),
+  ).length;
+
+  return {
+    summary: {
+      sectionsAdded,
+      sectionsRemoved,
+      itemsAdded,
+      itemsRemoved,
+      itemsChanged,
+      quantityDelta,
+      amountDelta,
+    },
+    changes,
+    createdAt: new Date().toISOString(),
   };
 };
 

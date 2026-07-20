@@ -13,14 +13,13 @@ import {
 import { getSiteLead } from "../../data/surveyMeasureStorage";
 import { resolveServiceTrack } from "../../data/serviceTrack";
 
-const SUB_TABS = ["All", "Survey", "Design", "In Progress", "Completed"];
+const SUB_TABS = ["All", "Survey", "Design", "Completed"];
 
 const SUB_TAB_STATUS = {
   0: null,
   1: "survey",
   2: "design",
-  3: "in progress",
-  4: "completed",
+  3: "completed",
 };
 
 const Sites = () => {
@@ -56,14 +55,19 @@ const Sites = () => {
     const handler = () => {
       setAllSites(getAllSites());
     };
+    const onStorage = (e) => {
+      if (e.key === "newSitesData") handler();
+    };
     window.addEventListener("siteDataChanged", handler);
     window.addEventListener("focus", handler);
+    window.addEventListener("storage", onStorage);
     // Pull the backend's sites into the local cache on mount (best-effort).
     // hydrateSites dispatches `siteDataChanged` on success, refreshing the list.
     hydrateSites();
     return () => {
       window.removeEventListener("siteDataChanged", handler);
       window.removeEventListener("focus", handler);
+      window.removeEventListener("storage", onStorage);
     };
   }, []);
 
@@ -81,7 +85,7 @@ const Sites = () => {
       return {
         ...site,
         serviceTrack: resolveServiceTrack(lead || site),
-        projectIntent: lead?.projectIntent || "",
+        projectIntent: lead?.projectIntent || site.projectIntent || "",
         sno: String(index + 1).padStart(2, "0"),
       };
     });
@@ -137,7 +141,9 @@ const Sites = () => {
         }
         const preset = row.propertyPreset;
         const siteType = row.siteType || "";
-        const formattedPreset = preset ? preset.replace(/^(\d+)(BHK)$/i, "$1 BHK") : "";
+        const formattedPreset = preset
+          ? preset.replace(/^(\d+)(BHK)$/i, "$1 BHK")
+          : "";
         return formattedPreset ? `${formattedPreset} / ${siteType}` : siteType;
       },
     },
@@ -163,26 +169,6 @@ const Sites = () => {
     },
     { key: "supervisor", label: "Supervisor" },
     {
-      key: "progress",
-      label: "Progress",
-      render: (val) => {
-        const percentage = Number(val || 0);
-        return (
-          <div className="flex items-center gap-3 justify-center min-w-[120px]">
-            <div className="w-full bg-gray-200 rounded-full h-2">
-              <div
-                className="bg-select-blue h-2 rounded-full transition-all duration-300"
-                style={{ width: `${percentage}%` }}
-              ></div>
-            </div>
-            <span className="text-[11px] font-semibold text-darkgray">
-              {percentage}%
-            </span>
-          </div>
-        );
-      },
-    },
-    {
       key: "status",
       label: "Status",
       render: (val, row) => {
@@ -197,7 +183,8 @@ const Sites = () => {
                 e.stopPropagation();
                 handleAssignClick(row);
               }}
-              className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-select-blue text-white hover:bg-blue-950 transition-colors"
+              title="Assign surveyor"
+              className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider transition-colors bg-select-blue text-white hover:bg-blue-950 cursor-pointer"
             >
               Assign
             </button>
@@ -206,7 +193,6 @@ const Sites = () => {
         const statusColors = {
           survey: "bg-blue-100 text-blue-700",
           design: "bg-purple-100 text-purple-700",
-          "in progress": "bg-amber-100 text-amber-700",
           completed: "bg-green-100 text-green-700",
         };
         const style =
@@ -250,14 +236,13 @@ const Sites = () => {
         sortFields={[
           { key: "clientName", label: "Client Name" },
           { key: "siteID", label: "Site ID" },
-          { key: "progress", label: "Progress" },
           { key: "status", label: "Status" },
         ]}
         filterFields={[
           {
             key: "status",
             label: "Status",
-            options: ["Survey", "Design", "In Progress", "Completed"],
+            options: ["Survey", "Design", "Completed"],
           },
           {
             key: "supervisor",
@@ -290,13 +275,16 @@ const Sites = () => {
                 }
                 const preset = row.propertyPreset;
                 const siteType = row.siteType || "";
-                const formattedPreset = preset ? preset.replace(/^(\d+)(BHK)$/i, "$1 BHK") : "";
-                return formattedPreset ? `${formattedPreset} / ${siteType}` : siteType;
+                const formattedPreset = preset
+                  ? preset.replace(/^(\d+)(BHK)$/i, "$1 BHK")
+                  : "";
+                return formattedPreset
+                  ? `${formattedPreset} / ${siteType}`
+                  : siteType;
               },
             },
             { label: "Location", key: "location" },
             { label: "Supervisor", key: "supervisor" },
-            { label: "Progress (%)", key: "progress" },
             { label: "Status", key: "status" },
             { label: "Target Completion", key: "targetDate" },
           ],

@@ -13,6 +13,7 @@
 
 import { tokens } from "../api/client";
 import { saveOrgProfile } from "../data/orgProfile";
+import { setCurrentUser, clearCurrentUser } from "./currentUser";
 
 const STORAGE_KEY = "org_accounts";
 
@@ -112,4 +113,7 @@ export function startLocalStaffSession(user) {
     refreshToken: "",
     audience: "staff",
   });
+  setCurrentUser(user);
 }
+
+export { clearCurrentUser };

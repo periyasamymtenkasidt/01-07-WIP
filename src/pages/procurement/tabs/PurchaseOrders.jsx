@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Package } from "lucide-react";
 import { listAllPurchaseOrders } from "../../../data/procurementStorage";
+import Table from "../../../components/Table";
 
 const fmtINR = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
@@ -19,19 +19,81 @@ const FILTERS = [
 
 const PurchaseOrders = () => {
   const navigate = useNavigate();
-  const [version, setVersion] = useState(0);
+
+  const columns = [
+    { key: "sno", label: "Sno" },
+    {
+      key: "id",
+      label: "PO",
+      render: (v, item) => (
+        <span
+          className="cursor-pointer hover:underline text-textcolor"
+          onClick={(e) => { e.stopPropagation(); navigate(`/procurement/po/${item.id}`); }}
+        >
+          {v}
+        </span>
+      ),
+    },
+    {
+      key: "clientName",
+      label: "Project",
+      render: (v, item) => (
+        <span
+          className="cursor-pointer hover:underline"
+          onClick={(e) => { e.stopPropagation(); navigate(`/procurement/po/${item.id}`); }}
+        >
+          {v || "—"}
+        </span>
+      ),
+    },
+    { key: "vendorName", label: "Vendor", render: (v) => v || "—" },
+    { key: "itemCount", label: "Items" },
+    { key: "total", label: "Total", render: (v) => fmtINR(v) },
+    {
+      key: "status",
+      label: "Status",
+      render: (v) => (
+        <span
+          className={`px-2 py-0.5 rounded-full text-[10px] font-medium uppercase ${STATUS_STYLE[v] || "bg-gray-100 text-gray-500"}`}
+        >
+          {String(v).replace(/_/g, " ")}
+        </span>
+      ),
+    },
+  ];
+  const [version] = useState(0);
   const [filter, setFilter] = useState("active");
-  // version bumps force a localStorage re-read after creating a PO.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const pos = useMemo(() => listAllPurchaseOrders(), [version]);
 
-  const activeCount = pos.filter(FILTERS[0].test).length;
-  const filtered = pos.filter(FILTERS.find((f) => f.id === filter).test);
-  const totalValue = filtered.reduce((s, p) => s + (Number(p.total) || 0), 0);
+  const activeCount = useMemo(
+    () => pos.filter(FILTERS[0].test).length,
+    [pos],
+  );
+
+  const filtered = useMemo(
+    () => pos.filter(FILTERS.find((f) => f.id === filter).test),
+    [pos, filter],
+  );
+
+  const totalValue = useMemo(
+    () => filtered.reduce((s, p) => s + (Number(p.total) || 0), 0),
+    [filtered],
+  );
+
+  const data = useMemo(
+    () =>
+      filtered.map((p, i) => ({
+        ...p,
+        sno: String(i + 1).padStart(2, "0"),
+        itemCount: p.items?.length || 0,
+      })),
+    [filtered],
+  );
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-3 shrink-0 flex-wrap gap-2">
         <div className="flex items-center gap-1.5">
           {FILTERS.map((f) => (
             <button
@@ -49,69 +111,40 @@ const PurchaseOrders = () => {
             </button>
           ))}
         </div>
-
+        <p className="text-[13px] text-text-muted">
+          {filtered.length} PO{filtered.length === 1 ? "" : "s"} ·{" "}
+          <span className="font-semibold text-textcolor">
+            {fmtINR(totalValue)}
+          </span>
+        </p>
       </div>
 
-      <p className="text-[13px] text-text-muted mb-3">
-        {filtered.length} purchase order{filtered.length === 1 ? "" : "s"} ·{" "}
-        <span className="font-semibold text-textcolor">{fmtINR(totalValue)}</span>
-      </p>
-
-      <div className="bg-white border border-bordergray rounded-xl overflow-hidden">
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr className="bg-bg-soft text-text-muted text-[11px] uppercase tracking-wider">
-              <th className="text-left font-bold px-4 py-3">PO</th>
-              <th className="text-left font-bold px-4 py-3">Project</th>
-              <th className="text-left font-bold px-4 py-3">Vendor</th>
-              <th className="text-center font-bold px-4 py-3">Items</th>
-              <th className="text-right font-bold px-4 py-3">Total</th>
-              <th className="text-center font-bold px-4 py-3">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-10 text-center text-text-subtle">
-                  <Package size={22} className="mx-auto mb-2 opacity-50" />
-                  No purchase orders in this view.
-                </td>
-              </tr>
-            ) : (
-              filtered.map((p) => (
-                <tr
-                  key={p.id}
-                  onClick={() => navigate(`/procurement/po/${p.id}`)}
-                  className="border-t border-bordergray hover:bg-bg-soft/40 cursor-pointer"
-                >
-                  <td className="px-4 py-3 font-semibold text-textcolor">
-                    {p.id}
-                  </td>
-                  <td className="px-4 py-3 text-text-muted">{p.clientName || "—"}</td>
-                  <td className="px-4 py-3 text-text-muted">
-                    {p.vendorName || "—"}
-                  </td>
-                  <td className="px-4 py-3 text-center text-text-muted">
-                    {p.items?.length || 0}
-                  </td>
-                  <td className="px-4 py-3 text-right font-bold text-textcolor">
-                    {fmtINR(p.total)}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${STATUS_STYLE[p.status] || "bg-gray-100 text-gray-500"}`}
-                    >
-                      {String(p.status).replace(/_/g, " ")}
-                    </span>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+      <div className="flex-1 min-h-0">
+        <Table
+          columns={columns}
+          data={data}
+          rowsPerPage={8}
+          activeRowKey="id"
+          emptyMessage="No purchase orders in this view."
+          sortFields={[
+            { key: "id", label: "PO ID" },
+            { key: "clientName", label: "Project" },
+            { key: "vendorName", label: "Vendor" },
+            { key: "total", label: "Total" },
+          ]}
+          exportConfig={{
+            filename: "purchase_orders_export",
+            columns: [
+              { label: "PO", key: "id" },
+              { label: "Project", key: "clientName" },
+              { label: "Vendor", key: "vendorName" },
+              { label: "Items", key: "itemCount" },
+              { label: "Total", key: "total" },
+              { label: "Status", key: "status" },
+            ],
+          }}
+        />
       </div>
-
-
     </div>
   );
 };

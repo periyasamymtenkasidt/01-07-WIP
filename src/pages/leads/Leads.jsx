@@ -11,7 +11,7 @@ import { toApiDate, toDisplayDate } from "../../utils/leadDates";
 const MAIN_TABS = ["Inquiries"];
 
 const SUB_TABS = {
-  0: ["New Inquiries", "Nurturing Inquiries", "Won Deals", "Dropped Inquiries"],
+  0: ["New Inquiries", "Nurturing Inquiries", "Negotiation", "Won Deals", "Dropped Inquiries"],
   1: ["Tab A", "Tab B", "Tab C"],
 };
 
@@ -19,9 +19,10 @@ const SUB_TABS = {
 // active deals being worked, closed-won (client created), and lost/dropped.
 const TAB_STATUSES = {
   "0-0": ["Inquiry"],
-  "0-1": ["Qualified", "Proposal", "Negotiation", "On Hold"],
-  "0-2": ["Won"],
-  "0-3": ["Lost"],
+  "0-1": ["Qualified", "Proposal", "On Hold"],
+  "0-2": ["Negotiation"],
+  "0-3": ["Won"],
+  "0-4": ["Lost"],
 };
 
 // Leads are served by the backend (GET /leads). The tabs are just a client-side

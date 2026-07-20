@@ -3,15 +3,16 @@ import { ChevronDown } from "lucide-react";
 import { getScheduleConfig } from "../data/scheduleConfig";
 
 // Strict room/category picker backed by the canonical Master → Schedule list.
-// Categories are managed only in Master → Schedule — this is read-only here.
-// Any current off-list value is preserved as an option so existing data isn't lost.
-// Enhanced with an inline searchable dropdown behavior.
-const CategorySelect = ({ value, onChange, className, placeholder = "Select room…", disabled }) => {
-  const [names] = useState(() => getScheduleConfig().rooms.map((r) => r.name));
+// Pass `customOptions` (string[]) to override the schedule rooms — used for
+// architecture BOQs where the category is a trade division, not a room name.
+const CategorySelect = ({ value, onChange, className, placeholder = "Select room…", disabled, customOptions }) => {
+  const configNames = useMemo(() => getScheduleConfig().rooms.map((r) => r.name), []);
   const [isOpen, setIsOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [typedValue, setTypedValue] = useState("");
   const dropdownRef = useRef(null);
+
+  const names = customOptions || configNames;
 
   // Keep the current value selectable even if it's not in the master list.
   const options = useMemo(() => {

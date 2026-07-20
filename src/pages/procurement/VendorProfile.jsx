@@ -6,27 +6,24 @@ import {
   Save,
   X,
   Trash2,
-  ShieldCheck,
   Users,
   Package,
   Send,
-  Boxes,
+  AlertTriangle,
+  Info,
 } from "lucide-react";
 import {
   getVendor,
   updateVendor,
   deleteVendor,
-  TDS_SECTIONS,
-  MSME_CATEGORIES,
 } from "../../data/vendorStorage";
-import { listMaterials } from "../../data/materialLibrary";
+
 import { listAllRfqs } from "../../data/rfqStorage";
 import { listAllPurchaseOrders } from "../../data/procurementStorage";
 import InputField from "../../components/InputField";
 
 const fmtINR = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
-const fmtDate = (iso) =>
-  iso ? new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+
 
 const Field = ({ label, value }) => (
   <div>
@@ -58,10 +55,10 @@ const VendorProfile = () => {
   // version bumps force a localStorage re-read after save/delete.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const vendor = useMemo(() => getVendor(id), [id, version]);
-  const materials = listMaterials();
 
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const startEdit = () => {
     setForm({ ...vendor });
@@ -73,25 +70,14 @@ const VendorProfile = () => {
   };
   const set = (patch) => setForm((p) => ({ ...p, ...patch }));
 
-  const toggleMaterial = (matId) =>
-    setForm((p) => {
-      const ids = p.materialIds || [];
-      return {
-        ...p,
-        materialIds: ids.includes(matId) ? ids.filter((m) => m !== matId) : [...ids, matId],
-      };
-    });
+
 
   const save = () => {
     if (!form.name) return;
     updateVendor(id, {
       ...form,
-      tdsRate: Number(form.tdsRate) || 0,
       creditDays: Number(form.creditDays) || 0,
       deliveryLeadDays: Number(form.deliveryLeadDays) || 0,
-      msmeRegistered: !!form.msmeRegistered,
-      msmeCategory: form.msmeRegistered ? form.msmeCategory : "",
-      udyamNumber: form.msmeRegistered ? form.udyamNumber : "",
     });
     setVersion((v) => v + 1);
     setEditing(false);
@@ -99,9 +85,7 @@ const VendorProfile = () => {
   };
 
   const remove = () => {
-    if (!window.confirm(`Delete vendor "${vendor.name}"? This cannot be undone.`)) return;
-    deleteVendor(id);
-    navigate("/procurement?tab=vendors");
+    setShowDeleteConfirm(true);
   };
 
   // version bumps force a localStorage re-read after this vendor's RFQs/POs change.
@@ -153,14 +137,9 @@ const VendorProfile = () => {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <h1 className="text-[17px] font-bold text-textcolor">{vendor.name}</h1>
-            {vendor.msmeRegistered && (
-              <span className="inline-flex items-center gap-1 text-[9.5px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                <ShieldCheck size={10} /> MSME {vendor.msmeCategory || ""}
-              </span>
-            )}
           </div>
           <p className="text-[12px] text-text-muted">
-            {vendor.category || "Uncategorized"} {vendor.contactPerson ? `· ${vendor.contactPerson}` : ""}
+            {vendor.category || "Uncategorized"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -218,86 +197,32 @@ const VendorProfile = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {/* Contact & Compliance */}
-        <div className="bg-white border border-bordergray rounded-2xl p-5">
-          <h3 className="text-[12.5px] font-bold text-textcolor uppercase tracking-wider mb-3">
-            Contact &amp; Compliance
-          </h3>
-          {editing ? (
+      {/* Contact, Compliance & Banking */}
+      <div className="bg-white border border-bordergray rounded-2xl p-5">
+        <h3 className="text-[12.5px] font-bold text-textcolor uppercase tracking-wider mb-4">
+          Contact, Compliance &amp; Banking
+        </h3>
+        {editing ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <InputField label="Vendor Name" value={v.name} onChange={(e) => set({ name: e.target.value })} required />
                 <InputField label="Category" value={v.category} onChange={(e) => set({ category: e.target.value })} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <InputField label="Contact Person" value={v.contactPerson} onChange={(e) => set({ contactPerson: e.target.value })} />
                 <InputField label="Phone" value={v.phone} onChange={(e) => set({ phone: e.target.value })} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
                 <InputField type="email" label="Email" value={v.email} onChange={(e) => set({ email: e.target.value })} />
-                <InputField label="GSTIN" value={v.gstin} onChange={(e) => set({ gstin: e.target.value })} />
               </div>
+              <InputField label="GSTIN" value={v.gstin} onChange={(e) => set({ gstin: e.target.value })} />
               <InputField label="PAN" value={v.pan} onChange={(e) => set({ pan: e.target.value })} />
               <InputField label="Address" value={v.address} onChange={(e) => set({ address: e.target.value })} />
-              <label className="flex items-center gap-2 text-[11px] font-semibold text-darkgray pt-1">
-                <input
-                  type="checkbox"
-                  checked={!!v.msmeRegistered}
-                  onChange={(e) => set({ msmeRegistered: e.target.checked })}
-                  className="h-3.5 w-3.5"
-                />
-                Registered under MSME / Udyam
-              </label>
-              {v.msmeRegistered && (
-                <div className="grid grid-cols-2 gap-3">
-                  <InputField
-                    type="select"
-                    label="MSME Category"
-                    value={v.msmeCategory || ""}
-                    onChange={(e) => set({ msmeCategory: e.target.value })}
-                    options={MSME_CATEGORIES}
-                  />
-                  <InputField
-                    label="Udyam Registration No."
-                    value={v.udyamNumber || ""}
-                    onChange={(e) => set({ udyamNumber: e.target.value })}
-                  />
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                <InputField
-                  type="select"
-                  label="TDS Section"
-                  value={v.tdsSection || ""}
-                  onChange={(e) => set({ tdsSection: e.target.value })}
-                  options={TDS_SECTIONS.filter((t) => t.code).map((t) => t.code)}
-                />
-                <InputField type="number" label="TDS Rate (%)" value={v.tdsRate} onChange={(e) => set({ tdsRate: e.target.value })} />
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Contact Person" value={vendor.contactPerson} />
-              <Field label="Phone" value={vendor.phone} />
-              <Field label="Email" value={vendor.email} />
-              <Field label="GSTIN" value={vendor.gstin} />
-              <Field label="PAN" value={vendor.pan} />
-              <Field label="TDS" value={vendor.tdsSection ? `${vendor.tdsSection} · ${vendor.tdsRate}%` : "—"} />
-              <div className="col-span-2">
-                <Field label="Address" value={vendor.address} />
-              </div>
-            </div>
-          )}
-        </div>
 
-        {/* Banking */}
-        <div className="bg-white border border-bordergray rounded-2xl p-5">
-          <h3 className="text-[12.5px] font-bold text-textcolor uppercase tracking-wider mb-3">
-            Banking Details
-          </h3>
-          {editing ? (
+            </div>
+
             <div className="space-y-3">
+              <h4 className="text-[11px] font-bold text-text-subtle uppercase tracking-wider mb-2 border-b border-bordergray pb-1">
+                Banking Details
+              </h4>
               <div className="grid grid-cols-2 gap-3">
                 <InputField label="Bank Name" value={v.bankName} onChange={(e) => set({ bankName: e.target.value })} />
                 <InputField label="Account Holder" value={v.bankAccountHolder} onChange={(e) => set({ bankAccountHolder: e.target.value })} />
@@ -307,122 +232,43 @@ const VendorProfile = () => {
                 <InputField label="IFSC Code" value={v.bankIfsc} onChange={(e) => set({ bankIfsc: e.target.value })} />
               </div>
             </div>
-          ) : (
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Bank Name" value={vendor.bankName} />
-              <Field label="Account Holder" value={vendor.bankAccountHolder} />
-              <Field label="Account Number" value={vendor.bankAccountNumber} />
-              <Field label="IFSC Code" value={vendor.bankIfsc} />
-            </div>
-          )}
-        </div>
-
-        {/* Contract & SLA */}
-        <div className="bg-white border border-bordergray rounded-2xl p-5">
-          <h3 className="text-[12.5px] font-bold text-textcolor uppercase tracking-wider mb-3">
-            Contract &amp; SLA
-          </h3>
-          {editing ? (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <InputField
-                  type="number"
-                  label="Payment Terms (Credit Days)"
-                  value={v.creditDays}
-                  onChange={(e) => set({ creditDays: e.target.value })}
-                  placeholder="e.g. 30"
-                />
-                <InputField
-                  type="number"
-                  label="Delivery Lead Time (Days)"
-                  value={v.deliveryLeadDays}
-                  onChange={(e) => set({ deliveryLeadDays: e.target.value })}
-                  placeholder="e.g. 7"
-                />
+              <Field label="Phone" value={vendor.phone} />
+              <Field label="Email" value={vendor.email} />
+              <Field label="GSTIN" value={vendor.gstin} />
+              <Field label="PAN" value={vendor.pan} />
+              <div className="col-span-2">
+                <Field label="Address" value={vendor.address} />
               </div>
-              <InputField
-                type="date"
-                label="Contract Valid Till"
-                value={v.contractValidTill || ""}
-                onChange={(e) => set({ contractValidTill: e.target.value })}
-              />
-              <InputField
-                type="textarea"
-                label="Quality Terms"
-                value={v.qualityTerms || ""}
-                onChange={(e) => set({ qualityTerms: e.target.value })}
-                placeholder="Spec conformance, defect handling, warranty…"
-                rows={3}
-              />
-              <InputField
-                type="textarea"
-                label="Penalty Clause"
-                value={v.penaltyTerms || ""}
-                onChange={(e) => set({ penaltyTerms: e.target.value })}
-                placeholder="Delay penalty %, cap…"
-                rows={2}
-              />
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Payment Terms" value={vendor.creditDays ? `Net ${vendor.creditDays} days` : "—"} />
-                <Field label="Delivery Lead Time" value={vendor.deliveryLeadDays ? `${vendor.deliveryLeadDays} days` : "—"} />
-              </div>
-              <Field label="Contract Valid Till" value={fmtDate(vendor.contractValidTill)} />
-              <Field label="Quality Terms" value={vendor.qualityTerms} />
-              <Field label="Penalty Clause" value={vendor.penaltyTerms} />
-            </div>
-          )}
-        </div>
-
-        {/* Materials supplied */}
-        <div className="bg-white border border-bordergray rounded-2xl p-5">
-          <h3 className="text-[12.5px] font-bold text-textcolor uppercase tracking-wider mb-3 flex items-center gap-1.5">
-            <Boxes size={13} /> Materials Currently Supplied
-          </h3>
-          {editing ? (
-            <div className="flex flex-wrap gap-1.5">
-              {materials.map((m) => {
-                const checked = (v.materialIds || []).includes(m.id);
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => toggleMaterial(m.id)}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11.5px] font-medium border transition-all ${
-                      checked
-                        ? "bg-select-blue text-white border-select-blue"
-                        : "bg-white text-text-muted border-bordergray hover:border-select-blue/40"
-                    }`}
-                  >
-                    {m.name}
-                  </button>
-                );
-              })}
-              {materials.length === 0 && (
-                <p className="text-[12px] text-text-subtle">No materials in the Material Master yet.</p>
+              {vendor.accessCode && (
+                <div className="col-span-2 flex items-center justify-between gap-4 px-4 py-3 bg-select-blue/5 border border-select-blue/20 rounded-xl">
+                  <div>
+                    <p className="text-[9.5px] font-bold text-text-subtle uppercase tracking-wider">Quote Access Code</p>
+                    <p className="font-mono text-[18px] font-bold text-select-blue tracking-widest mt-0.5">{vendor.accessCode}</p>
+                  </div>
+                  <p className="text-[10.5px] text-text-muted leading-relaxed max-w-[200px] text-right">
+                    Share once with the vendor. They use this code to identify themselves on all quote requests.
+                  </p>
+                </div>
               )}
             </div>
-          ) : (vendor.materialIds || []).length === 0 ? (
-            <p className="text-[12px] text-text-subtle">No materials linked to this vendor yet.</p>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {vendor.materialIds.map((mid) => {
-                const m = materials.find((mm) => mm.id === mid);
-                if (!m) return null;
-                return (
-                  <span
-                    key={mid}
-                    className="px-2.5 py-1 rounded-lg text-[11.5px] font-semibold bg-active-bg text-select-blue"
-                  >
-                    {m.name}
-                  </span>
-                );
-              })}
+
+            <div>
+              <h4 className="text-[11px] font-bold text-text-subtle uppercase tracking-wider mb-3 border-b border-bordergray pb-1">
+                Banking Details
+              </h4>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Bank Name" value={vendor.bankName} />
+                <Field label="Account Holder" value={vendor.bankAccountHolder} />
+                <Field label="Account Number" value={vendor.bankAccountNumber} />
+                <Field label="IFSC Code" value={vendor.bankIfsc} />
+              </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* History */}
@@ -488,8 +334,81 @@ const VendorProfile = () => {
           )}
         </div>
       </div>
+
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title={`Delete "${vendor?.name || "Vendor"}"?`}
+          message="Are you sure you want to delete this vendor? This cannot be undone."
+          confirmLabel="Delete Vendor"
+          danger={true}
+          onCancel={() => setShowDeleteConfirm(false)}
+          onConfirm={() => {
+            deleteVendor(id);
+            setShowDeleteConfirm(false);
+            navigate("/procurement?tab=vendors");
+          }}
+        />
+      )}
     </div>
   );
 };
+
+const ConfirmDialog = ({
+  title,
+  message,
+  confirmLabel,
+  danger,
+  onCancel,
+  onConfirm,
+}) => (
+  <div
+    className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+    onClick={onCancel}
+  >
+    <div
+      className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="p-5 flex items-start gap-3">
+        <span
+          className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${
+            danger
+              ? "bg-red-50 text-red-500"
+              : "bg-select-blue/10 text-select-blue"
+          }`}
+        >
+          {danger ? <AlertTriangle size={18} /> : <Info size={18} />}
+        </span>
+        <div>
+          <h3 className="text-[14px] font-bold text-textcolor">{title}</h3>
+          <p className="text-[12px] text-text-muted mt-1 leading-relaxed">
+            {message}
+          </p>
+        </div>
+      </div>
+      <div className="px-5 py-3 bg-bg-soft border-t border-bordergray flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-3 py-1.5 rounded-lg border border-bordergray bg-white text-[12px] font-semibold text-text-muted hover:text-textcolor"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          autoFocus
+          className={`px-3 py-1.5 rounded-lg text-[12px] font-semibold text-white shadow-sm ${
+            danger
+              ? "bg-red-500 hover:bg-red-600"
+              : "bg-select-blue hover:bg-primary"
+          }`}
+        >
+          {confirmLabel || "Confirm"}
+        </button>
+      </div>
+    </div>
+  </div>
+);
 
 export default VendorProfile;

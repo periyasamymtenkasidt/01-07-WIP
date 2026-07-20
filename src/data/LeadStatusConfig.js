@@ -3,6 +3,8 @@
 // Off-ramps are terminal/parallel states rendered separately.
 
 import { addLeadActivity, getLeadActivities } from "../api/leads";
+import { ClientTableData } from "./ClientTableData";
+import { PAYMENT_MILESTONES } from "./MilestoneConfig";
 
 // Resolve the Mongo backend id for a lead from the local cache. Activities are
 // keyed in-app by proposalId, but the API needs the lead's `id`. Returns "" for
@@ -52,6 +54,8 @@ export const STATUS_BADGE = {
   "On Hold": "bg-gray-100 text-gray-600",
   Lost: "bg-red-100 text-red-600",
   Completed: "bg-emerald-100 text-emerald-700",
+  Pending: "bg-yellow-100 text-yellow-700",
+  Unpaid: "bg-orange-100 text-orange-600",
 };
 
 // Lower-case lookup so callers don't have to worry about casing.
@@ -126,7 +130,9 @@ export const fetchServerActivity = async (backendId) => {
 };
 
 // Resolve a lead by proposalId across mock data + localStorage overrides.
-// Lazy require so this file stays free of UI dependencies.
+// For direct-client synthetic leads (isDirect: true), merges the live client
+// record so fields added after the lead was first written are always present —
+// this handles old clients created before the full-field mapping fix.
 export const findLeadById = (proposalId, tableData = []) => {
   let stored = [];
   try {
@@ -134,11 +140,46 @@ export const findLeadById = (proposalId, tableData = []) => {
   } catch {
     stored = [];
   }
-  return (
+  const lead =
     stored.find((l) => l.proposalId === proposalId) ||
     tableData.find((l) => l.proposalId === proposalId) ||
-    null
-  );
+    null;
+
+  if (!lead?.isDirect || !lead.convertedClientID) return lead;
+
+  let clients = [];
+  try {
+    clients = JSON.parse(localStorage.getItem("newClientsData") || "[]");
+  } catch {
+    clients = [];
+  }
+  const client =
+    clients.find((c) => c.clientID === lead.convertedClientID) ||
+    ClientTableData.find((c) => c.clientID === lead.convertedClientID);
+  if (!client) return lead;
+
+  // Lead's stored value wins when non-empty; client record fills any gap.
+  const fill = (lv, cv) => (lv !== undefined && lv !== "" && lv !== null ? lv : cv || "");
+  return {
+    ...lead,
+    serviceTrack:        fill(lead.serviceTrack,        client.serviceTrack),
+    inquirySource:       fill(lead.inquirySource,       client.inquirySource),
+    referralPersonName:  fill(lead.referralPersonName,  client.referralPersonName),
+    referralPersonEmail: fill(lead.referralPersonEmail, client.referralPersonEmail),
+    clientType:          fill(lead.clientType,          client.clientType),
+    whatsappNumber:      fill(lead.whatsappNumber,      client.whatsappNumber),
+    quotePreset:         fill(lead.quotePreset,         client.quotePreset),
+    propertyType:        fill(lead.propertyType,        client.propertyType),
+    location:            fill(lead.location,            client.location || client.propertyType),
+    locationSecondary:   fill(lead.locationSecondary,   client.locationSecondary),
+    possessionDate:      fill(lead.possessionDate,      client.possessionDate),
+    projectIntent:       fill(lead.projectIntent,       client.projectIntent),
+    scope:               fill(lead.scope,               client.projectIntent),
+    requirementType:     fill(lead.requirementType,     client.requirementType),
+    buildingUse:         fill(lead.buildingUse,         client.buildingUse),
+    plotArea:            fill(lead.plotArea,            client.plotArea),
+    architecturalNotes:  fill(lead.architecturalNotes,  client.architecturalNotes),
+  };
 };
 
 // Walk every leadActivity_* key in localStorage and return all email sends,
@@ -278,14 +319,42 @@ export const getLastActivity = (proposalId) => {
 // Read milestones for a converted lead. clientID is set on lead.convertedClientID.
 export const getMilestonesForLead = (lead) => {
   if (!lead?.convertedClientID) return [];
+  const clientID = lead.convertedClientID;
   try {
-    const raw = localStorage.getItem(
-      `clientMilestones_${lead.convertedClientID}`,
-    );
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+    const raw = localStorage.getItem(`clientMilestones_${clientID}`);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+
+  // Fall back to ClientTableData paymentStatus to derive milestone states for
+  // mock/seed data that has no localStorage milestone record yet.
+  let paymentStatus = "";
+  try {
+    const o = JSON.parse(localStorage.getItem("staticClientStatusOverrides") || "{}");
+    if (o[clientID]) paymentStatus = o[clientID];
+  } catch {}
+  if (!paymentStatus) {
+    try {
+      const saved = JSON.parse(localStorage.getItem("newClientsData") || "[]");
+      const found = saved.find((c) => c.clientID === clientID);
+      if (found) paymentStatus = found.paymentStatus;
+    } catch {}
   }
+  if (!paymentStatus) {
+    const found = ClientTableData.find((c) => c.clientID === clientID);
+    if (found) paymentStatus = found.paymentStatus;
+  }
+
+  let paidCount = 0;
+  if (paymentStatus === "completed") {
+    paidCount = PAYMENT_MILESTONES.length;
+  } else if (paymentStatus === "pending") {
+    const tail = parseInt(clientID.split("-").pop() || "0", 10);
+    paidCount = tail % 4;
+  }
+  return PAYMENT_MILESTONES.map((m, i) => ({
+    ...m,
+    status: i < paidCount ? "paid" : "pending",
+  }));
 };
 
 export const saveMilestonesForLead = (lead, milestones) => {
@@ -297,10 +366,13 @@ export const saveMilestonesForLead = (lead, milestones) => {
 };
 
 // Aggregate every project-eligible lead: any lead that has at least one
-// proposal email logged. Returns enriched rows with progress info.
+// proposal email logged, plus all "Won" leads (which are definitionally
+// active projects regardless of whether an activity log exists).
 export const getAllProjects = (allLeads = []) => {
   const out = [];
   const seen = new Set();
+
+  // Primary pass: activity-logged leads with at least one email event.
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key?.startsWith("leadActivity_")) continue;
@@ -318,14 +390,31 @@ export const getAllProjects = (allLeads = []) => {
     if (!lead) continue;
     const milestones = getMilestonesForLead(lead);
     const stage = getProjectStage(lead, milestones);
-    const last = list[0];
     out.push({
       lead,
       stage,
-      lastActivity: last,
+      lastActivity: list[0],
       progress: getProjectProgress(lead, milestones),
       milestones,
     });
   }
+
+  // Secondary pass: include all "Won" leads not already captured above.
+  // These are confirmed projects even if no activity has been logged yet.
+  allLeads.forEach((lead) => {
+    if (lead.status?.toLowerCase() !== "won") return;
+    if (seen.has(lead.proposalId)) return;
+    seen.add(lead.proposalId);
+    const milestones = getMilestonesForLead(lead);
+    const stage = getProjectStage(lead, milestones);
+    out.push({
+      lead,
+      stage,
+      lastActivity: null,
+      progress: getProjectProgress(lead, milestones),
+      milestones,
+    });
+  });
+
   return out;
 };

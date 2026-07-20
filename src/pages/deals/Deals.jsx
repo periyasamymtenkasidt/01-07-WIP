@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ClientTableData } from "../../data/ClientTableData";
 import { PAYMENT_MILESTONES } from "../../data/MilestoneConfig";
+import { appendActivity } from "../../data/LeadStatusConfig";
 import Modal from "../../components/Modal";
 import {
   FiHash,
@@ -12,6 +13,7 @@ import {
   FiEdit3,
   FiUser,
   FiCalendar,
+  FiSearch,
 } from "react-icons/fi";
 import { FaRegHandshake } from "react-icons/fa6";
 
@@ -646,6 +648,7 @@ export default function Deals() {
   const [tick, setTick] = useState(0);
   const [draggingId, setDraggingId] = useState(null);
   const [confirmId, setConfirmId] = useState(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     const onStorage = () => setTick((t) => t + 1);
@@ -654,14 +657,25 @@ export default function Deals() {
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const projects = useMemo(() => buildAllProjects(), [tick]);
+  const allProjects = useMemo(() => buildAllProjects(), [tick]);
+
+  const projects = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return allProjects;
+    return allProjects.filter(
+      (p) =>
+        p.client.clientName?.toLowerCase().includes(q) ||
+        p.client.clientID?.toLowerCase().includes(q),
+    );
+  }, [allProjects, search]);
+
   const activeProjects = projects.filter((p) => p.currentStageIdx >= 0);
   const completedProjects = projects.filter((p) => p.currentStageIdx === -1);
   const projectsAt = (idx) =>
     activeProjects.filter((p) => p.currentStageIdx === idx);
 
   const confirmProject = confirmId
-    ? projects.find((p) => p.client.clientID === confirmId)
+    ? allProjects.find((p) => p.client.clientID === confirmId)
     : null;
   const confirmStage = confirmProject
     ? STAGES[confirmProject.currentStageIdx]
@@ -671,6 +685,7 @@ export default function Deals() {
     const project = projects.find((p) => p.client.clientID === clientID);
     if (!project || project.currentStageIdx < 0) return;
     const today = formatDDMMYYYY(new Date());
+    const target = project.milestones[project.currentStageIdx];
     const updated = project.milestones.map((m, i) =>
       i === project.currentStageIdx
         ? { ...m, status: "paid", paidDate: today }
@@ -682,6 +697,15 @@ export default function Deals() {
     } else {
       updatePaymentStatus(clientID, "pending");
     }
+
+    // Log to the client's communication log so ClientProfile reflects this.
+    const parentId = project.client.sourceLeadId || clientID;
+    appendActivity(parentId, {
+      type: "milestone",
+      title: `Milestone Paid: ${target.name}`,
+      body: `Collected ${formatINR(target.total || target.base)} on ${today}. Logged from Deals board.`,
+    });
+
     setTick((t) => t + 1);
     window.dispatchEvent(new Event("leadDataChanged"));
   };
@@ -707,7 +731,7 @@ export default function Deals() {
 
       <div className="bg-overallbg h-full overflow-y-auto p-4 font-manrope">
         {/* Page header */}
-        <div className="flex justify-between items-start mb-5">
+        <div className="flex justify-between items-start mb-5 gap-3 flex-wrap">
           <div>
             <h3 className="text-primary text-3xl font-semibold">Deals</h3>
             <p className="text-[12px] text-text-muted mt-1">
@@ -716,23 +740,41 @@ export default function Deals() {
             </p>
           </div>
 
-          <div className="flex gap-2 items-center flex-wrap justify-end">
-            {STAGES.map((stage) => {
-              const cards = projectsAt(stage.idx);
-              return (
-                <div
-                  key={stage.idx}
-                  style={{
-                    background: stage.badge.bg,
-                    color: stage.badge.color,
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold"
-                >
-                  <stage.icon size={11} />
-                  {cards.length}&nbsp;{stage.name}
-                </div>
-              );
-            })}
+          <div className="flex flex-col items-end gap-2">
+            {/* Search */}
+            <div className="relative">
+              <FiSearch
+                size={13}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle pointer-events-none"
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name or ID…"
+                className="pl-8 pr-3 py-1.5 rounded-lg border border-bordergray bg-white text-[12px] text-textcolor placeholder:text-text-subtle focus:outline-none focus:border-select-blue w-56 shadow-sm"
+              />
+            </div>
+
+            {/* Stage chips */}
+            <div className="flex gap-2 items-center flex-wrap justify-end">
+              {STAGES.map((stage) => {
+                const cards = projectsAt(stage.idx);
+                return (
+                  <div
+                    key={stage.idx}
+                    style={{
+                      background: stage.badge.bg,
+                      color: stage.badge.color,
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold"
+                  >
+                    <stage.icon size={11} />
+                    {cards.length}&nbsp;{stage.name}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 

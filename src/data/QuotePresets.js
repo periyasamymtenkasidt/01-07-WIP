@@ -139,6 +139,22 @@ const seedConfig = (sizeRange, rawItems) => {
   };
 };
 
+// Extra scope works seeded from the expanded static Item Master, appended to
+// every residential preset so the Proposal Master scope-of-work reflects the
+// item master catalog. They merge into each preset's existing rooms (every
+// preset has Living Room / Kitchen / Master Bedroom), so no orphan rooms.
+const EXTRA_RESIDENTIAL_SCOPE = [
+  ...room("Living Room", [
+    ["POP Cornice & Molding", 0.5],
+    ["Wall Cladding — natural stone veneer", 0.1],
+  ]),
+  ...room("Kitchen", [["Kitchen Tall Unit — pantry storage", 0.2]]),
+  ...room("Master Bedroom", [
+    ["Loft / Overhead Storage Unit", 0.15],
+    ["Wallpaper — premium textured", 0.2],
+  ]),
+];
+
 // Per-room item lists as [itemDescription, areaFactor] tuples. Area-based
 // works share the room sqft evenly; the factor remains useful for count and
 // length units. `buildScope` turns these into real qty/amount once a size
@@ -164,6 +180,7 @@ const ONE_BHK_RAW = [
     ["Shower Glass Partition — 8mm toughened", 0.35],
     ["Wall Mirror Panel", 0.1],
   ]),
+  ...EXTRA_RESIDENTIAL_SCOPE,
 ];
 
 const TWO_BHK_RAW = [
@@ -197,6 +214,7 @@ const TWO_BHK_RAW = [
     ["Shoe Rack — with bench top", 0.2],
     ["Foyer Console — with mirror", 0.18],
   ]),
+  ...EXTRA_RESIDENTIAL_SCOPE,
 ];
 
 const THREE_BHK_RAW = [
@@ -237,6 +255,7 @@ const THREE_BHK_RAW = [
     ["Foyer Console — with mirror", 0.18],
     ["Wall Mirror Panel", 0.1],
   ]),
+  ...EXTRA_RESIDENTIAL_SCOPE,
 ];
 
 const VILLA_RAW = [
@@ -280,6 +299,7 @@ const VILLA_RAW = [
     ["Accent Wall Paneling — veneer / laminate", 0.15],
     ["Cove / Profile Lighting", 0.5],
   ]),
+  ...EXTRA_RESIDENTIAL_SCOPE,
 ];
 
 export const DEFAULT_PRESETS = {
@@ -473,7 +493,10 @@ const SCOPE_SEED_VERSION_KEY = "quoteMasterScopeSeedVersion";
 // v2: quantities now come from the Smart Estimator's room-allocation split
 // instead of a fixed number, so bump the version to re-run the reseed once
 // more for v1 users.
-const SCOPE_SEED_VERSION = "2";
+// v3: expanded the Item Master catalog and seeded the extra works (POP cornice,
+// wall cladding, tall unit, loft storage, wallpaper) into every preset — bump
+// again so factory presets pick up the new scope-of-work.
+const SCOPE_SEED_VERSION = "3";
 let normalizedDefaultsCache = null;
 const getNormalizedDefaults = () => {
   if (!normalizedDefaultsCache) {
@@ -732,13 +755,20 @@ export const getDocumentsForLead = (leadId) => {
 export const saveQuoteDocument = (leadId, quote) => {
   if (!leadId) return [];
   const list = getDocumentsForLead(leadId);
+  const rev = list.length + 1;
+  const sentAt = quote.sentAt || new Date().toISOString();
+  const dateStr = new Date(sentAt).toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).replace(/ /g, "-");
+  const recipientSlug = (quote.recipientName || "Quote").replace(/\s+/g, "_");
   const entry = {
     docId: `${quote.quoteId}-${Date.now()}`,
     quoteId: quote.quoteId,
-    fileName: `${quote.quoteId}_${(quote.recipientName || "Quote")
-      .replace(/\s+/g, "_")}.pdf`,
+    fileName: `${quote.quoteId}_v${rev}_${recipientSlug}_${dateStr}.pdf`,
     sentTo: quote.recipientEmail,
-    sentAt: quote.sentAt || new Date().toISOString(),
+    sentAt,
     grandTotal: quote.grandTotal,
     snapshot: quote,
   };

@@ -1,4 +1,5 @@
 import { getAllClients } from "./clientStorage";
+import { ClientTableData } from "./ClientTableData";
 import { getSchedule, getProjectSlack } from "./scheduleStorage";
 import { TableData } from "./TableData";
 import { tokens } from "../api/client";
@@ -33,17 +34,21 @@ const backendIdFor = (siteID) => {
 export const SUPERVISORS = ["Anand R.", "Vijay K.", "Sarah M.", "Priya S.", "Rahul G."];
 
 // Predefined statuses
-export const SITE_STATUSES = ["Survey", "Design", "In Progress", "Completed"];
+export const SITE_STATUSES = ["Survey", "Design", "Completed"];
 
 const getDefaultPresetForType = (type) => {
-  if (!type) return "2 BHK";
+  if (!type) return "2BHK";
   const t = type.toLowerCase();
-  if (t.includes("studio")) return "Studio";
-  if (t.includes("penthouse")) return "Studio";
-  if (t.includes("villa")) return "3 BHK";
-  if (t.includes("apartment")) return "2 BHK";
-  return "3 BHK";
+  if (t.includes("studio")) return "1BHK";
+  if (t.includes("penthouse")) return "3BHK";
+  if (t.includes("villa")) return "Villa";
+  if (t.includes("apartment")) return "2BHK";
+  return "2BHK";
 };
+
+// Normalize legacy preset values written before the key format was standardised.
+const PRESET_ALIASES = { "Studio": "1BHK", "1 BHK": "1BHK", "2 BHK": "2BHK", "3 BHK": "3BHK" };
+const normalizePreset = (p) => (p && PRESET_ALIASES[p]) || p || "";
 
 const readJson = (key, fallback) => {
   try {
@@ -86,8 +91,22 @@ const formatDate = (date) => {
   return `${dd}.${mm}.${yyyy}`;
 };
 
+// Static seed client IDs — these are established clients that always appear in
+// Sites regardless of proposal/visit state.
+const STATIC_CLIENT_IDS = new Set(ClientTableData.map((c) => c.clientID));
+
+// Gate: direct clients (added via form, not converted from a lead) must have
+// either confirmed their proposal or completed the preliminary site visit before
+// they are eligible to enter the Site Visit stage. Newly created direct clients
+// that haven't cleared either condition are excluded from the sites list.
+const isSiteEligible = (c) => {
+  if (STATIC_CLIENT_IDS.has(c.clientID)) return true; // seed data — always eligible
+  if (c.sourceLeadId) return true;                     // converted from lead — already qualified
+  return c.proposalConfirmed === true || c.prelimVisit?.done === true;
+};
+
 export const getAllSites = () => {
-  const clients = getAllClients();
+  const clients = getAllClients().filter(isSiteEligible);
   const overrides = readJson(SITES_OVERRIDE_KEY, {});
 
   // Generate dynamic sites list based on clients
@@ -95,9 +114,11 @@ export const getAllSites = () => {
     const siteNum = c.clientID.split("-").pop() || String(index + 1);
     const siteID = `ST-2026-${siteNum}`;
     
-    // Automation: check if there is an active project schedule
+    // Automation: check if there is an active project schedule.
+    // Direct clients (no sourceLeadId) store their schedule under clientID.
+    const scheduleId = c.sourceLeadId || c.clientID;
     const lead = getLead(c.sourceLeadId);
-    const schedule = getSchedule(c.sourceLeadId);
+    const schedule = getSchedule(scheduleId);
     
     let autoProgress = null;
     let autoStatus = null;
@@ -115,7 +136,7 @@ export const getAllSites = () => {
       if (autoProgress === 100) {
         autoStatus = "Completed";
       } else if (autoProgress > 0) {
-        autoStatus = "In Progress";
+        autoStatus = "Design";
       } else {
         // Design is entered only through the frozen survey/feasibility gate.
         // A confirmed schedule alone must not create a Design site with no basis.
@@ -144,7 +165,25 @@ export const getAllSites = () => {
 
     // Default fallbacks if no schedule exists
     const defaultTargetDate = "31.12.2026";
-    
+
+    // Design is complete only once the client has approved every stage.
+    // AWAITING_CLIENT means submitted but not yet approved — not complete.
+    // Read localStorage directly to avoid a circular import with designFlowStorage.
+    let isDesignComplete = false;
+    try {
+      const flowRaw = localStorage.getItem(`designFlow_${siteID}`);
+      if (flowRaw) {
+        const flow = JSON.parse(flowRaw);
+        isDesignComplete =
+          flow?.stage === "DESIGN_COMPLETE" ||
+          (Array.isArray(flow?.stages) &&
+            flow.stages.length > 0 &&
+            flow.stages.every((s) => s.reviewState === "APPROVED"));
+      }
+    } catch {
+      // ignore
+    }
+
     // Merge everything, prioritizing manual overrides
     const override = overrides[siteID] || {};
 
@@ -174,6 +213,38 @@ export const getAllSites = () => {
         ? override.startDate
         : advancePaidDate || "Awaiting Advance Payment";
 
+    // Effective status: an executing/completed schedule wins; otherwise a saved
+    // override; otherwise the schedule-derived stage.
+    const resolvedStatus =
+      isDesignComplete || override.status === "Completed"
+        ? "Completed"
+        : autoStatus === "Design" || autoStatus === "Completed"
+          ? autoStatus
+          : override.status !== undefined
+            ? override.status
+            : autoStatus;
+    const hasSupervisor =
+      (override.supervisor !== undefined ? override.supervisor : null) != null;
+
+    // Stage-based progress milestones, so the bar tracks the project phase:
+    //   not started 0 → survey 25 → design 50 → in progress 75 → completed 100.
+    // A "Survey" site reads 0 until a supervisor is assigned (survey actually
+    // begun), then 25. Derived from the resolved stage, so a stale saved override
+    // can't inflate it (an old client-portal demo wrote 75% on survey sites).
+    const resolvedProgress = (() => {
+      switch (String(resolvedStatus || "").toLowerCase()) {
+        case "completed":
+          return 100;
+        case "design":
+          return 50;
+        case "survey":
+          return hasSupervisor ? 25 : 0;
+        default:
+          return 0;
+      }
+    })();
+
+    const isArchClient = (c.serviceTrack || lead?.serviceTrack) === "Architecture";
     return {
       siteID,
       clientID: c.clientID,
@@ -181,34 +252,27 @@ export const getAllSites = () => {
       clientPhone: c.clientPhone || "",
       clientEmail: c.clientEmail || "",
       budget: c.budget || "",
-      propertyPreset: override.propertyPreset || lead?.quotePreset || getDefaultPresetForType(c.location),
-      siteType: c.location || "Residential",
+      serviceTrack: c.serviceTrack || lead?.serviceTrack || "Interiors",
+      projectIntent: lead?.projectIntent || c.projectIntent || "",
+      propertyPreset: isArchClient ? "" : normalizePreset(override.propertyPreset || lead?.quotePreset || getDefaultPresetForType(c.location)),
+      siteType: isArchClient ? (c.buildingUse || c.requirementType || "Architecture") : (c.location || "Residential"),
       location: c.locationSecondary || "Main City",
       fullAddress: c.siteAddress || c.locationSecondary || "Site Location",
       // Execution schedule wins once work starts/completes; before that the
       // explicit Survey/Design gate remains authoritative.
-      status:
-        autoStatus === "In Progress" || autoStatus === "Completed"
-          ? autoStatus
-          : override.status !== undefined
-            ? override.status
-            : autoStatus,
-      progress:
-        autoProgress > 0
-          ? autoProgress
-          : override.progress !== undefined
-            ? override.progress
-            : autoProgress || 0,
       targetDate: override.targetDate || autoTargetDate || defaultTargetDate,
       supervisor: override.supervisor !== undefined ? override.supervisor : null,
       notes: override.notes || autoNotes,
       ...override,
-      // Advance + start date are LIVE from the client's milestones — re-asserted
-      // AFTER the override spread so a paid advance always reflects (a stale
-      // saved override must not mask it).
+      // Status, progress, advance + start date are LIVE (schedule / stage /
+      // milestones) — re-asserted AFTER the override spread so a stale saved
+      // override can't mask them (e.g. an old 75% progress placeholder on a
+      // survey-stage site).
       isAdvancePaid,
       advancePaidDate,
       startDate: resolvedStartDate,
+      status: resolvedStatus,
+      progress: resolvedProgress,
     };
   });
 

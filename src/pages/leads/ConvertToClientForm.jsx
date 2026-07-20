@@ -49,7 +49,12 @@ import {
   getPropertyTypesForPreset,
   getLatestQuoteForParent,
 } from "../../data/QuotePresets";
-import { formatSizeRange } from "../../utils/sizeRangeValidation";
+import {
+  estimateScopeItems,
+  parseBaseArea,
+  getNormalizedAllocations,
+} from "../../data/scopeEstimator";
+import { formatSizeRange, formatSizeWithAddition } from "../../utils/sizeRangeValidation";
 import { resolveServiceTrack } from "../../data/serviceTrack";
 
 // Parse a lead's investment range (e.g. "₹60L-70L", "₹50L – ₹1Cr", "₹1-1.2Cr")
@@ -110,22 +115,18 @@ function ConvertToClientForm({ lead, onClose, onConvert }) {
   const navigate = useNavigate();
   const { propertyType, city } = resolveLeadAddress(lead);
   
-  const latestQuote = useMemo(() => {
-    return getLatestQuoteForParent(lead.proposalId);
-  }, [lead.proposalId]);
+  // Always read fresh — avoids stale-memo issues when the component remounts.
+  const latestQuote = getLatestQuoteForParent(lead.proposalId);
 
   const isArch = resolveServiceTrack(lead) === "Architecture";
 
   const presetKeys = useMemo(() => getPresetKeys(), []);
-  // Architecture has no package preset — don't fall back to an interiors one.
   const activePreset = isArch
     ? ""
     : latestQuote?.presetKey || lead.quotePreset || (presetKeys.includes("2BHK") ? "2BHK" : presetKeys[0]);
   const activePropertyType = isArch
     ? lead.projectIntent || lead.scope || ""
     : latestQuote?.propertyType || lead.propertyType || propertyType || getPropertyTypesForPreset(activePreset)[0] || "";
-  const activeSizeRange = latestQuote?.sizeRange || "";
-
   const {
     register,
     handleSubmit,
@@ -173,6 +174,7 @@ function ConvertToClientForm({ lead, onClose, onConvert }) {
         grandTotal: Math.round(feeTotal * 1.18),
       };
     }
+    // Latest quote is the authoritative source — use its exact totals.
     if (latestQuote) {
       return {
         subtotal: latestQuote.subtotal,
@@ -180,9 +182,18 @@ function ConvertToClientForm({ lead, onClose, onConvert }) {
         grandTotal: latestQuote.grandTotal,
       };
     }
+    // No quote yet — estimate from the lead's configured size and master scope.
+    const sizeRange = lead.quoteSizeRange || "";
+    if (sizeRange && activeCfg?.scopeItems?.length > 0) {
+      const baseArea = parseBaseArea(sizeRange);
+      if (baseArea > 0) {
+        const allocs = getNormalizedAllocations(activeCfg.scopeItems, activeCfg.roomAllocations || {});
+        return computeTotals(estimateScopeItems(activeCfg.scopeItems, baseArea, allocs));
+      }
+    }
     if (!activeCfg) return { subtotal: 0, gst: 0, grandTotal: 0 };
     return computeTotals(activeCfg.scopeItems || []);
-  }, [isArch, lead.feeProposal, latestQuote, activeCfg]);
+  }, [isArch, lead.feeProposal, lead.quoteSizeRange, latestQuote, activeCfg]);
 
   const numericValue = activeTotals.subtotal;
   const suggestedValue = parseInvestmentMidpoint(lead.investment);
@@ -292,21 +303,69 @@ function ConvertToClientForm({ lead, onClose, onConvert }) {
         <div className="border-t border-border mb-6" />
 
         <div className="mb-6">
-          <SectionHeader>Property Configuration</SectionHeader>
-          <div className="rounded-xl border border-border bg-bg-soft px-4 py-3 flex items-center justify-between">
-            <div>
-              <p className="text-[14px] font-bold text-text">
-                {activePreset.replace(/^(\d+)(BHK)$/i, "$1 BHK")}
-                {activePropertyType ? ` / ${activePropertyType}` : ""}
-              </p>
-              <p className="text-[11px] text-text-muted mt-0.5">
-                {formatSizeRange(activeSizeRange)}
-              </p>
+          <SectionHeader>
+            {isArch ? "Project Configuration" : "Property Configuration"}
+          </SectionHeader>
+          {isArch ? (
+            // Architecture has no package preset — the design is priced from the
+            // feasibility/fee proposal. Show the captured project profile instead
+            // of an empty "/ PropertyType" preset card.
+            <div className="rounded-xl border border-border bg-bg-soft px-4 py-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[14px] font-bold text-text">
+                  {activePropertyType ||
+                    lead.projectName ||
+                    "Architecture Project"}
+                </p>
+                {(() => {
+                  const details = [
+                    lead.requirementType && ["Requirement", lead.requirementType],
+                    lead.buildingUse && ["Use", lead.buildingUse],
+                    lead.plotArea && ["Plot", lead.plotArea],
+                    lead.landOwnership && ["Land", lead.landOwnership],
+                  ].filter(Boolean);
+                  return details.length ? (
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-text-muted">
+                      {details.map(([label, value]) => (
+                        <span key={label}>
+                          {label}:{" "}
+                          <span className="font-semibold text-text">{value}</span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-text-muted mt-0.5">
+                      Priced from the design fee proposal, not a package preset.
+                    </p>
+                  );
+                })()}
+              </div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-subtle shrink-0">
+                Architecture Project
+              </span>
             </div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-subtle">
-              Proposal Preset
-            </span>
-          </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-bg-soft px-4 py-3 flex items-center justify-between">
+              <div>
+                <p className="text-[14px] font-bold text-text">
+                  {activePreset.replace(/^(\d+)(BHK)$/i, "$1 BHK")}
+                  {activePropertyType ? ` / ${activePropertyType}` : ""}
+                </p>
+                <p className="text-[11px] text-text-muted mt-0.5">
+                  {latestQuote
+                    ? formatSizeWithAddition(
+                        latestQuote.sizeRange,
+                        latestQuote.sizeAddedSqft,
+                        latestQuote.sizeReducedSqft ?? null,
+                      )
+                    : ""}
+                </p>
+              </div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-subtle">
+                Proposal Preset
+              </span>
+            </div>
+          )}
           {/* Hidden inputs to preserve react-hook-form registration and values for submission */}
           <input type="hidden" {...register("quotePreset")} />
           <input type="hidden" {...register("propertyType")} />

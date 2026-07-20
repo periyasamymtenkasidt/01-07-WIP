@@ -10,6 +10,8 @@ import {
   FiUserCheck,
   FiClipboard,
   FiMessageSquare,
+  FiChevronDown,
+  FiChevronUp,
 } from "react-icons/fi";
 import {
   INTERNAL_ROLES,
@@ -17,6 +19,7 @@ import {
   checklistComplete,
   checklistAllYes,
   openCommentsCount,
+  noItemsAllHaveReason,
   internalApprove,
   internalRequestChanges,
   setChecklistItem,
@@ -121,29 +124,20 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
   });
   // Which comment is mid-close, plus the resolution note being typed.
   const [closing, setClosing] = useState({ id: null, note: "" });
-  // "Confirm checklist & proceed" modal shown before an approve/authorise step.
-  const [confirmProceed, setConfirmProceed] = useState(false);
+  // Confirmation modal shown before bulk-marking all checklist items Yes.
+  const [confirmYesAll, setConfirmYesAll] = useState(false);
+  // Tracks which checklist row's reason input is currently open for editing.
+  const [expandedReasons, setExpandedReasons] = useState(new Set());
 
   const done = checklistComplete(stage);
   const openCount = openCommentsCount(stage);
   const answered = checklist.filter((c) => c && c.value).length;
   const yesCount = checklist.filter((c) => c && c.value === "yes").length;
-  // Every reviewer in the chain must clear (Yes) all checklist items before the
-  // stage can advance to the next person.
   const allYes = checklistAllYes(stage);
-  // Readable breakdown for the confirmation modal.
-  const yesItems = DESIGN_REVIEW_CHECKLIST.filter(
-    (_, i) => checklist[i]?.value === "yes",
-  );
-  const noItems = DESIGN_REVIEW_CHECKLIST.filter(
-    (_, i) => checklist[i]?.value === "no",
-  );
-  const pendingItems = DESIGN_REVIEW_CHECKLIST.filter(
-    (_, i) => checklist[i]?.value !== "yes" && checklist[i]?.value !== "no",
-  );
-  // Advance gate for the CURRENT reviewer (any step): all checklist items must
-  // be Yes. The final step (Principal) also needs every comment closed.
-  const canProceed = allYes && (!isFinalStep || openCount === 0);
+  const allNoHaveReason = noItemsAllHaveReason(stage);
+  // Principal Architect can authorise with "No" items only when every "No" has
+  // a reason filled in and all comments are closed. Other reviewers are ungated.
+  const canProceed = isFinalStep ? done && allNoHaveReason && openCount === 0 : true;
 
   // The acting role is bound to whichever step is current — the sequence
   // (Intern → Principal) is enforced, so the log can't claim a role out of turn.
@@ -198,18 +192,14 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
 
         {isReview && (
           <div className="mt-4 rounded-xl border border-bordergray bg-white p-3.5">
-            {!canProceed && (
+            {isFinalStep && !canProceed && (
               <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-800">
                 <FiClock size={14} className="mt-0.5 shrink-0" />
                 <span>
-                  {expectedRole} can{" "}
-                  {isFinalStep ? "authorise" : "approve"} once every checklist
-                  item is marked Yes ({yesCount}/{DESIGN_REVIEW_CHECKLIST.length}{" "}
-                  yes)
-                  {isFinalStep
-                    ? ` and all comments are closed (${openCount} open)`
-                    : ""}
-                  .
+                  {expectedRole} can authorise once every checklist item is
+                  answered ({answered}/{DESIGN_REVIEW_CHECKLIST.length} answered)
+                  {!allNoHaveReason ? ", every “No” item has a reason" : ""}
+                  {openCount > 0 ? ` and all comments are closed (${openCount} open)` : ""}.
                 </span>
               </div>
             )}
@@ -238,7 +228,7 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
               </button>
               <button
                 type="button"
-                onClick={() => setConfirmProceed(true)}
+                onClick={approve}
                 disabled={!canProceed}
                 className="flex items-center gap-1.5 rounded-lg bg-linear-to-br from-violet-600 to-violet-800 px-4 py-2 text-[12px] font-bold text-white shadow-sm hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
               >
@@ -282,8 +272,8 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
             {editable && (
               <button
                 type="button"
-                onClick={markAllYes}
-                title="Set every checklist item to Yes"
+                onClick={() => setConfirmYesAll(true)}
+                title="Review and mark every checklist item Yes"
                 className="flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100"
               >
                 <FiCheck size={11} /> Yes to all
@@ -303,51 +293,103 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
         <div className="divide-y divide-bg-soft">
           {DESIGN_REVIEW_CHECKLIST.map((label, i) => {
             const row = checklist[i] || { value: null, comment: "" };
+            const isNo = row.value === "no";
+            const reasonOpen = expandedReasons.has(i);
+            const openReason = () =>
+              setExpandedReasons((prev) => new Set([...prev, i]));
+            const closeReason = () =>
+              setExpandedReasons((prev) => {
+                const s = new Set(prev);
+                s.delete(i);
+                return s;
+              });
             return (
-              <div key={i} className="flex flex-wrap items-center gap-3 py-2">
-                <span className="min-w-0 flex-1 text-[12.5px] text-darkgray">
-                  {label}
-                </span>
-                <div className="flex shrink-0 items-center gap-1">
-                  {["yes", "no"].map((v) => {
-                    const sel = row.value === v;
-                    const yes = v === "yes";
-                    return (
+              <div
+                key={i}
+                className={`transition-colors ${isNo ? "bg-rose-50/30" : ""}`}
+              >
+                {/* ── Main row ── */}
+                <div className="flex items-center gap-3 py-2.5">
+                  <span className="w-5 shrink-0 text-[11px] font-bold tabular-nums text-text-subtle">
+                    {i + 1}.
+                  </span>
+                  <span className="min-w-0 flex-1 text-[12.5px] text-darkgray">
+                    {label}
+                  </span>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {["yes", "no"].map((v) => {
+                      const sel = row.value === v;
+                      const yes = v === "yes";
+                      return (
+                        <button
+                          key={v}
+                          type="button"
+                          disabled={!editable}
+                          onClick={() => {
+                            onChange(setChecklistItem(siteID, stageKey, i, { value: v }));
+                            if (v === "no") openReason(); else closeReason();
+                          }}
+                          className={`flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors disabled:cursor-not-allowed ${
+                            sel
+                              ? yes
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                                : "border-rose-300 bg-rose-100 text-rose-600"
+                              : "border-bordergray bg-white text-text-subtle hover:bg-bg-soft"
+                          }`}
+                        >
+                          {yes ? <FiCheck size={11} /> : <FiX size={11} />}
+                          {yes ? "Yes" : "No"}
+                        </button>
+                      );
+                    })}
+                    {isNo && (
                       <button
-                        key={v}
                         type="button"
-                        disabled={!editable}
-                        onClick={() =>
-                          onChange(setChecklistItem(siteID, stageKey, i, { value: v }))
-                        }
-                        className={`flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors disabled:cursor-not-allowed ${
-                          sel
-                            ? yes
-                              ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                              : "border-rose-300 bg-rose-50 text-rose-600"
-                            : "border-bordergray bg-white text-text-subtle hover:bg-bg-soft"
+                        onClick={() => reasonOpen ? closeReason() : openReason()}
+                        className={`flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                          row.comment?.trim()
+                            ? reasonOpen
+                              ? "border-rose-300 bg-rose-100 text-rose-700"
+                              : "border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
+                            : reasonOpen
+                              ? "border-rose-300 bg-rose-100 text-rose-700"
+                              : "border-rose-200 bg-rose-50 text-rose-400 hover:bg-rose-100"
                         }`}
                       >
-                        {yes ? <FiCheck size={11} /> : <FiX size={11} />}
-                        {yes ? "Yes" : "No"}
+                        Reason
+                        {reasonOpen ? <FiChevronUp size={11} /> : <FiChevronDown size={11} />}
                       </button>
-                    );
-                  })}
+                    )}
+                  </div>
                 </div>
-                {row.value === "no" && (
-                  <input
-                    value={row.comment || ""}
-                    disabled={!editable}
-                    onChange={(e) =>
-                      onChange(
-                        setChecklistItem(siteID, stageKey, i, {
-                          comment: e.target.value,
-                        }),
-                      )
-                    }
-                    placeholder="Note…"
-                    className="w-full rounded-lg border border-rose-200 bg-rose-50/40 px-2.5 py-1 text-[11.5px] focus:outline-none sm:w-48"
-                  />
+
+                {/* ── Accordion body: reason input ── */}
+                {isNo && reasonOpen && (
+                  <div className="mb-3 ml-8 border-l-2 border-rose-400 pl-3">
+                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-rose-500">
+                      Reason for No
+                    </p>
+                    <input
+                      autoFocus
+                      value={row.comment || ""}
+                      disabled={!editable}
+                      onChange={(e) =>
+                        onChange(
+                          setChecklistItem(siteID, stageKey, i, {
+                            comment: e.target.value,
+                          }),
+                        )
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") closeReason();
+                      }}
+                      placeholder="Explain why this item was marked No…"
+                      className="w-full rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-[12px] text-rose-800 placeholder:text-rose-300 focus:border-rose-400 focus:outline-none disabled:cursor-not-allowed"
+                    />
+                    <p className="mt-1 text-[10px] text-rose-400">
+                      Press Enter to collapse.
+                    </p>
+                  </div>
                 )}
               </div>
             );
@@ -559,110 +601,64 @@ const DesignReviewPanel = ({ siteID, stage, stageKey, onChange }) => {
         )}
       </div>
 
-      {/* ── Confirm checklist & proceed ──────────────────────────────────────
-          Lists every item marked "Yes" in readable form, flags any No / pending,
-          and confirms before advancing the review to the next step. */}
-      {confirmProceed && (
+      {/* ── Confirm "Yes to all" ─────────────────────────────────────────────
+          Shows every checklist item in readable form before bulk-marking Yes. */}
+      {confirmYesAll && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-          onClick={() => setConfirmProceed(false)}
+          onClick={() => setConfirmYesAll(false)}
         >
           <div
             className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl bg-white p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center gap-2">
-              <FiUserCheck size={18} className="text-violet-600" />
+              <FiCheck size={18} className="text-emerald-600" />
               <h3 className="text-[15px] font-bold text-darkgray">
-                {isFinalStep
-                  ? "Confirm checklist & send to client"
-                  : `Confirm checklist & approve as ${expectedRole}`}
+                Mark all checklist items Yes
               </h3>
             </div>
             <p className="mb-3 text-[12.5px] leading-relaxed text-grey">
-              These design-review items are marked{" "}
-              <span className="font-bold text-emerald-700">Yes</span>. Review them
-              before you proceed to the next step
-              {isFinalStep ? " and release the stage to the client" : ""}.
+              The following{" "}
+              <span className="font-bold text-darkgray">
+                {DESIGN_REVIEW_CHECKLIST.length} items
+              </span>{" "}
+              will all be marked{" "}
+              <span className="font-bold text-emerald-700">Yes</span>. Review
+              them before confirming.
             </p>
 
             <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-bg-soft bg-palewhite/50 p-3">
-              {yesItems.length === 0 ? (
-                <p className="text-[12px] italic text-text-subtle">
-                  No items are marked Yes yet.
-                </p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {yesItems.map((label, i) => (
-                    <li
-                      key={i}
-                      className="flex items-start gap-2 text-[12.5px] text-darkgray"
-                    >
-                      <FiCheck
-                        size={13}
-                        className="mt-0.5 shrink-0 text-emerald-600"
-                      />
-                      <span>{label}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <ul className="space-y-2">
+                {DESIGN_REVIEW_CHECKLIST.map((label, i) => (
+                  <li key={i} className="flex items-start gap-2 text-[12.5px] text-darkgray">
+                    <FiCheck size={13} className="mt-0.5 shrink-0 text-emerald-500" />
+                    <span>{label}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
-
-            <div className="mt-3 flex flex-wrap gap-2 text-[11.5px]">
-              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 font-bold text-emerald-700">
-                {yesItems.length} Yes
-              </span>
-              {noItems.length > 0 && (
-                <span className="rounded-full bg-rose-100 px-2.5 py-0.5 font-bold text-rose-600">
-                  {noItems.length} No
-                </span>
-              )}
-              {pendingItems.length > 0 && (
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 font-bold text-slate-500">
-                  {pendingItems.length} unanswered
-                </span>
-              )}
-              {openCount > 0 && (
-                <span className="rounded-full bg-amber-100 px-2.5 py-0.5 font-bold text-amber-700">
-                  {openCount} open comment{openCount > 1 ? "s" : ""}
-                </span>
-              )}
-            </div>
-
-            {(noItems.length > 0 || pendingItems.length > 0) && (
-              <p className="mt-2 flex items-start gap-1.5 text-[11.5px] text-amber-800">
-                <FiClock size={13} className="mt-0.5 shrink-0" />
-                {noItems.length > 0 &&
-                  `${noItems.length} item${noItems.length > 1 ? "s are" : " is"} marked No`}
-                {noItems.length > 0 && pendingItems.length > 0 && " and "}
-                {pendingItems.length > 0 &&
-                  `${pendingItems.length} still unanswered`}
-                . Confirm this is acceptable before proceeding.
-              </p>
-            )}
 
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setConfirmProceed(false)}
+                onClick={() => setConfirmYesAll(false)}
                 className="rounded-lg border border-bordergray px-3.5 py-2 text-[12px] font-semibold text-grey hover:bg-bg-soft"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={approve}
-                disabled={!canProceed}
-                className="flex items-center gap-1.5 rounded-lg bg-linear-to-br from-violet-600 to-violet-800 px-4 py-2 text-[12px] font-bold text-white shadow-sm hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => { markAllYes(); setConfirmYesAll(false); }}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-[12px] font-bold text-white shadow-sm hover:bg-emerald-700"
               >
-                <FiCheckCircle size={13} />
-                {isFinalStep ? "Confirm & send to client" : "Confirm & proceed"}
+                <FiCheck size={13} /> Confirm — Yes to all
               </button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 };

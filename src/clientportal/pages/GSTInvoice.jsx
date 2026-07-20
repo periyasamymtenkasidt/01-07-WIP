@@ -10,6 +10,32 @@ const GSTInvoice = () => {
   const paidMilestones = milestones.filter((m) => m.status === "paid");
 
   const handlePrint = () => {
+    const style = document.createElement("style");
+    style.id = "__invoice_print__";
+    style.textContent = `
+      @media print {
+        body * { visibility: hidden !important; }
+        #invoice-sheet, #invoice-sheet * { visibility: visible !important; }
+        #invoice-sheet {
+          position: fixed !important;
+          inset: 0 !important;
+          width: 100% !important;
+          max-height: none !important;
+          overflow: visible !important;
+          padding: 2cm !important;
+          background: #fff !important;
+          z-index: 99999 !important;
+          box-shadow: none !important;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+    const cleanup = () => {
+      const el = document.getElementById("__invoice_print__");
+      if (el) el.remove();
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
     window.print();
   };
 
@@ -89,13 +115,13 @@ const GSTInvoice = () => {
       {/* Invoice Detail Modal */}
       {selectedInvoice && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-2xl p-8 shadow-2xl border border-slate-100 relative max-h-[90vh] overflow-y-auto print:p-0 print:border-none print:shadow-none">
+          <div className="bg-white rounded-3xl w-full max-w-2xl p-8 shadow-2xl border border-slate-100 relative max-h-[90vh] overflow-y-auto">
             {/* Printable Invoice Sheet */}
             <div id="invoice-sheet" className="space-y-6 text-left">
               {/* Header */}
               <div className="flex justify-between items-start border-b border-gray-100 pb-5">
                 <div>
-                  <h2 className="text-xl font-extrabold text-darkgray">Work In Progress</h2>
+                  <h2 className="text-xl font-extrabold text-darkgray">WIP</h2>
                   <p className="text-xs text-text-subtle mt-1">Interior Design & Project Management Solutions</p>
                   <p className="text-xs text-text-subtle">GSTIN: 29AAFCS9821M1ZC</p>
                 </div>
@@ -114,8 +140,8 @@ const GSTInvoice = () => {
                   <p className="font-bold text-grey uppercase tracking-wider mb-2">Billed To</p>
                   <p className="font-bold text-darkgray text-[13px]">{client.clientName}</p>
                   <p className="text-text-subtle mt-1">{client.location || "Bengaluru, Karnataka"}</p>
-                  <p className="text-text-subtle">Phone: {client.phone || "—"}</p>
-                  <p className="text-text-subtle">Email: {client.email || "—"}</p>
+                  <p className="text-text-subtle">Phone: {client.clientPhone || "—"}</p>
+                  <p className="text-text-subtle">Email: {client.clientEmail || "—"}</p>
                 </div>
                 <div className="text-right">
                   <p className="font-bold text-grey uppercase tracking-wider mb-2">Payment Mode</p>
